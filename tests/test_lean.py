@@ -1,3 +1,4 @@
+import importlib.util
 import json
 import os
 import subprocess
@@ -10,6 +11,8 @@ from qnb.runtime import RequestError, check_lean, digest, lean_cell_source, miss
 from qnb.runtime import lean_ready_until
 from qnb import store
 from qnb.store import archive_entry
+
+HAS_FLASK = importlib.util.find_spec("flask") is not None
 
 LEAN = os.environ.get("QNB_TEST_LEAN")
 INSPECTOR = Path(__file__).resolve().parents[1] / "qnb" / "Inspect.lean"
@@ -229,6 +232,40 @@ theorem assumed : False := unchecked
             {"id": accepted["equivalentTrue"]["id"], "name": "equivalentTrue"}, axiom,
         ])
         self.assertEqual(set(report["rejected"]), {"admitted", "indirect", "assumed"})
+
+    @unittest.skipUnless(HAS_FLASK, "Flask is required to test kernel_operation")
+    def test_inline_kernel_run_skips_notebook_read_and_preserves_db_lookup_and_save(self):
+        from flask import g
+        from qnb.app import app, kernel_operation
+
+        rows = [{"name": "derived", "source": "theorem derived : True := base", "hash": "h1",
+                 "line": 1, "dependencies": [{"id": "base-id", "name": "base"}], "statement": None}]
+        with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {
+            "QNB_DATABASE": str(Path(folder) / "qnb.sqlite3"),
+        }):
+            store.initialize()
+            with app.test_request_context("/api/kernel", method="POST"):
+                g.account = {"id": 7, "vm_id": 1900000001}
+                g.workspace = {"owner_id": 7, "owner_email": "owner@example.test", "vm_id": 1900000001, "shared": False}
+                with patch("qnb.runtime.configure_disk") as cfg, \
+                        patch("qnb.runtime.notebook", side_effect=AssertionError("should not reread notebook")), \
+                        patch("qnb.runtime.check_lean", return_value=(0, "", rows, ["derived"], [], [], {})) as check, \
+                        patch("qnb.store.lookup_declaration", return_value=None) as lookup, \
+                        patch("qnb.store.save_declarations", return_value=[{"name": "derived"}]) as save:
+                    result = kernel_operation({
+                        "operation": "run",
+                        "path": "/fast.ipynb",
+                        "language": "lean4",
+                        "code": "theorem derived : True := base",
+                    })
+                    check_lookup = check.call_args.args[5]
+                    check_lookup("base")
+            cfg.assert_called_once_with(1900000001)
+            lookup.assert_called_once_with(7, "base")
+            save.assert_called_once()
+            self.assertEqual(result["exitCode"], 0)
+            self.assertEqual(result["saved"], ["derived"])
+            self.assertTrue(result["graphPending"])
 
 
 if __name__ == "__main__":

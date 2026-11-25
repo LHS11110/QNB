@@ -12,13 +12,15 @@ from threading import Lock
 from pathlib import Path
 
 INSPECTOR = Path(__file__).with_name("Inspect.lean").read_bytes()
+INSPECTOR_HASH = hashlib.sha256(INSPECTOR).hexdigest()[:16]
+INSPECTOR_GZ = base64.b64encode(gzip.compress(INSPECTOR, mtime=0)).decode("ascii")
 FILE_LIMIT = 131072
 FILE_CHUNK_SIZE = 98304
 LARGE_FILE_LIMIT = 8 * 1024 * 1024
 VM_DISK_GIB = int(os.environ.get("QNB_VM_DISK_GIB", "12"))
 configured = set()
 configuration_lock = Lock()
-LEAN_READY_TTL = 60
+LEAN_READY_TTL = 900
 lean_ready_until = {}
 lean_readiness_locks = {}
 
@@ -252,7 +254,7 @@ def lean_cell_source(cell):
     return code
 
 
-def lean_command(document, directory, marker, archives):
+def lean_command(document, directory, marker, archives, *, allow_local_axioms=False):
     # Only encoded data and shell-quoted arguments enter the fixed VM command.
     from shlex import quote
 
@@ -260,19 +262,41 @@ def lean_command(document, directory, marker, archives):
     if len(saved) > FILE_LIMIT:
         raise RequestError("저장된 Lean 선언의 복원 데이터가 128 KiB를 초과했습니다.", 413)
     working = quote("/workspace" + (directory if directory != "/" else ""))
+    archives_setup = (
+        'printf \'[]\' > "$tmp/archives.json"'
+        if not archives
+        else f"printf '%s' '{b64(gzip.compress(saved, mtime=0))}' | /usr/bin/base64 -d | /usr/bin/gzip -d > \"$tmp/archives.json\""
+    )
+    extra_flag = " allow-local-axioms" if allow_local_axioms else ""
     return f"""(
 set -e
 cd -- {working}
 tmp=$(/usr/bin/mktemp -d)
-trap '/bin/rm -rf -- "$tmp"' EXIT
-printf '%s' '{b64(INSPECTOR)}' | /usr/bin/base64 -d > "$tmp/Inspect.lean"
+bin="/tmp/qnb-inspect-{INSPECTOR_HASH}"
+tmp_bin="/tmp/.qnb-inspect-{INSPECTOR_HASH}.$$"
+trap '/bin/rm -rf -- "$tmp" "$tmp_bin"' EXIT
 printf '%s' '{b64(document.encode())}' | /usr/bin/base64 -d > "$tmp/Notebook.lean"
-printf '%s' '{b64(gzip.compress(saved, mtime=0))}' | /usr/bin/base64 -d | /usr/bin/gzip -d > "$tmp/archives.json"
-lean=/opt/agora/proof/lean/bin/lean
-if [ ! -x "$lean" ]; then printf '%s\n' 'Lean 4 도구가 VM에 설치되어 있지 않습니다.'; exit 1; fi
+{archives_setup}
+lean_root=/opt/agora/proof/lean
+lean="$lean_root/bin/lean"
+if [ ! -x "$lean" ]; then printf '%s\\n' 'Lean 4 도구가 VM에 설치되어 있지 않습니다.'; exit 1; fi
+if [ ! -x "$bin" ] && [ -x "$lean_root/bin/leanc" ]; then
+  printf '%s' '{INSPECTOR_GZ}' | /usr/bin/base64 -d | /usr/bin/gzip -d > "$tmp/Inspect.lean"
+  if "$lean" --root="$tmp" -c "$tmp/Inspect.c" "$tmp/Inspect.lean" >/dev/null 2>&1 &&
+     "$lean_root/bin/leanc" -O0 "$tmp/Inspect.c" -o "$tmp_bin" -lleanshared -Wl,-rpath,"$lean_root/lib/lean" >/dev/null 2>&1; then
+    mv -f "$tmp_bin" "$bin"
+  fi
+fi
 export LEAN_PATH="$PWD:/workspace"
-"$lean" --run "$tmp/Inspect.lean" "$tmp/Notebook.lean" "$tmp/report.json" "$tmp/archives.json" '{marker}-started'
-printf '\n%s\n' '{marker}'
+if [ -x "$bin" ]; then
+  LEAN_SYSROOT="$lean_root" "$bin" "$tmp/Notebook.lean" "$tmp/report.json" "$tmp/archives.json" '{marker}-started'{extra_flag}
+else
+  if [ ! -f "$tmp/Inspect.lean" ]; then
+    printf '%s' '{INSPECTOR_GZ}' | /usr/bin/base64 -d | /usr/bin/gzip -d > "$tmp/Inspect.lean"
+  fi
+  "$lean" --run "$tmp/Inspect.lean" "$tmp/Notebook.lean" "$tmp/report.json" "$tmp/archives.json" '{marker}-started'{extra_flag}
+fi
+printf '\\n%s\\n' '{marker}'
 /bin/cat "$tmp/report.json"
 )
 """
@@ -361,8 +385,10 @@ def recovery_line(diagnostics, selected, line):
     return line
 
 
-def lean_attempt(vm_id, file_path, document, marker, archives, *, preparing=False):
-    command = lean_command(document, posixpath.dirname(file_path), marker, archives)
+def lean_attempt(vm_id, file_path, document, marker, archives, *, preparing=False, allow_local_axioms=False):
+    command = lean_command(
+        document, posixpath.dirname(file_path), marker, archives, allow_local_axioms=allow_local_axioms
+    )
     if len(command.encode()) > 65536:
         raise RequestError("Lean 소스와 저장된 선언이 VM 실행 한도를 초과했습니다.", 413)
     started = marker + "-started\n"
@@ -407,54 +433,68 @@ def ensure_lean_ready(vm_id, marker):
         lean_ready_until[vm_id] = time.monotonic() + LEAN_READY_TTL
 
 
-def check_lean(vm_id, file_path, document, offset, marker, lookup):
+def _run_lean_with_recovery(vm_id, file_path, document, marker, lookup, *, allow_local_axioms=False):
     entries, bindings = [], {}
     attempted = set()
+    ensure_lean_ready(vm_id, marker)
+    while True:
+        inspection, output = lean_attempt(
+            vm_id, file_path, document, marker, entries, allow_local_axioms=allow_local_axioms
+        )
+        if inspection is None:
+            lean_ready_until.pop(vm_id, None)
+            return None, output, entries, bindings
+        lean_ready_until[vm_id] = time.monotonic() + LEAN_READY_TTL
+        if inspection["ok"]:
+            return inspection, output, entries, bindings
+        missing = {name: line for name, line in missing_names(inspection["diagnostics"]).items()
+                   if name not in attempted}
+        if not missing:
+            return None, output, entries, bindings
+        attempted.update(missing)
+        existing = {entry["entry"]["name"] for entry in entries}
+        additions = []
+        legacy = []
+        for name, line in missing.items():
+            found = lookup(name)
+            if found:
+                entry, imported_ids = found
+                if entry is None:
+                    legacy.append(name)
+                    continue
+                selected = entry["entry"]["name"]
+                if selected not in existing:
+                    existing.add(selected)
+                    entry["entry"]["line"] = recovery_line(inspection["diagnostics"], selected, line)
+                    additions.append(entry)
+                    bindings[selected] = imported_ids
+        if not additions:
+            if legacy:
+                output += "\n저장된 커널 명제가 필요합니다. 원본 노트북을 다시 실행하세요 · " + ", ".join(legacy)
+            return None, output, entries, bindings
+        if len(entries) + len(additions) > 64:
+            raise RequestError("한 셀에서 복원할 수 있는 DB 선언은 최대 64개입니다.", 413)
+        entries.extend(additions)
+
+
+def _resolve_imported(inspection, bindings):
+    imported = {}
+    for origin in inspection["recovered"]:
+        archive_bindings = bindings[origin["root"]]
+        for name in origin["names"]:
+            if name in archive_bindings:
+                imported[name] = archive_bindings[name]
+    return imported
+
+
+def check_lean(vm_id, file_path, document, offset, marker, lookup):
     try:
-        ensure_lean_ready(vm_id, marker)
-        while True:
-            inspection, output = lean_attempt(vm_id, file_path, document, marker, entries)
-            if inspection is None:
-                lean_ready_until.pop(vm_id, None)
-                return 1, output, [], [], [], [], {}
-            lean_ready_until[vm_id] = time.monotonic() + LEAN_READY_TTL
-            if inspection["ok"]:
-                break
-            missing = {name: line for name, line in missing_names(inspection["diagnostics"]).items()
-                       if name not in attempted}
-            if not missing:
-                return 1, output, [], [], [], [], {}
-            attempted.update(missing)
-            existing = {entry["entry"]["name"] for entry in entries}
-            additions = []
-            legacy = []
-            for name, line in missing.items():
-                found = lookup(name)
-                if found:
-                    entry, imported_ids = found
-                    if entry is None:
-                        legacy.append(name)
-                        continue
-                    selected = entry["entry"]["name"]
-                    if selected not in existing:
-                        existing.add(selected)
-                        entry["entry"]["line"] = recovery_line(inspection["diagnostics"], selected, line)
-                        additions.append(entry)
-                        bindings[selected] = imported_ids
-            if not additions:
-                if legacy:
-                    output += "\n저장된 커널 명제가 필요합니다. 원본 노트북을 다시 실행하세요 · " + ", ".join(legacy)
-                return 1, output, [], [], [], [], {}
-            if len(entries) + len(additions) > 64:
-                raise RequestError("한 셀에서 복원할 수 있는 DB 선언은 최대 64개입니다.", 413)
-            entries.extend(additions)
-        recovered = inspection["recovered"]
-        imported = {}
-        for origin in recovered:
-            archive_bindings = bindings[origin["root"]]
-            for name in origin["names"]:
-                if name in archive_bindings:
-                    imported[name] = archive_bindings[name]
+        inspection, output, entries, bindings = _run_lean_with_recovery(
+            vm_id, file_path, document, marker, lookup
+        )
+        if inspection is None:
+            return 1, output, [], [], [], [], {}
+        imported = _resolve_imported(inspection, bindings)
         rows = proof_records(document, inspection["declarations"], imported)
         definitions = proof_records(document, inspection["definitions"], imported)
         rejected = inspection["rejected"]
@@ -463,7 +503,17 @@ def check_lean(vm_id, file_path, document, offset, marker, lookup):
         notes = []
         if entries:
             notes.append("DB에서 복원한 Lean 선언 · " + ", ".join(entry["entry"]["name"] for entry in entries))
-        if rejected:
+        local_axioms = inspection.get("localAxioms") or []
+        if local_axioms:
+            notes.append(
+                "셀에서 직접 선언한 공리는 기본 DB 저장이 차단됩니다(VM 소유자 공리 관리에서만 등록 가능) · "
+                + ", ".join(local_axioms)
+            )
+        reasons = inspection.get("rejectedReasons") or []
+        if reasons:
+            formatted_reasons = ", ".join(f"{item['name']}({item['reason']})" for item in reasons)
+            notes.append("검증 조건을 충족하지 않아 DB 저장에서 제외된 정리 · " + formatted_reasons)
+        elif rejected:
             notes.append("검증 조건을 충족하지 않아 DB 저장에서 제외된 정리 · " + ", ".join(rejected))
         output = "\n".join(filter(None, [output, *notes]))
     except RequestError:
@@ -472,3 +522,23 @@ def check_lean(vm_id, file_path, document, offset, marker, lookup):
     except (ValueError, KeyError, TypeError, RecursionError) as error:
         raise RequestError("Lean 검사 결과를 해석할 수 없습니다.", 502) from error
     return 0, output, rows, [row["name"] for row in rows if row["line"] > offset], definitions, entries, imported
+
+
+def check_lean_axioms(vm_id, document, marker, lookup):
+    try:
+        inspection, output, entries, bindings = _run_lean_with_recovery(
+            vm_id, "/qnb-axioms.lean", document, marker, lookup, allow_local_axioms=True
+        )
+        if inspection is None:
+            raise RequestError(output or "공리 Lean 검증에 실패했습니다.")
+        imported = _resolve_imported(inspection, bindings)
+        axiom_rows = proof_records(document, inspection.get("customAxioms", []), imported)
+        definitions = proof_records(document, inspection.get("definitions", []), imported)
+        if not axiom_rows:
+            raise RequestError("등록할 유효한 `axiom` 선언을 찾지 못했습니다. unsafe 선언이 아닌지 확인하세요.")
+        return axiom_rows, definitions, entries, imported, output
+    except RequestError:
+        lean_ready_until.pop(vm_id, None)
+        raise
+    except (ValueError, KeyError, TypeError, RecursionError) as error:
+        raise RequestError("공리 검증 결과를 해석할 수 없습니다.", 502) from error

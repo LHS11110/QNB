@@ -75,7 +75,11 @@ async function api(route, payload) {
   };
   const response = await fetch("/api/" + route, options);
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error || "요청에 실패했습니다 (" + response.status + ").");
+  if (!response.ok) {
+    const error = new Error(data.error || "요청에 실패했습니다 (" + response.status + ").");
+    error.status = response.status;
+    throw error;
+  }
   return data;
 }
 
@@ -196,9 +200,19 @@ function alertIn(id, message = "") {
   $(id).hidden = !message;
 }
 
+let pendingMfaToken = null;
+let qrPollTimer = null;
+
 function setAuth(mode, notice = "") {
   authMode = mode;
+  pendingMfaToken = null;
+  stopQrPolling();
   const signingUp = mode === "signup";
+  $("auth-form").hidden = false;
+  $("mfa-form").hidden = true;
+  $("nickname-field").hidden = !signingUp;
+  $("alt-auth-box").hidden = signingUp;
+  $("qr-login-panel").hidden = true;
   $("auth-title").textContent = signingUp ? "워크스페이스 생성" : "다시 오신 것을 환영합니다";
   $("auth-subtitle").textContent = signingUp
     ? "개인 VM 워크스페이스와 검증 정리 데이터베이스를 즉시 배정받으세요."
@@ -212,22 +226,30 @@ function setAuth(mode, notice = "") {
   $("password").autocomplete = signingUp ? "new-password" : "current-password";
   alertIn("auth-context-notice", notice);
   alertIn("auth-error");
+  alertIn("mfa-error");
 }
 
 function showView(view) {
   document.body.dataset.view = view;
   const isHome = view === "home";
   const isAuth = view === "auth";
+  const isQrApprove = view === "qr-approve";
   const isIDE = view === "ide";
   $("home").hidden = !isHome;
   $("auth-page").hidden = !isAuth;
+  $("qr-approve-page").hidden = !isQrApprove;
   $("ide").hidden = !isIDE;
   $("home-nav").hidden = !isHome;
   $("ide-header-controls").hidden = !isIDE || standaloneProofPage;
   $("theme-toggle").hidden = !isIDE;
 
   const loggedIn = Boolean(currentSession.email);
-  $("account-label").textContent = currentSession.email || "";
+  const displayName = currentSession.nickname
+    ? currentSession.nickname + " (" + currentSession.email + ")"
+    : (currentSession.email || "");
+  $("account-label").textContent = displayName;
+  $("account-open").hidden = !loggedIn;
+  renderWorkspaceBadge();
   $("logout").hidden = !loggedIn;
   $("header-login").hidden = loggedIn || isAuth;
   $("header-signup").hidden = loggedIn || isAuth;
@@ -245,6 +267,7 @@ function showView(view) {
   } else {
     window.QNBParticles?.stop();
   }
+  if (!isAuth) stopQrPolling();
 }
 
 function routePath() {
@@ -258,6 +281,24 @@ async function applyRoute() {
 
   if ((path === "/login" || path === "/signup") && loggedIn) {
     location.assign("/ide");
+    return;
+  }
+
+  if (path === "/qr-approve") {
+    const code = new URLSearchParams(location.search).get("code") || "";
+    if (!loggedIn) {
+      authNextPath = location.pathname + location.search;
+      setAuth("login", "QR 로그인을 승인하려면 먼저 휴대폰에서 로그인하세요.");
+      showView("auth");
+      return;
+    }
+    const label = currentSession.nickname
+      ? currentSession.nickname + " (" + currentSession.email + ")"
+      : currentSession.email;
+    $("qr-approve-account").textContent = "현재 로그인된 계정: " + label;
+    $("qr-approve-btn").disabled = !code;
+    alertIn("qr-approve-status", code ? "" : "QR 코드 파라미터가 없습니다.");
+    showView("qr-approve");
     return;
   }
 
@@ -284,7 +325,7 @@ async function applyRoute() {
       } else {
         renderWorkbench();
         await showFolder("/");
-        setInterval(syncWorkspace, 2000);
+        setInterval(syncWorkspace, 4000);
         document.addEventListener("visibilitychange", syncWorkspace);
       }
     }
@@ -373,12 +414,50 @@ $("password-toggle").onclick = () => {
   $("password-toggle").setAttribute("aria-label", show ? "비밀번호 숨기기" : "비밀번호 표시");
 };
 
+function b64urlToBytes(text) {
+  const padded = text.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - text.length % 4) % 4);
+  return Uint8Array.from(atob(padded), (char) => char.charCodeAt(0));
+}
+
+function bytesToB64url(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function stopQrPolling() {
+  if (qrPollTimer) {
+    clearInterval(qrPollTimer);
+    qrPollTimer = null;
+  }
+}
+
+function enterMfaStep(token) {
+  pendingMfaToken = token;
+  $("auth-form").hidden = true;
+  $("alt-auth-box").hidden = true;
+  $("mfa-form").hidden = false;
+  $("mfa-code").value = "";
+  alertIn("mfa-error");
+  $("mfa-code").focus();
+}
+
 $("auth-form").onsubmit = async (event) => {
   event.preventDefault();
   $("auth-submit").disabled = true;
   alertIn("auth-error");
   try {
-    await api(authMode, { email: $("email").value, password: $("password").value });
+    const body = { email: $("email").value, password: $("password").value };
+    if (authMode === "signup" && $("nickname").value.trim()) {
+      body.nickname = $("nickname").value.trim();
+    }
+    const result = await api(authMode, body);
+    if (result.mfaRequired) {
+      enterMfaStep(result.mfaToken);
+      $("auth-submit").disabled = false;
+      return;
+    }
     location.assign(authNextPath || "/ide");
   } catch (error) {
     alertIn("auth-error", error.message);
@@ -386,9 +465,106 @@ $("auth-form").onsubmit = async (event) => {
   }
 };
 
+$("mfa-cancel").onclick = () => setAuth("login");
+
+$("mfa-form").onsubmit = async (event) => {
+  event.preventDefault();
+  $("mfa-submit").disabled = true;
+  alertIn("mfa-error");
+  try {
+    await api("login/mfa", { mfaToken: pendingMfaToken, code: $("mfa-code").value });
+    location.assign(authNextPath || "/ide");
+  } catch (error) {
+    alertIn("mfa-error", error.message);
+    $("mfa-submit").disabled = false;
+  }
+};
+
+$("passkey-login-btn").onclick = async () => {
+  alertIn("auth-error");
+  if (!window.PublicKeyCredential) {
+    alertIn("auth-error", "이 브라우저는 패스키(WebAuthn)를 지원하지 않습니다.");
+    return;
+  }
+  try {
+    const options = await api("passkeys/login/options", { email: $("email").value.trim() });
+    const pk = options.publicKey;
+    pk.challenge = b64urlToBytes(pk.challenge);
+    pk.allowCredentials = (pk.allowCredentials || []).map((item) => ({ ...item, id: b64urlToBytes(item.id) }));
+    const assertion = await navigator.credentials.get({ publicKey: pk });
+    const payload = {
+      challengeToken: options.challengeToken,
+      credential: {
+        id: assertion.id,
+        rawId: bytesToB64url(assertion.rawId),
+        type: assertion.type,
+        response: {
+          clientDataJSON: bytesToB64url(assertion.response.clientDataJSON),
+          authenticatorData: bytesToB64url(assertion.response.authenticatorData),
+          signature: bytesToB64url(assertion.response.signature),
+        },
+      },
+    };
+    const result = await api("passkeys/login/verify", payload);
+    if (result.mfaRequired) {
+      enterMfaStep(result.mfaToken);
+      return;
+    }
+    location.assign(authNextPath || "/ide");
+  } catch (error) {
+    if (error?.name === "NotAllowedError") return;
+    alertIn("auth-error", error.message || "패스키 로그인에 실패했습니다.");
+  }
+};
+
+$("qr-login-btn").onclick = async () => {
+  alertIn("auth-error");
+  stopQrPolling();
+  try {
+    const data = await api("qr-login/start", {});
+    $("qr-login-img").src = data.qrDataUrl || "";
+    $("qr-login-img").hidden = !data.qrDataUrl;
+    $("qr-login-status").textContent = "이미 로그인된 휴대폰으로 QR 코드를 스캔해 승인하세요.";
+    $("qr-login-panel").hidden = false;
+    qrPollTimer = setInterval(async () => {
+      try {
+        const res = await api("qr-login/poll", { code: data.code, pollSecret: data.pollSecret });
+        if (res.email) {
+          stopQrPolling();
+          location.assign(authNextPath || "/ide");
+        }
+      } catch (error) {
+        stopQrPolling();
+        $("qr-login-status").textContent = error.message;
+      }
+    }, 2000);
+  } catch (error) {
+    alertIn("auth-error", error.message);
+  }
+};
+
+$("qr-login-cancel").onclick = () => {
+  stopQrPolling();
+  $("qr-login-panel").hidden = true;
+};
+
+$("qr-approve-btn").onclick = async () => {
+  const code = new URLSearchParams(location.search).get("code");
+  if (!code) return;
+  $("qr-approve-btn").disabled = true;
+  try {
+    await api("qr-login/approve", { code });
+    alertIn("qr-approve-status", "PC 로그인을 승인했습니다. PC 화면이 자동으로 워크스페이스로 이동합니다.");
+  } catch (error) {
+    alertIn("qr-approve-status", error.message);
+    $("qr-approve-btn").disabled = false;
+  }
+};
+
 $("logout").onclick = async () => {
   if (busy) return;
   if (dirtyTabs() && !confirm("저장하지 않은 편집 내용이 있습니다. 로그아웃할까요?")) return;
+  for (const tab of tabs.values()) cancelAutoSave(tab);
   try {
     await api("logout", {});
     tabs.clear();
@@ -415,6 +591,394 @@ $("view-editor").onclick = () => {
   renderEntries();
 };
 $("view-graph").onclick = () => showGraph(graphPage, graphData.root);
+
+function renderWorkspaceBadge() {
+  const ws = currentSession.workspace;
+  const pill = $("workspace-open");
+  const label = $("workspace-label");
+  const badge = $("invite-badge");
+  if (!pill || !label || !badge) return;
+  if (ws && ws.shared) {
+    label.textContent = "공유 · " + ws.ownerEmail;
+    pill.classList.add("shared");
+  } else {
+    label.textContent = "내 워크스페이스";
+    pill.classList.remove("shared");
+  }
+  const pending = Number(currentSession.pendingInvites || 0);
+  badge.textContent = String(pending);
+  badge.hidden = pending <= 0;
+}
+
+async function recoverRevokedWorkspace() {
+  for (const tab of tabs.values()) cancelAutoSave(tab);
+  tabs.clear();
+  active = null;
+  graphVisible = false;
+  if (!$("terminal-panel").hidden) $("terminal-close").click();
+  vmSocket?.close();
+  vmSocket = null;
+  currentSession = await api("session");
+  renderWorkspaceBadge();
+  renderWorkbench();
+  await showFolder("/");
+}
+
+async function switchWorkspace(ownerId) {
+  if (busy) return;
+  if (currentSession.workspace?.ownerId === ownerId) {
+    $("workspace-dialog").close();
+    return;
+  }
+  if (dirtyTabs() && !confirm("저장하지 않은 편집 내용이 있습니다. 워크스페이스를 전환할까요?")) return;
+  for (const tab of tabs.values()) cancelAutoSave(tab);
+  if (!$("terminal-panel").hidden) $("terminal-close").click();
+  vmSocket?.close();
+  vmSocket = null;
+  try {
+    const selected = await api("workspaces/select", { ownerId });
+    currentSession.workspace = selected;
+    tabs.clear();
+    active = null;
+    graphVisible = false;
+    renderWorkspaceBadge();
+    $("workspace-dialog").close();
+    renderWorkbench();
+    await showFolder("/");
+    status(selected.shared ? selected.ownerEmail + " 워크스페이스로 전환했습니다." : "내 워크스페이스로 전환했습니다.");
+  } catch (error) {
+    alertIn("invite-error", error.message);
+  }
+}
+
+async function refreshWorkspaceDialog() {
+  alertIn("invite-error");
+  const data = await api("workspaces");
+  currentSession.workspace = data.current;
+  currentSession.pendingInvites = data.incoming.length;
+  renderWorkspaceBadge();
+
+  const incomingSection = $("incoming-invites-section");
+  const incomingList = $("incoming-invites-list");
+  incomingSection.hidden = data.incoming.length === 0;
+  incomingList.replaceChildren(...data.incoming.map((invite) => {
+    const row = element("div", undefined, "ws-row");
+    const info = element("div", undefined, "ws-row-info");
+    info.append(element("strong", invite.ownerEmail), element("span", "워크스페이스 초대 대기 중", "ws-meta"));
+    const actions = element("div", undefined, "ws-row-actions");
+    actions.append(
+      button("수락 후 열기", async () => {
+        try {
+          await api("workspaces/respond", { ownerId: invite.ownerId, decision: "accept", switch: true });
+          await switchWorkspace(invite.ownerId);
+        } catch (error) {
+          alertIn("invite-error", error.message);
+        }
+      }, "primary"),
+      button("수락", async () => {
+        try {
+          await api("workspaces/respond", { ownerId: invite.ownerId, decision: "accept" });
+          await refreshWorkspaceDialog();
+        } catch (error) {
+          alertIn("invite-error", error.message);
+        }
+      }),
+      button("거절", async () => {
+        try {
+          await api("workspaces/respond", { ownerId: invite.ownerId, decision: "decline" });
+          await refreshWorkspaceDialog();
+        } catch (error) {
+          alertIn("invite-error", error.message);
+        }
+      }, "quiet"),
+    );
+    row.append(info, actions);
+    return row;
+  }));
+
+  const wsList = $("workspace-list");
+  wsList.replaceChildren(...data.workspaces.map((ws) => {
+    const isCurrent = ws.ownerId === data.current.ownerId;
+    const row = element("div", undefined, "ws-row" + (isCurrent ? " current" : ""));
+    const info = element("div", undefined, "ws-row-info");
+    info.append(
+      element("strong", ws.shared ? ws.ownerEmail : "내 워크스페이스 (" + ws.ownerEmail + ")"),
+      element("span", ws.shared ? "공유 VM · /workspace 공동 사용" : "개인 전용 VM", "ws-meta"),
+    );
+    const actions = element("div", undefined, "ws-row-actions");
+    if (isCurrent) {
+      actions.append(element("span", "사용 중", "ws-status active"));
+    } else {
+      actions.append(button("전환", () => switchWorkspace(ws.ownerId), "primary"));
+    }
+    if (ws.shared) {
+      actions.append(button("나가기", async () => {
+        if (!confirm(ws.ownerEmail + " 워크스페이스에서 나갈까요?")) return;
+        try {
+          await api("workspaces/remove", { ownerId: ws.ownerId });
+          if (isCurrent) {
+            await recoverRevokedWorkspace();
+            $("workspace-dialog").close();
+          } else {
+            await refreshWorkspaceDialog();
+          }
+        } catch (error) {
+          alertIn("invite-error", error.message);
+        }
+      }, "quiet danger"));
+    }
+    row.append(info, actions);
+    return row;
+  }));
+
+  const membersList = $("workspace-members-list");
+  if (!data.members.length) {
+    membersList.replaceChildren(element("p", "아직 초대한 사용자가 없습니다.", "ws-empty"));
+  } else {
+    membersList.replaceChildren(...data.members.map((member) => {
+      const row = element("div", undefined, "ws-row");
+      const info = element("div", undefined, "ws-row-info");
+      const stateText = member.status === "accepted"
+        ? "참여 중 (개별 계정)"
+        : member.registered ? "수락 대기 중" : "미가입 (가입 후 수락 가능)";
+      info.append(element("strong", member.email), element("span", stateText, "ws-meta"));
+      const actions = element("div", undefined, "ws-row-actions");
+      actions.append(button(member.status === "accepted" ? "내보내기" : "초대 취소", async () => {
+        try {
+          await api("workspaces/remove", { email: member.email });
+          await refreshWorkspaceDialog();
+        } catch (error) {
+          alertIn("invite-error", error.message);
+        }
+      }, "quiet danger"));
+      row.append(info, actions);
+      return row;
+    }));
+  }
+}
+
+$("workspace-open").onclick = async () => {
+  try {
+    await refreshWorkspaceDialog();
+    if (!$("workspace-dialog").open) $("workspace-dialog").showModal();
+  } catch (error) {
+    status(error.message, true);
+  }
+};
+$("workspace-dialog-close").onclick = () => $("workspace-dialog").close();
+$("invite-form").onsubmit = async (event) => {
+  event.preventDefault();
+  alertIn("invite-error");
+  $("invite-submit").disabled = true;
+  try {
+    await api("workspaces/invite", { email: $("invite-email").value });
+    $("invite-email").value = "";
+    await refreshWorkspaceDialog();
+  } catch (error) {
+    alertIn("invite-error", error.message);
+  } finally {
+    $("invite-submit").disabled = false;
+  }
+};
+
+async function refreshAccountDialog() {
+  alertIn("mfa-settings-error");
+  alertIn("passkey-error");
+  $("profile-status").textContent = "";
+  $("profile-nickname").value = currentSession.nickname || "";
+  $("mfa-setup-box").hidden = true;
+  $("mfa-recovery-box").hidden = true;
+  const sec = await api("security");
+  const enabled = Boolean(sec.mfaEnabled);
+  $("mfa-state-badge").textContent = enabled ? "활성화됨" : "비활성화";
+  $("mfa-state-badge").classList.toggle("active", enabled);
+  $("mfa-off-controls").hidden = enabled;
+  $("mfa-disable-form").hidden = !enabled;
+
+  const list = $("passkeys-list");
+  if (!sec.passkeys.length) {
+    list.replaceChildren(element("p", "등록된 패스키가 없습니다.", "ws-empty"));
+  } else {
+    list.replaceChildren(...sec.passkeys.map((key) => {
+      const row = element("div", undefined, "ws-row");
+      const info = element("div", undefined, "ws-row-info");
+      info.append(element("strong", key.label), element("span", "등록된 FIDO2 패스키", "ws-meta"));
+      const actions = element("div", undefined, "ws-row-actions");
+      actions.append(button("삭제", async () => {
+        try {
+          await api("passkeys/delete", { credentialId: key.id });
+          await refreshAccountDialog();
+        } catch (error) {
+          alertIn("passkey-error", error.message);
+        }
+      }, "quiet danger"));
+      row.append(info, actions);
+      return row;
+    }));
+  }
+}
+
+$("account-open").onclick = async () => {
+  try {
+    await refreshAccountDialog();
+    if (!$("account-dialog").open) $("account-dialog").showModal();
+  } catch (error) {
+    status(error.message, true);
+  }
+};
+$("account-dialog-close").onclick = () => $("account-dialog").close();
+
+$("profile-form").onsubmit = async (event) => {
+  event.preventDefault();
+  try {
+    const res = await api("profile", { nickname: $("profile-nickname").value });
+    currentSession.nickname = res.nickname;
+    $("account-label").textContent = res.nickname + " (" + currentSession.email + ")";
+    $("profile-status").textContent = "닉네임이 저장되었습니다. 새 터미널을 열면 프롬프트(" + res.nickname + "@qnb)에 반영됩니다.";
+  } catch (error) {
+    $("profile-status").textContent = error.message;
+  }
+};
+
+$("mfa-setup-btn").onclick = async () => {
+  alertIn("mfa-settings-error");
+  try {
+    const data = await api("mfa/setup", {});
+    $("mfa-qr-img").src = data.qrDataUrl || "";
+    $("mfa-qr-img").hidden = !data.qrDataUrl;
+    $("mfa-secret-text").textContent = "수동 키: " + data.secret;
+    $("mfa-setup-box").hidden = false;
+  } catch (error) {
+    alertIn("mfa-settings-error", error.message);
+  }
+};
+
+$("mfa-verify-form").onsubmit = async (event) => {
+  event.preventDefault();
+  alertIn("mfa-settings-error");
+  try {
+    const data = await api("mfa/enable", { code: $("mfa-verify-code").value });
+    $("mfa-verify-code").value = "";
+    await refreshAccountDialog();
+    $("mfa-recovery-codes").textContent = data.recoveryCodes.join("\n");
+    $("mfa-recovery-box").hidden = false;
+  } catch (error) {
+    alertIn("mfa-settings-error", error.message);
+  }
+};
+
+$("mfa-disable-form").onsubmit = async (event) => {
+  event.preventDefault();
+  alertIn("mfa-settings-error");
+  try {
+    await api("mfa/disable", { code: $("mfa-disable-code").value });
+    $("mfa-disable-code").value = "";
+    await refreshAccountDialog();
+  } catch (error) {
+    alertIn("mfa-settings-error", error.message);
+  }
+};
+
+$("passkey-register-form").onsubmit = async (event) => {
+  event.preventDefault();
+  alertIn("passkey-error");
+  if (!window.PublicKeyCredential) {
+    alertIn("passkey-error", "이 브라우저는 패스키 등록을 지원하지 않습니다.");
+    return;
+  }
+  $("passkey-register-btn").disabled = true;
+  try {
+    const options = await api("passkeys/register/options", {});
+    const pk = options.publicKey;
+    pk.challenge = b64urlToBytes(pk.challenge);
+    pk.user.id = b64urlToBytes(pk.user.id);
+    pk.excludeCredentials = (pk.excludeCredentials || []).map((item) => ({ ...item, id: b64urlToBytes(item.id) }));
+    const cred = await navigator.credentials.create({ publicKey: pk });
+    await api("passkeys/register/verify", {
+      challengeToken: options.challengeToken,
+      label: $("passkey-label").value.trim() || "내 패스키",
+      credential: {
+        id: cred.id,
+        rawId: bytesToB64url(cred.rawId),
+        type: cred.type,
+        response: {
+          clientDataJSON: bytesToB64url(cred.response.clientDataJSON),
+          attestationObject: bytesToB64url(cred.response.attestationObject),
+        },
+      },
+    });
+    $("passkey-label").value = "";
+    await refreshAccountDialog();
+  } catch (error) {
+    if (error?.name !== "NotAllowedError") {
+      alertIn("passkey-error", error.message || "패스키 등록에 실패했습니다.");
+    }
+  } finally {
+    $("passkey-register-btn").disabled = false;
+  }
+};
+
+async function refreshAxiomDialog() {
+  alertIn("axiom-error");
+  const data = await api("axioms");
+  $("axiom-form").hidden = !data.canManage;
+  $("axiom-role-notice").textContent = data.canManage
+    ? "VM 소유자 권한으로 공리를 등록할 수 있습니다. 일반 코드 셀에서 작성한 axiom은 DB에 저장되지 않으며, 여기에 등록된 공리만 셀과 협업자가 참조할 수 있습니다."
+    : "초대받은 협업자 모드(조회 전용)입니다. VM 소유자가 등록한 공리를 모든 코드 셀에서 이름으로 참조할 수 있습니다.";
+  const list = $("axioms-list");
+  if (!data.axioms.length) {
+    list.replaceChildren(element("p", "등록된 워크스페이스 공리가 없습니다.", "ws-empty"));
+  } else {
+    list.replaceChildren(...data.axioms.map((ax) => {
+      const card = element("div", undefined, "ws-row axiom-card");
+      const info = element("div", undefined, "ws-row-info");
+      info.append(
+        element("strong", ax.name),
+        element("span", "SHA-256: " + ax.hash.slice(0, 16) + "…", "ws-meta"),
+        element("pre", ax.source, "axiom-src"),
+      );
+      card.append(info);
+      if (data.canManage) {
+        const actions = element("div", undefined, "ws-row-actions");
+        actions.append(button("삭제", async () => {
+          if (!confirm(ax.name + " 공리를 삭제할까요?")) return;
+          try {
+            await api("axioms/delete", { name: ax.name });
+            await refreshAxiomDialog();
+          } catch (error) {
+            alertIn("axiom-error", error.message);
+          }
+        }, "quiet danger"));
+        card.append(actions);
+      }
+      return card;
+    }));
+  }
+}
+
+$("axioms-open").onclick = async () => {
+  try {
+    await refreshAxiomDialog();
+    if (!$("axiom-dialog").open) $("axiom-dialog").showModal();
+  } catch (error) {
+    status(error.message, true);
+  }
+};
+$("axiom-dialog-close").onclick = () => $("axiom-dialog").close();
+$("axiom-form").onsubmit = async (event) => {
+  event.preventDefault();
+  alertIn("axiom-error");
+  $("axiom-submit").disabled = true;
+  try {
+    await api("axioms", { source: $("axiom-source").value });
+    $("axiom-source").value = "";
+    await refreshAxiomDialog();
+  } catch (error) {
+    alertIn("axiom-error", error.message);
+  } finally {
+    $("axiom-submit").disabled = false;
+  }
+};
 
 const basename = (path) => path.split("/").at(-1);
 const dirname = (path) => path.slice(0, path.lastIndexOf("/")) || "/";
@@ -476,6 +1040,11 @@ async function showFolder(path, append = false) {
     status("");
   } catch (error) {
     if (request !== listRequest) return;
+    if (error.status === 403 && currentSession.workspace?.shared) {
+      status(error.message + " 내 워크스페이스로 복귀합니다.", true);
+      recoverRevokedWorkspace();
+      return;
+    }
     if (!entries.length) $("file-list").replaceChildren(element("div", "파일을 불러올 수 없습니다.", "notice"));
     vmStatus("error", "VM 파일 조회 실패");
     status(error.message, true);
@@ -525,6 +1094,7 @@ function updateRemoteChange(tab, message) {
 }
 
 function replaceTabFromVM(tab, data) {
+  cancelAutoSave(tab);
   Object.assign(tab, {
     text: data.text, fileId: data.fileId, etag: data.etag, resourceId: data.resourceId,
     chunked: data.chunked === true, notebook: null, dirty: false, remoteChange: null,
@@ -539,7 +1109,7 @@ function replaceTabFromVM(tab, data) {
 
 async function syncTab(tab) {
   const { path, resourceId } = tab;
-  const current = () => !busy && tabs.get(path) === tab && tab.resourceId === resourceId;
+  const current = () => !busy && !tab.savingPromise && tabs.get(path) === tab && tab.resourceId === resourceId;
   try {
     const info = await vmRequest("workspace", { operation: "stat", path });
     if (!current()) return;
@@ -552,7 +1122,7 @@ async function syncTab(tab) {
     } else {
       const data = await vmRequest("workspace", { operation: "read", path });
       if (!current()) return;
-      if (tab.dirty) updateRemoteChange(tab, "VM에서 파일이 변경되었습니다. 저장하지 않은 편집 내용은 유지됩니다.");
+      if (tab.dirty || tab.savingPromise) updateRemoteChange(tab, "VM에서 파일이 변경되었습니다. 저장하지 않은 편집 내용은 유지됩니다.");
       else replaceTabFromVM(tab, data);
     }
   } catch (error) {
@@ -563,12 +1133,12 @@ async function syncTab(tab) {
 }
 
 async function syncWorkspace() {
-  if (document.hidden || busy || listing || workspaceSyncRunning) return;
+  if (document.hidden || busy || autoSaving || listing || workspaceSyncRunning) return;
   workspaceSyncRunning = true;
   try {
     await syncFolder();
     for (const tab of [...tabs.values()]) {
-      if (busy || document.hidden) break;
+      if (busy || autoSaving || document.hidden) break;
       await syncTab(tab);
     }
   } finally {
@@ -602,7 +1172,9 @@ function selectFile(path) {
 
 function closeFile(path) {
   if (busy) return;
-  if (tabs.get(path).dirty && !confirm("저장하지 않은 변경 사항을 버릴까요?")) return;
+  const tab = tabs.get(path);
+  if (tab.dirty && !confirm("저장하지 않은 변경 사항을 버릴까요?")) return;
+  cancelAutoSave(tab);
   tabs.delete(path);
   if (active === path) active = [...tabs.keys()].at(-1) || null;
   renderWorkbench();
@@ -631,6 +1203,7 @@ function renderTabs() {
 }
 
 function markDirty(tab) {
+  tab.editVersion = (tab.editVersion || 0) + 1;
   if (!tab.dirty) {
     tab.dirty = true;
     renderTabs();
@@ -793,28 +1366,74 @@ function renderWorkbench() {
   }
 }
 
+let autoSaving = false;
+
+function cancelAutoSave(tab) {
+  if (tab?.autoSaveTimer) {
+    clearTimeout(tab.autoSaveTimer);
+    tab.autoSaveTimer = null;
+  }
+}
+
+function scheduleAutoSave(tab) {
+  if (!tab || !tab.dirty) return;
+  cancelAutoSave(tab);
+  tab.autoSaveTimer = setTimeout(async () => {
+    tab.autoSaveTimer = null;
+    if (!tabs.has(tab.path) || tabs.get(tab.path) !== tab || !tab.dirty) return;
+    if (busy || autoSaving) {
+      scheduleAutoSave(tab);
+      return;
+    }
+    autoSaving = true;
+    try {
+      await saveTab(tab);
+      if (activeTab() === tab && !graphVisible && !busy) {
+        status("VM에 자동 저장했습니다.");
+      }
+    } catch (error) {
+      status("자동 저장에 실패했습니다. 직접 저장하세요 · " + error.message, true);
+    } finally {
+      autoSaving = false;
+    }
+  }, 1200);
+}
+
 async function saveTab(tab) {
+  if (tab.savingPromise) {
+    await tab.savingPromise.catch(() => {});
+  }
   if (!tab.dirty) return;
-  const text = serialize(tab);
-  const bytes = new TextEncoder().encode(text);
-  if (bytes.length > LARGE_FILE_LIMIT) throw new Error("파일 크기는 8 MiB까지 지원합니다.");
-  const result = tab.chunked || bytes.length > FILE_LIMIT
-    ? await vmRequest("workspace", {
-      operation: "write_stream", path: tab.path, size: bytes.length, resourceId: tab.resourceId,
-    }, bytes)
-    : await vmRequest("workspace", {
-      operation: "write", path: tab.path, text, fileId: tab.fileId, etag: tab.etag,
-    });
-  tab.etag = result.etag;
-  tab.fileId = result.fileId;
-  tab.resourceId = result.resourceId;
-  tab.chunked = result.chunked === true;
-  tab.dirty = false;
-  tab.remoteChange = null;
-  renderTabs();
-  if (activeTab() === tab && !graphVisible) {
-    $("editor-mode").textContent = "저장됨";
-    showFileSyncNotice(tab);
+  cancelAutoSave(tab);
+  const run = (async () => {
+    const savingVersion = tab.editVersion || 0;
+    const text = serialize(tab);
+    const bytes = new TextEncoder().encode(text);
+    if (bytes.length > LARGE_FILE_LIMIT) throw new Error("파일 크기는 8 MiB까지 지원합니다.");
+    const result = tab.chunked || bytes.length > FILE_LIMIT
+      ? await vmRequest("workspace", {
+        operation: "write_stream", path: tab.path, size: bytes.length, resourceId: tab.resourceId,
+      }, bytes)
+      : await vmRequest("workspace", {
+        operation: "write", path: tab.path, text, fileId: tab.fileId, etag: tab.etag,
+      });
+    tab.etag = result.etag;
+    tab.fileId = result.fileId;
+    tab.resourceId = result.resourceId;
+    tab.chunked = result.chunked === true;
+    tab.dirty = (tab.editVersion || 0) !== savingVersion;
+    tab.remoteChange = null;
+    renderTabs();
+    if (activeTab() === tab && !graphVisible) {
+      $("editor-mode").textContent = tab.dirty ? "저장되지 않음" : "저장됨";
+      showFileSyncNotice(tab);
+    }
+  })();
+  tab.savingPromise = run;
+  try {
+    await run;
+  } finally {
+    if (tab.savingPromise === run) tab.savingPromise = null;
   }
 }
 
@@ -1230,10 +1849,13 @@ $("add-code").onclick = () => appendCell("code");
 $("add-markdown").onclick = () => appendCell("markdown");
 
 function runCell(tab, cell, index) {
+  const doc = readNotebook(tab);
+  const lang = cellLanguage(doc, cell);
+  const code = sourceOf(cell);
   runTask(async () => {
-    await saveTab(tab);
+    cancelAutoSave(tab);
     status("VM에서 셀을 실행하는 중…");
-    const result = await vmRequest("kernel", { operation: "run", path: tab.path, etag: tab.etag, index });
+    const result = await vmRequest("kernel", { operation: "run", path: tab.path, language: lang, code });
     tab.feedback.set(cell, result);
     const outputs = Array.isArray(result.outputs) ? result.outputs.filter((item) =>
       ["stream", "display_data", "execute_result", "error"].includes(item?.output_type)) : [];
@@ -1244,13 +1866,7 @@ function runCell(tab, cell, index) {
     }
     markDirty(tab);
     if (activeTab() === tab && !graphVisible) renderNotebook(tab);
-    status("셀 결과를 받았습니다. 노트북을 저장하는 중…");
-    try {
-      await saveTab(tab);
-    } catch (error) {
-      status("셀 실행은 완료됐지만 노트북 저장에 실패했습니다. " + error.message, true);
-      return;
-    }
+    scheduleAutoSave(tab);
     status(result.exitCode === 0 ? "셀 실행을 완료했습니다." : result.error || "셀 실행이 실패했습니다.", result.exitCode !== 0);
   });
 }

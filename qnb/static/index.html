@@ -39,6 +39,12 @@
         <button id="view-editor" type="button" class="view-pill active">노트북 · 편집기</button>
         <button id="view-graph" type="button" class="view-pill">증명 트리</button>
       </div>
+      <button id="workspace-open" type="button" class="workspace-pill" title="워크스페이스 전환 및 사용자 초대">
+        <span class="workspace-dot" aria-hidden="true"></span>
+        <span id="workspace-label">내 워크스페이스</span>
+        <span id="invite-badge" class="invite-badge" hidden>0</span>
+      </button>
+      <button id="axioms-open" type="button" class="quiet icon-btn" title="워크스페이스 공리 관리">공리 관리</button>
     </div>
 
     <div class="spacer"></div>
@@ -50,7 +56,9 @@
       </button>
       <a id="proofs-link" class="quiet button-link" href="/proofs" target="_blank" rel="noopener" hidden>증명 트리 새 창 ↗</a>
       <a id="proofs-editor-link" class="quiet button-link" href="/ide" hidden>IDE로 돌아가기</a>
-      <span id="account-label" class="account-label"></span>
+      <button id="account-open" type="button" class="quiet account-pill" title="프로필 닉네임 및 MFA·패스키 설정" hidden>
+        <span id="account-label" class="account-label"></span>
+      </button>
       <a id="header-login" class="quiet button-link" href="/login" hidden>로그인</a>
       <a id="header-signup" class="primary button" href="/signup" hidden>시작하기</a>
       <a id="header-ide-link" class="primary button" href="/ide" hidden>워크스페이스 열기</a>
@@ -264,6 +272,10 @@
           <p id="auth-subtitle">개인 VM 워크스페이스와 정리 저장소를 생성합니다.</p>
         </div>
         <form id="auth-form">
+          <label id="nickname-field" class="field" hidden>
+            <span>닉네임 (터미널 프롬프트 표시)</span>
+            <input id="nickname" name="nickname" type="text" maxlength="32" placeholder="예: euler (미입력 시 이메일 앞부분)">
+          </label>
           <label class="field">
             <span>이메일</span>
             <input id="email" name="email" type="email" autocomplete="email" maxlength="254" placeholder="researcher@example.com" required>
@@ -278,10 +290,50 @@
           <p id="auth-error" role="alert" hidden></p>
           <button id="auth-submit" class="primary auth-submit" type="submit">가입하고 시작</button>
         </form>
+
+        <form id="mfa-form" class="mfa-step" hidden>
+          <p class="auth-notice">2단계 인증(MFA)이 활성화된 계정입니다. 인증 앱의 6자리 코드 또는 복구 코드를 입력하세요.</p>
+          <label class="field">
+            <span>MFA 코드 또는 복구 코드</span>
+            <input id="mfa-code" type="text" inputmode="text" autocomplete="one-time-code" maxlength="32" placeholder="123456 또는 ABCD-EFGH" required>
+          </label>
+          <p id="mfa-error" role="alert" hidden></p>
+          <div class="mfa-actions">
+            <button id="mfa-cancel" type="button" class="quiet">뒤로</button>
+            <button id="mfa-submit" type="submit" class="primary">인증하고 로그인</button>
+          </div>
+        </form>
+
+        <div id="alt-auth-box" class="alt-auth-box" hidden>
+          <div class="alt-divider"><span>또는 빠른 로그인</span></div>
+          <div class="alt-auth-buttons">
+            <button id="passkey-login-btn" type="button">패스키(Passkey)로 로그인</button>
+            <button id="qr-login-btn" type="button">모바일 QR 코드로 로그인</button>
+          </div>
+          <div id="qr-login-panel" class="qr-panel" hidden>
+            <img id="qr-login-img" alt="QR 로그인 코드">
+            <p id="qr-login-status" role="status">이미 로그인된 휴대폰으로 QR 코드를 스캔하세요.</p>
+            <button id="qr-login-cancel" type="button" class="quiet">QR 닫기</button>
+          </div>
+        </div>
+
         <div class="auth-footer">
           <button id="auth-toggle" type="button" class="quiet">이미 계정이 있나요? 로그인</button>
         </div>
       </section>
+    </div>
+  </main>
+
+  <main id="qr-approve-page" hidden>
+    <div class="qr-approve-card">
+      <span class="auth-aside-badge">QR 로그인 승인</span>
+      <h1>PC 브라우저 로그인을 승인할까요?</h1>
+      <p id="qr-approve-account"></p>
+      <p id="qr-approve-status" class="auth-notice" role="status" hidden></p>
+      <div class="qr-approve-actions">
+        <button id="qr-approve-btn" type="button" class="primary cta-lg">이 계정으로 로그인 승인</button>
+        <a class="button quiet" href="/ide">워크스페이스로 이동</a>
+      </div>
     </div>
   </main>
 
@@ -445,6 +497,108 @@
         <button id="dialog-submit" class="primary" type="submit">만들기</button>
       </div>
     </form>
+  </dialog>
+
+  <dialog id="workspace-dialog" class="workspace-dialog">
+    <div class="dialog-head">
+      <h2>워크스페이스 협업 · 초대</h2>
+      <button id="workspace-dialog-close" type="button" aria-label="닫기">×</button>
+    </div>
+    <p class="ws-note">
+      초대받은 사용자는 <strong>각자의 개별 QNB 계정</strong>으로 로그인하며, 소유자 VM의 동일한 <code>/workspace</code> 디렉터리와 정리 DB를 공유합니다.
+      터미널 실행 시에는 계정별 독립 홈(<code>$HOME</code>)이 자동 분리됩니다.
+    </p>
+    <section id="incoming-invites-section" class="ws-section" hidden>
+      <h3>받은 초대</h3>
+      <div id="incoming-invites-list" class="ws-list"></div>
+    </section>
+    <section class="ws-section">
+      <h3>접근 가능한 워크스페이스</h3>
+      <div id="workspace-list" class="ws-list"></div>
+    </section>
+    <section class="ws-section">
+      <h3>내 워크스페이스에 사용자 초대</h3>
+      <form id="invite-form" class="ws-invite-form">
+        <input id="invite-email" type="email" maxlength="254" placeholder="colleague@example.com" required aria-label="초대할 사용자 이메일">
+        <button id="invite-submit" class="primary" type="submit">초대 보내기</button>
+      </form>
+      <p id="invite-error" class="ws-error" role="alert" hidden></p>
+      <div id="workspace-members-list" class="ws-list"></div>
+    </section>
+  </dialog>
+
+  <dialog id="account-dialog" class="workspace-dialog">
+    <div class="dialog-head">
+      <h2>프로필 및 보안 설정</h2>
+      <button id="account-dialog-close" type="button" aria-label="닫기">×</button>
+    </div>
+    <section class="ws-section">
+      <h3>프로필 닉네임 (터미널 표시 이름)</h3>
+      <form id="profile-form" class="ws-invite-form">
+        <input id="profile-nickname" type="text" maxlength="32" placeholder="닉네임 (1~32자)" required aria-label="프로필 닉네임">
+        <button id="profile-save" class="primary" type="submit">저장</button>
+      </form>
+      <p id="profile-status" class="ws-meta" role="status"></p>
+    </section>
+
+    <section class="ws-section">
+      <div class="sec-head-row">
+        <h3>2단계 인증 (TOTP MFA)</h3>
+        <span id="mfa-state-badge" class="ws-status">비활성화</span>
+      </div>
+      <div id="mfa-off-controls">
+        <button id="mfa-setup-btn" type="button">MFA 인증 앱 연결</button>
+      </div>
+      <div id="mfa-setup-box" class="mfa-setup-box" hidden>
+        <img id="mfa-qr-img" alt="MFA TOTP QR 코드">
+        <code id="mfa-secret-text"></code>
+        <form id="mfa-verify-form" class="ws-invite-form">
+          <input id="mfa-verify-code" type="text" maxlength="12" placeholder="앱의 6자리 코드 입력" required aria-label="MFA 6자리 코드">
+          <button type="submit" class="primary">활성화 확인</button>
+        </form>
+      </div>
+      <div id="mfa-recovery-box" class="recovery-box" hidden>
+        <p class="ws-meta">일회용 복구 코드(안전한 곳에 보관하세요):</p>
+        <pre id="mfa-recovery-codes"></pre>
+      </div>
+      <form id="mfa-disable-form" class="ws-invite-form" hidden>
+        <input id="mfa-disable-code" type="text" maxlength="32" placeholder="현재 코드 또는 복구 코드로 해제" required aria-label="MFA 해제 코드">
+        <button type="submit" class="danger">MFA 해제</button>
+      </form>
+      <p id="mfa-settings-error" class="ws-error" role="alert" hidden></p>
+    </section>
+
+    <section class="ws-section">
+      <h3>패스키 (Passkey · FIDO2)</h3>
+      <form id="passkey-register-form" class="ws-invite-form">
+        <input id="passkey-label" type="text" maxlength="32" placeholder="예: MacBook Touch ID" aria-label="패스키 이름">
+        <button id="passkey-register-btn" type="submit" class="primary">새 패스키 등록</button>
+      </form>
+      <p id="passkey-error" class="ws-error" role="alert" hidden></p>
+      <div id="passkeys-list" class="ws-list"></div>
+    </section>
+  </dialog>
+
+  <dialog id="axiom-dialog" class="workspace-dialog">
+    <div class="dialog-head">
+      <h2>워크스페이스 공리 레지스트리</h2>
+      <button id="axiom-dialog-close" type="button" aria-label="닫기">×</button>
+    </div>
+    <p id="axiom-role-notice" class="ws-note"></p>
+    <form id="axiom-form" class="axiom-form" hidden>
+      <label>
+        등록할 Lean 4 공리 선언
+        <textarea id="axiom-source" rows="4" placeholder="axiom sensor_bound (n : Nat) : n ≤ n + 1" required></textarea>
+      </label>
+      <p id="axiom-error" class="ws-error" role="alert" hidden></p>
+      <div class="dialog-actions">
+        <button id="axiom-submit" type="submit" class="primary">Lean 검증 후 공리 등록</button>
+      </div>
+    </form>
+    <section class="ws-section">
+      <h3>등록된 워크스페이스 공리 (모든 협업자 및 셀에서 조회·참조 가능)</h3>
+      <div id="axioms-list" class="ws-list"></div>
+    </section>
   </dialog>
 </body>
 </html>
