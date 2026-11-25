@@ -2,9 +2,11 @@ import json
 import os
 import re
 import secrets
+import select
 import sqlite3
 import time
 import uuid
+from threading import BoundedSemaphore
 from urllib.parse import urlsplit
 
 from flask import Flask, g, jsonify, request, send_from_directory
@@ -21,6 +23,7 @@ app.config["SOCK_SERVER_OPTIONS"] = {
     "max_message_size": app.config["MAX_CONTENT_LENGTH"], "ping_interval": 25,
 }
 sock = Sock(app)
+vm_connections = BoundedSemaphore(64)
 SESSION_AGE = 7 * 86400
 COOKIE = "qnb_session"
 EMAIL = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
@@ -52,16 +55,19 @@ def authenticate():
         return
     if request.method == "POST" and not request.is_json:
         raise RequestError("JSON 요청이 필요합니다.", 415)
-    token = request.cookies.get(COOKIE)
-    g.account = None
+    g.account = session_account(request.cookies.get(COOKIE))
+    if not g.account and request.endpoint not in ("session_status", "signup", "login"):
+        raise RequestError("로그인이 필요합니다.", 401)
+
+
+def session_account(token):
     if token:
         with store.database() as db:
-            g.account = db.execute("""
+            return db.execute("""
                 SELECT a.* FROM accounts a JOIN sessions s ON a.id = s.account_id
                 WHERE s.token_hash = ? AND s.expires > ?
             """, (runtime.digest(token), int(time.time()))).fetchone()
-    if not g.account and request.endpoint not in ("session_status", "signup", "login"):
-        raise RequestError("로그인이 필요합니다.", 401)
+    return None
 
 
 @app.after_request
@@ -251,7 +257,92 @@ def kernel_socket(ws):
 
 @sock.route("/api/vm/ws")
 def vm_socket(ws):
-    serve_vm_request(ws, lambda data: vm_operation(ws, data))
+    if not vm_connections.acquire(blocking=False):
+        ws.close()
+        return
+    try:
+        serve_vm_connection(ws)
+    finally:
+        vm_connections.release()
+
+
+def serve_vm_connection(ws):
+    token = request.cookies.get(COOKIE)
+    if request.args.get("stream") == "terminal":
+        serve_terminal(ws, token)
+        return
+
+    def operation(data):
+        if not session_account(token):
+            raise RequestError("로그인이 필요합니다.", 401)
+        return vm_operation(ws, data)
+
+    while serve_vm_request(ws, operation):
+        pass
+
+
+def terminal_message(frame, defaults=None):
+    try:
+        data = json.loads(frame) if isinstance(frame, str) else None
+    except (ValueError, RecursionError):
+        data = None
+    if not isinstance(data, dict):
+        raise RequestError("터미널 요청이 올바르지 않습니다.")
+    return runtime.terminal_fields((defaults or {}) | data)
+
+
+def serve_terminal(ws, token):
+    vm_id, owner = g.account["vm_id"], g.account["id"]
+    initial = None
+    try:
+        initial = terminal_message(ws.receive(timeout=5))
+        if initial["operation"] != "open":
+            raise RequestError("먼저 터미널을 열어주세요.")
+        with runtime.terminal_channel(vm_id, owner, initial) as channel:
+            pending = bytearray()
+            ready_deadline = time.monotonic() + 95
+            check_session_at = time.monotonic() + 10
+            while True:
+                now = time.monotonic()
+                if ready_deadline and now >= ready_deadline:
+                    raise RequestError("VM 터미널 준비 시간이 초과되었습니다.", 503)
+                if now >= check_session_at:
+                    if not session_account(token):
+                        raise RequestError("로그인이 필요합니다.", 401)
+                    check_session_at = now + 10
+                if select.select([channel], [], [], 0)[0]:
+                    chunk = channel.recv(65536)
+                    if not chunk:
+                        return
+                    pending.extend(chunk)
+                    while b"\n" in pending:
+                        frame, _, pending = pending.partition(b"\n")
+                        ws.send(frame.decode())
+                        ready_deadline = None
+                    if len(pending) > 65536:
+                        raise RequestError("VM 터미널 응답이 올바르지 않습니다.", 502)
+                message = ws.receive(timeout=0.02)
+                if message is None:
+                    continue
+                fields = terminal_message(message, initial)
+                command = {key: fields[key] for key in ("operation", "data", "cols", "rows")}
+                if command["operation"] not in ("input", "resize", "close"):
+                    raise RequestError("지원하지 않는 터미널 작업입니다.")
+                channel.sendall(json.dumps(command).encode() + b"\n")
+    except ConnectionClosed:
+        pass
+    except (RequestError, OSError, UnicodeError) as error:
+        message = str(error) if isinstance(error, RequestError) else "VM 터미널 연결이 끊겼습니다."
+        try:
+            ws.send(json.dumps({"error": message}, ensure_ascii=False))
+        except ConnectionClosed:
+            pass
+    finally:
+        if initial and initial["operation"] == "open":
+            try:
+                runtime.terminal(vm_id, owner, initial | {"operation": "close"})
+            except RequestError:
+                app.logger.debug("Unable to close VM terminal session")
 
 
 def vm_operation(ws, data):
@@ -323,10 +414,10 @@ def receive_workspace_file(ws, data):
 
 
 def serve_vm_request(ws, operation):
-    frame = ws.receive(timeout=5)
-    if frame is None:
-        return
     try:
+        frame = ws.receive(timeout=12)
+        if frame is None:
+            return False
         try:
             data = json.loads(frame) if isinstance(frame, str) else None
         except (ValueError, RecursionError):
@@ -339,11 +430,15 @@ def serve_vm_request(ws, operation):
     except UnicodeEncodeError:
         response = {"error": "올바른 UTF-8 텍스트가 필요합니다.", "status": 400}
     except ConnectionClosed:
-        return
+        return False
     except Exception:
         app.logger.exception("VM WebSocket operation failed")
         response = {"error": "VM 작업 중 서버 오류가 발생했습니다.", "status": 500}
-    ws.send(json.dumps(response, ensure_ascii=False))
+    try:
+        ws.send(json.dumps(response, ensure_ascii=False))
+    except ConnectionClosed:
+        return False
+    return response.get("status") != 401
 
 
 def kernel_operation(data):

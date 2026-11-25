@@ -56,46 +56,64 @@ const FILE_LIMIT = 131072;
 const FILE_CHUNK_SIZE = 98304;
 const LARGE_FILE_LIMIT = 8 * 1024 * 1024;
 
-function vmRequest(resource, payload, upload) {
+let vmSocket;
+let vmQueue = Promise.resolve();
+
+function vmSocketURL(stream) {
+  const url = new URL("/api/vm/ws", window.location.href);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  if (stream) url.searchParams.set("stream", stream);
+  return url;
+}
+
+function connectVM() {
+  if (vmSocket?.readyState === WebSocket.OPEN) return Promise.resolve(vmSocket);
   return new Promise((resolve, reject) => {
-    const url = new URL("/api/vm/ws", window.location.href);
-    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-    const socket = new WebSocket(url);
-    let submitted = false;
-    let settled = false;
+    const socket = new WebSocket(vmSocketURL());
+    const timeout = setTimeout(unavailable, 3000);
+    function unavailable() {
+      clearTimeout(timeout);
+      socket.close();
+      reject(new Error("VM WebSocket 연결을 열 수 없습니다."));
+    }
+    socket.addEventListener("error", unavailable, { once: true });
+    socket.addEventListener("close", unavailable, { once: true });
+    socket.addEventListener("open", () => {
+      clearTimeout(timeout);
+      socket.removeEventListener("error", unavailable);
+      socket.removeEventListener("close", unavailable);
+      vmSocket = socket;
+      resolve(socket);
+    }, { once: true });
+  });
+}
+
+function vmRequest(resource, payload, upload) {
+  const task = vmQueue.then(() => sendVMRequest(resource, payload, upload));
+  vmQueue = task.catch(() => {});
+  return task;
+}
+
+async function sendVMRequest(resource, payload, upload) {
+  const socket = await connectVM();
+  return new Promise((resolve, reject) => {
     const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
     const chunks = [];
     let uploadOffset = 0;
 
     function finish(callback, value) {
-      if (settled) return;
-      settled = true;
-      clearTimeout(handshakeTimeout);
-      socket.close();
+      socket.removeEventListener("message", receive);
+      socket.removeEventListener("close", disconnected);
+      socket.removeEventListener("error", disconnected);
       callback(value);
     }
 
     function disconnected() {
-      if (settled) return;
-      if (submitted) {
-        finish(reject, new Error("결과를 받기 전에 연결이 끊겼습니다. VM에서 작업이 계속될 수 있습니다."));
-      } else {
-        finish(reject, new Error("VM WebSocket 연결을 열 수 없습니다."));
-      }
+      socket.close();
+      finish(reject, new Error("결과를 받기 전에 연결이 끊겼습니다. VM에서 작업이 계속될 수 있습니다."));
     }
 
-    const handshakeTimeout = setTimeout(disconnected, 3000);
-    socket.onopen = () => {
-      if (settled) return;
-      clearTimeout(handshakeTimeout);
-      try {
-        socket.send(JSON.stringify({ ...payload, resource }));
-        submitted = true;
-      } catch {
-        disconnected();
-      }
-    };
-    socket.onmessage = ({ data }) => {
+    function receive({ data }) {
       try {
         const response = JSON.parse(data);
         if (typeof response?.chunk === "string") {
@@ -122,12 +140,23 @@ function vmRequest(resource, payload, upload) {
           finish(reject, error);
         }
       } catch {
+        socket.close();
         finish(reject, new Error("UTF-8 파일을 읽을 수 없거나 VM 전송 응답이 올바르지 않습니다."));
       }
-    };
-    socket.onerror = socket.onclose = disconnected;
+    }
+
+    socket.addEventListener("message", receive);
+    socket.addEventListener("close", disconnected);
+    socket.addEventListener("error", disconnected);
+    try {
+      socket.send(JSON.stringify({ ...payload, resource }));
+    } catch {
+      disconnected();
+    }
   });
 }
+
+window.addEventListener("pagehide", () => vmSocket?.close());
 
 function status(message, error = false) {
   $("status").textContent = message;

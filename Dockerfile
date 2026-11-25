@@ -17,4 +17,4 @@ RUN mkdir /data && chown 10001:10001 /data
 USER 10001:10001
 ENV QNB_DATABASE=/data/qnb.sqlite3 PYTHONUNBUFFERED=1
 EXPOSE 8080
-CMD ["gunicorn", "--bind=0.0.0.0:8080", "--workers=1", "--threads=12", "--timeout=280", "qnb.app:app"]
+CMD ["gunicorn", "--bind=0.0.0.0:8080", "--workers=1", "--threads=80", "--timeout=280", "qnb.app:app"]

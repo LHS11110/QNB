@@ -5,6 +5,7 @@ import os
 import posixpath
 import re
 import socket
+from contextlib import contextmanager
 from threading import Lock
 from pathlib import Path
 
@@ -56,7 +57,7 @@ def configure_disk(vm_id):
         configured.add(vm_id)
 
 
-def terminal(vm_id, owner, request):
+def terminal_fields(request):
     operation = request.get("operation")
     identifier = request.get("terminal")
     data = request.get("data", "")
@@ -68,13 +69,29 @@ def terminal(vm_id, owner, request):
             or type(rows) is not int or not 2 <= rows <= 150
             or type(offset) is not int or not 0 <= offset <= 2**53 - 1):
         raise RequestError("터미널 요청이 올바르지 않습니다.")
-    if operation == "open":
+    return {"terminal": identifier, "operation": operation, "data": data,
+            "cols": cols, "rows": rows, "offset": offset}
+
+
+def terminal(vm_id, owner, request):
+    fields = terminal_fields(request)
+    if fields["operation"] == "open":
         configure_disk(vm_id)
-    result = vm(vm_id, {"action": "terminal", "owner": owner, "terminal": identifier,
-                        "operation": operation, "data": data, "cols": cols, "rows": rows, "offset": offset})
+    result = vm(vm_id, {"action": "terminal", "owner": owner, **fields})
     if result.get("error"):
         raise RequestError("VM 터미널을 사용할 수 없습니다. 잠시 후 다시 시도하세요.", 503)
     return result
+
+
+@contextmanager
+def terminal_channel(vm_id, owner, fields):
+    configure_disk(vm_id)
+    payload = {"canvasId": vm_id, "action": "terminal_attach", "owner": owner, **fields}
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as channel:
+        channel.settimeout(5)
+        channel.connect(os.environ.get("QNB_VM_SOCKET", "/run/agora-runtime/manager.sock"))
+        channel.sendall(json.dumps(payload).encode() + b"\n")
+        yield channel
 
 
 def path(value):
