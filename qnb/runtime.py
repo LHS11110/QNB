@@ -56,6 +56,27 @@ def configure_disk(vm_id):
         configured.add(vm_id)
 
 
+def terminal(vm_id, owner, request):
+    operation = request.get("operation")
+    identifier = request.get("terminal")
+    data = request.get("data", "")
+    cols, rows, offset = (request.get(key) for key in ("cols", "rows", "offset"))
+    if (operation not in ("open", "poll", "input", "resize", "close")
+            or not isinstance(identifier, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", identifier)
+            or not isinstance(data, str) or len(data.encode()) > 8192
+            or type(cols) is not int or not 2 <= cols <= 300
+            or type(rows) is not int or not 2 <= rows <= 150
+            or type(offset) is not int or not 0 <= offset <= 2**53 - 1):
+        raise RequestError("터미널 요청이 올바르지 않습니다.")
+    if operation == "open":
+        configure_disk(vm_id)
+    result = vm(vm_id, {"action": "terminal", "owner": owner, "terminal": identifier,
+                        "operation": operation, "data": data, "cols": cols, "rows": rows, "offset": offset})
+    if result.get("error"):
+        raise RequestError("VM 터미널을 사용할 수 없습니다. 잠시 후 다시 시도하세요.", 503)
+    return result
+
+
 def path(value):
     if not isinstance(value, str) or not value.startswith("/") or len(value.encode()) > 4096:
         raise RequestError("올바른 절대 워크스페이스 경로가 필요합니다.")

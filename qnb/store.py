@@ -1,6 +1,7 @@
 import json
 import os
 import sqlite3
+from collections import deque
 from contextlib import contextmanager
 from pathlib import Path
 from urllib.error import URLError
@@ -331,6 +332,60 @@ def project(owner, rows):
         return
     graph_query("CREATE CONSTRAINT qnb_owner_id IF NOT EXISTS FOR (n:Declaration) REQUIRE (n.owner, n.id) IS UNIQUE")
     graph_query(GRAPH_UPSERT, owner=owner, rows=rows)
+
+
+def proof_tree(owner, page, root_id, limit, max_depth):
+    with database() as db:
+        catalog = db.execute("""
+            SELECT node_id AS id, name FROM theorems
+            WHERE account_id = ? ORDER BY rowid DESC LIMIT 26 OFFSET ?
+        """, (owner, page * 25)).fetchall()
+        result = {"theorems": [dict(row) for row in catalog[:25]], "hasMore": len(catalog) > 25,
+                  "root": None, "nodes": [], "edges": [], "limitedBy": []}
+        if root_id is None:
+            if not catalog:
+                return result
+            root_id = catalog[0]["id"]
+
+        def load(node_id):
+            row = db.execute("""
+                SELECT node_id AS id, name, content_hash AS hash, path, dependencies
+                FROM theorems WHERE account_id = ? AND node_id = ?
+            """, (owner, node_id)).fetchone()
+            if row is None:
+                return None, []
+            node = dict(row)
+            dependencies = json.loads(node.pop("dependencies"))
+            return node | {"kind": "theorem"}, dependencies
+
+        root, dependencies = load(root_id)
+        if root is None:
+            raise RequestError("저장된 정리를 찾을 수 없습니다.", 404)
+        nodes = {root_id: root | {"depth": 0}}
+        pending = deque([(root_id, 0, dependencies)])
+        edges = {}
+        limited = set()
+        while pending:
+            source, depth, dependencies = pending.popleft()
+            if depth == max_depth:
+                if dependencies:
+                    limited.add("depth")
+                continue
+            for dependency in dependencies:
+                target = dependency["id"]
+                if target not in nodes:
+                    if len(nodes) == limit:
+                        limited.add("nodes")
+                        continue
+                    node, children = load(target) if not target.startswith(("axiom:", "external:")) else (None, [])
+                    nodes[target] = (node or {
+                        "id": target, "name": dependency["name"], "kind": dependency.get("kind", "theorem"),
+                    }) | {"depth": depth + 1}
+                    if children:
+                        pending.append((target, depth + 1, children))
+                edges[source, target] = {"from": source, "to": target}
+        return result | {"root": root_id, "nodes": list(nodes.values()), "edges": list(edges.values()),
+                         "limitedBy": sorted(limited)}
 
 
 def dependency_graph(owner, page):

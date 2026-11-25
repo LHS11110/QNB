@@ -68,9 +68,11 @@ def authenticate():
 def headers(response):
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Referrer-Policy"] = "same-origin"
+    # xterm generates theme and sizing styles for the IDE terminal.
+    styles = "'self' 'unsafe-inline'" if request.path == "/ide" else "'self'"
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; "
-        "img-src 'self' data:; style-src 'self'; connect-src 'self'"
+        f"img-src 'self' data:; style-src {styles}; connect-src 'self'"
     )
     if request.path.startswith("/api/"):
         response.headers["Cache-Control"] = "no-store"
@@ -110,6 +112,7 @@ def start_session(account):
 
 @app.get("/")
 @app.get("/ide")
+@app.get("/proofs")
 def index():
     return send_from_directory(app.static_folder, "index.html")
 
@@ -253,6 +256,8 @@ def vm_socket(ws):
 
 def vm_operation(ws, data):
     resource = data.get("resource")
+    if resource == "terminal":
+        return runtime.terminal(g.account["vm_id"], g.account["id"], data)
     if resource == "kernel":
         return kernel_operation(data)
     if resource == "workspace":
@@ -393,6 +398,23 @@ def graph():
     if not 0 <= page <= 100000:
         raise RequestError("올바르지 않은 그래프 페이지입니다.")
     return store.dependency_graph(g.account["id"], page)
+
+
+@app.get("/api/proof-tree")
+def proof_tree():
+    limits = []
+    for parameter, default, minimum, maximum in (
+        ("page", 0, 0, 100000), ("limit", 30, 1, 100), ("depth", 3, 0, 12),
+    ):
+        try:
+            value = int(request.args.get(parameter, default))
+        except ValueError:
+            value = minimum - 1
+        if not minimum <= value <= maximum:
+            raise RequestError(f"{parameter} 값은 {minimum}~{maximum} 범위의 정수여야 합니다.")
+        limits.append(value)
+    page, limit, depth = limits
+    return store.proof_tree(g.account["id"], page, request.args.get("root"), limit, depth)
 
 
 @app.get("/api/theorem/<node_id>")

@@ -8,14 +8,19 @@ let cursor = null;
 let entries = [];
 let graphVisible = false;
 let graphPage = 0;
-let graphData = { nodes: [], edges: [] };
+let graphData = { theorems: [], nodes: [], edges: [] };
 let selectedTheorem = null;
 let graphAreas = [];
 let busy = false;
 let authMode = "signup";
 let fileAction;
 let listRequest = 0;
+let listing = false;
+let folderVersion = null;
+let workspaceSyncRunning = false;
 let graphRequest = 0;
+const standaloneProofPage = location.pathname === "/proofs";
+document.body.classList.toggle("proof-page", standaloneProofPage);
 
 function element(tag, text, className) {
   const node = document.createElement(tag);
@@ -112,7 +117,9 @@ function vmRequest(resource, payload, upload) {
           }
           finish(resolve, response.result);
         } else {
-          finish(reject, new Error(response?.error || "올바르지 않은 VM 응답입니다."));
+          const error = new Error(response?.error || "올바르지 않은 VM 응답입니다.");
+          error.status = response?.status;
+          finish(reject, error);
         }
       } catch {
         finish(reject, new Error("UTF-8 파일을 읽을 수 없거나 VM 전송 응답이 올바르지 않습니다."));
@@ -162,7 +169,8 @@ window.addEventListener("beforeunload", (event) => {
 async function boot() {
   try {
     const session = await api("session");
-    const inIDE = Boolean(session.email && location.pathname === "/ide");
+    const workspaceRoute = location.pathname === "/ide" || standaloneProofPage;
+    const inIDE = Boolean(session.email && workspaceRoute);
     $("home").hidden = inIDE;
     $("ide").hidden = !inIDE;
     $("account-label").textContent = session.email || "";
@@ -171,10 +179,18 @@ async function boot() {
     $("signup-open").hidden = Boolean(session.email);
     $("login-open").hidden = Boolean(session.email);
     $("ide-link").hidden = !session.email;
+    $("proofs-link").hidden = !session.email || standaloneProofPage;
+    $("proofs-editor-link").hidden = !session.email || !standaloneProofPage;
     if (inIDE) {
-      renderWorkbench();
-      await showFolder("/");
-    } else if (location.pathname === "/ide") {
+      if (standaloneProofPage) {
+        await showGraph();
+      } else {
+        renderWorkbench();
+        await showFolder("/");
+        setInterval(syncWorkspace, 2000);
+        document.addEventListener("visibilitychange", syncWorkspace);
+      }
+    } else if (workspaceRoute) {
       openAuth("login");
     }
   } catch (error) {
@@ -194,7 +210,7 @@ $("auth-form").onsubmit = async (event) => {
   alertIn("auth-error");
   try {
     await api(authMode, { email: $("email").value, password: $("password").value });
-    location.assign("/ide");
+    location.assign(standaloneProofPage ? "/proofs" : "/ide");
   } catch (error) {
     alertIn("auth-error", error.message);
     $("auth-submit").disabled = false;
@@ -242,10 +258,12 @@ function renderEntries() {
 
 async function showFolder(path, append = false) {
   const request = ++listRequest;
+  listing = true;
   status(append ? "파일을 불러오는 중…" : "VM에서 폴더를 읽는 중…");
   try {
     const result = await vmRequest("workspace", { operation: "list", path, cursor: append ? cursor : 0 });
     if (request !== listRequest) return;
+    if (!append) folderVersion = null;
     folder = path;
     entries = append ? entries.concat(result.entries) : result.entries;
     cursor = result.cursor;
@@ -257,6 +275,108 @@ async function showFolder(path, append = false) {
     if (!entries.length) $("file-list").replaceChildren(element("div", "파일을 불러올 수 없습니다.", "notice"));
     vmStatus("error", "VM 파일 조회 실패");
     status(error.message, true);
+  } finally {
+    if (request === listRequest) listing = false;
+  }
+}
+
+async function syncFolder() {
+  const path = folder;
+  const request = listRequest;
+  const current = () => !busy && !listing && request === listRequest && folder === path;
+  try {
+    const info = await vmRequest("workspace", { operation: "stat", path });
+    if (!current() || info.resourceId === folderVersion) return;
+    let fresh = [];
+    let next = 0;
+    do {
+      const result = await vmRequest("workspace", { operation: "list", path, cursor: next });
+      if (!current()) return;
+      fresh = fresh.concat(result.entries);
+      next = result.cursor;
+    } while (next !== null && fresh.length < entries.length);
+    folderVersion = info.resourceId;
+    if (next !== cursor || JSON.stringify(entries) !== JSON.stringify(fresh)) {
+      entries = fresh;
+      cursor = next;
+      renderEntries();
+    }
+  } catch (error) {
+    if (error.status === 404 && current() && path !== "/") await showFolder(dirname(path));
+  }
+}
+
+function showFileSyncNotice(tab) {
+  const message = tab?.remoteChange;
+  $("file-sync-notice").hidden = !message;
+  $("file-sync-message").textContent = message || "";
+  $("reload-file").disabled = busy;
+}
+
+function updateRemoteChange(tab, message) {
+  if (tab.remoteChange === message) return;
+  tab.remoteChange = message;
+  renderTabs();
+  if (activeTab() === tab && !graphVisible) showFileSyncNotice(tab);
+}
+
+function replaceTabFromVM(tab, data) {
+  const field = $("file-content");
+  const selection = document.activeElement === field
+    ? [field.selectionStart, field.selectionEnd, field.scrollTop, field.scrollLeft] : null;
+  Object.assign(tab, {
+    text: data.text, fileId: data.fileId, etag: data.etag, resourceId: data.resourceId,
+    chunked: data.chunked === true, notebook: null, dirty: false, remoteChange: null,
+    feedback: new Map(),
+  });
+  if (activeTab() === tab && !graphVisible) {
+    renderWorkbench();
+    if (selection) {
+      field.setSelectionRange(selection[0], selection[1]);
+      field.scrollTop = selection[2];
+      field.scrollLeft = selection[3];
+    }
+  } else {
+    renderTabs();
+  }
+}
+
+async function syncTab(tab) {
+  const { path, resourceId } = tab;
+  const current = () => !busy && tabs.get(path) === tab && tab.resourceId === resourceId;
+  try {
+    const info = await vmRequest("workspace", { operation: "stat", path });
+    if (!current()) return;
+    if (info.type !== "file") {
+      updateRemoteChange(tab, "VM에서 이 경로가 파일이 아닌 항목으로 바뀌었습니다.");
+    } else if (info.resourceId === resourceId) {
+      updateRemoteChange(tab, null);
+    } else if (tab.dirty) {
+      updateRemoteChange(tab, "VM에서 파일이 변경되었습니다. 저장하지 않은 편집 내용은 유지됩니다.");
+    } else {
+      const data = await vmRequest("workspace", { operation: "read", path });
+      if (!current()) return;
+      if (tab.dirty) updateRemoteChange(tab, "VM에서 파일이 변경되었습니다. 저장하지 않은 편집 내용은 유지됩니다.");
+      else replaceTabFromVM(tab, data);
+    }
+  } catch (error) {
+    if (!current()) return;
+    if (error.status === 404) updateRemoteChange(tab, "VM에서 파일이 삭제되었거나 이름이 바뀌었습니다.");
+    else if (error.status === 413 || error.status === 415) updateRemoteChange(tab, error.message);
+  }
+}
+
+async function syncWorkspace() {
+  if (document.hidden || busy || listing || workspaceSyncRunning) return;
+  workspaceSyncRunning = true;
+  try {
+    await syncFolder();
+    for (const tab of [...tabs.values()]) {
+      if (busy || document.hidden) break;
+      await syncTab(tab);
+    }
+  } finally {
+    workspaceSyncRunning = false;
   }
 }
 
@@ -297,8 +417,9 @@ function renderTabs() {
   const items = [...tabs.values()].map((tab) => {
     const selected = tab.path === active && !graphVisible;
     const wrapper = element("div", undefined, "tab" + (selected ? " active" : ""));
-    const select = button(basename(tab.path) + (tab.dirty ? " ●" : ""), () => selectFile(tab.path));
-    select.title = tab.path;
+    const select = button(basename(tab.path) + (tab.dirty ? " ●" : "") + (tab.remoteChange ? " !" : ""),
+      () => selectFile(tab.path));
+    select.title = tab.remoteChange ? tab.path + " · " + tab.remoteChange : tab.path;
     select.setAttribute("aria-pressed", selected);
     const close = button("×", () => closeFile(tab.path), "", basename(tab.path) + " 닫기");
     close.disabled = busy;
@@ -397,6 +518,7 @@ function renderWorkbench() {
   $("workspace-welcome").hidden = graphVisible || Boolean(tab);
   $("editor").hidden = graphVisible || !tab;
   $("editor-mode").textContent = "";
+  showFileSyncNotice(tab);
   if (!tab || graphVisible) return;
   $("file-path").textContent = tab.path;
   $("file-path").title = tab.path;
@@ -444,8 +566,12 @@ async function saveTab(tab) {
   tab.resourceId = result.resourceId;
   tab.chunked = result.chunked === true;
   tab.dirty = false;
+  tab.remoteChange = null;
   renderTabs();
-  if (activeTab() === tab && !graphVisible) $("editor-mode").textContent = "저장됨";
+  if (activeTab() === tab && !graphVisible) {
+    $("editor-mode").textContent = "저장됨";
+    showFileSyncNotice(tab);
+  }
 }
 
 function setBusy(value) {
@@ -480,6 +606,14 @@ function saveActive() {
 }
 
 $("save").onclick = saveActive;
+$("reload-file").onclick = () => {
+  const tab = activeTab();
+  if (!tab || (tab.dirty && !confirm("저장하지 않은 편집을 버리고 VM에서 파일을 다시 열까요?"))) return;
+  runTask(async () => {
+    const data = await vmRequest("workspace", { operation: "read", path: tab.path });
+    replaceTabFromVM(tab, data);
+  });
+};
 document.addEventListener("keydown", (event) => {
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s" && activeTab() &&
       !graphVisible && !$("file-dialog").open) {
@@ -782,15 +916,15 @@ function pythonAction(operation) {
 $("prepare-python").onclick = () => pythonAction("prepare");
 $("reset-python").onclick = () => pythonAction("reset");
 
-async function showGraph(page = 0) {
+async function showGraph(page = 0, root = null) {
   graphVisible = true;
   graphPage = page;
   selectedTheorem = null;
-  graphData = { nodes: [], edges: [] };
+  graphData = { theorems: [], nodes: [], edges: [] };
   const request = ++graphRequest;
   renderWorkbench();
   renderEntries();
-  $("graph-status").textContent = "그래프 DB에서 정리를 불러오는 중…";
+  $("graph-status").textContent = "저장된 증명 의존 관계를 불러오는 중…";
   $("graph-status").className = "notice";
   $("theorem-detail").replaceChildren();
   $("theorem-list").replaceChildren();
@@ -798,17 +932,24 @@ async function showGraph(page = 0) {
   $("graph-page").textContent = (page + 1) + " 페이지";
   drawGraph();
   try {
-    const data = await api("graph?page=" + page);
+    const params = new URLSearchParams({
+      page, limit: $("graph-limit").value, depth: $("graph-depth").value,
+    });
+    if (root) params.set("root", root);
+    const data = await api("proof-tree?" + params);
     if (request !== graphRequest || !graphVisible) return;
     graphData = data;
-    const primary = data.nodes.filter((node) => node.primary);
-    $("graph-status").textContent = primary.length
-      ? primary.length + "개 정리 · " + data.edges.length + "개 의존 관계"
+    const limits = data.limitedBy.map((key) => key === "nodes" ? "노드 수" : "깊이");
+    $("graph-status").textContent = data.root
+      ? data.nodes.length + "개 노드 · " + data.edges.length + "개 간선" +
+        (limits.length ? " · " + limits.join(", ") + " 제한으로 일부 생략" : "")
       : "저장된 정리가 없습니다. Lean 4 셀에서 이름이 있는 정리를 증명하세요.";
     $("previous-graph").disabled = page === 0;
     $("next-graph").disabled = !data.hasMore;
     drawTheoremList();
-    drawGraph();
+    $("graph-canvas").parentElement.scrollTo(0, 0);
+    if (data.root) selectTheorem(data.root);
+    else drawGraph();
   } catch (error) {
     if (request !== graphRequest || !graphVisible) return;
     $("graph-status").textContent = error.message;
@@ -817,9 +958,10 @@ async function showGraph(page = 0) {
 }
 
 function drawTheoremList() {
-  const items = graphData.nodes.filter((node) => node.primary).map((node) => {
-    const item = button(node.name, () => selectTheorem(node.id), node.id === selectedTheorem ? "selected" : "");
-    item.setAttribute("aria-pressed", node.id === selectedTheorem);
+  const items = graphData.theorems.map((node) => {
+    const isRoot = node.id === graphData.root;
+    const item = button(node.name, () => showGraph(graphPage, node.id), isRoot ? "selected" : "");
+    item.setAttribute("aria-pressed", isRoot);
     return item;
   });
   $("theorem-list").replaceChildren(...items);
@@ -829,12 +971,14 @@ async function selectTheorem(id) {
   const node = graphData.nodes.find((item) => item.id === id);
   if (!node) return;
   selectedTheorem = id;
-  drawTheoremList();
   drawGraph();
   const panel = $("theorem-detail");
   const names = new Map(graphData.nodes.map((item) => [item.id, item.name]));
   const references = graphData.edges.filter((edge) => edge.from === id);
   panel.replaceChildren(element("h2", node.name));
+  if (node.hash && id !== graphData.root) {
+    panel.append(button("이 정리에서 탐색", () => showGraph(graphPage, id)));
+  }
   if (references.length) {
     panel.append(element("p", "의존 관계"));
     const list = element("ul");
@@ -864,20 +1008,15 @@ async function selectTheorem(id) {
 
 function drawGraph() {
   const canvas = $("graph-canvas");
-  const labels = new Map(graphData.nodes.map((node) => [node.id, node]));
-  const primary = graphData.nodes.filter((node) => node.primary);
-  const focused = selectedTheorem
-    ? new Set([selectedTheorem, ...graphData.edges.filter((edge) => edge.to === selectedTheorem).map((edge) => edge.from)])
-    : null;
-  const edges = focused ? graphData.edges.filter((edge) => focused.has(edge.from)) : graphData.edges;
-  const sources = focused ? primary.filter((node) => focused.has(node.id)) : primary;
-  const targetIds = new Set(edges.map((edge) => edge.to));
-  if (selectedTheorem && !sources.some((node) => node.id === selectedTheorem)) targetIds.add(selectedTheorem);
-  const targets = [...targetIds].map((id) => labels.get(id)).filter(Boolean).sort((a, b) => a.name.localeCompare(b.name));
-  const columns = targets.length ? 2 : 1;
-  const width = Math.max(1, canvas.parentElement.clientWidth);
-  const height = Math.max(352, 62 + Math.max(sources.length, targets.length) * 35);
-  const ratio = Math.min(devicePixelRatio || 1, 2);
+  const layers = [];
+  for (const node of graphData.nodes) {
+    (layers[node.depth] ??= []).push(node);
+  }
+  const columnWidth = 225;
+  const nodeWidth = 170;
+  const width = Math.max(1, canvas.parentElement.clientWidth, layers.length * columnWidth);
+  const height = Math.max(352, 62 + Math.max(0, ...layers.map((layer) => layer.length)) * 35);
+  const ratio = Math.min(devicePixelRatio || 1, 2, Math.sqrt(8_000_000 / (width * height)));
   canvas.width = width * ratio;
   canvas.height = height * ratio;
   canvas.style.width = width + "px";
@@ -885,34 +1024,36 @@ function drawGraph() {
   const ctx = canvas.getContext("2d");
   ctx.scale(ratio, ratio);
   graphAreas = [];
-  if (!sources.length && !targets.length) return;
+  const positions = new Map();
   ctx.fillStyle = "#a3adc1";
   ctx.font = "14px system-ui, sans-serif";
-  ctx.fillText("정리", 14, 25);
-  if (columns === 2) ctx.fillText("참조 대상", Math.floor(width * 0.57), 25);
-  const nodeWidth = columns === 2 ? Math.max(42, Math.floor(width * 0.43) - 14) : Math.min(260, width - 28);
-  const place = (nodes, x) => new Map(nodes.map((node, index) =>
-    [node.id, { node, x, y: 40 + 35 * index, width: nodeWidth, height: 27 }]));
-  const left = place(sources, 14);
-  const right = place(targets, Math.floor(width * 0.57));
-  const outgoing = edges.filter((edge) => left.has(edge.from) && right.has(edge.to));
-  for (const edge of outgoing) {
-    const source = left.get(edge.from);
-    const target = right.get(edge.to);
+  layers.forEach((nodes, depth) => {
+    const x = 14 + depth * columnWidth;
+    ctx.fillText(depth === 0 ? "기준 정리" : "깊이 " + depth, x, 25);
+    nodes.forEach((node, index) => positions.set(node.id, {
+      node, x, y: 40 + 35 * index, width: nodeWidth, height: 27,
+    }));
+  });
+  for (const edge of graphData.edges) {
+    const source = positions.get(edge.from);
+    const target = positions.get(edge.to);
     const emphatic = selectedTheorem === edge.to || selectedTheorem === edge.from;
+    const forward = target.x > source.x;
     const x1 = source.x + nodeWidth, y1 = source.y + 13.5;
-    const x2 = target.x, y2 = target.y + 13.5, middle = (x1 + x2) / 2;
+    const x2 = target.x + (forward ? 0 : nodeWidth), y2 = target.y + 13.5;
+    const middle = forward ? (x1 + x2) / 2 : Math.max(x1, x2) + 24;
+    const arrow = x2 + (forward ? -6 : 6);
     ctx.strokeStyle = emphatic ? "#bba7ff" : "#6f819c";
     ctx.lineWidth = emphatic ? 1.7 : 1;
     ctx.beginPath();
     ctx.moveTo(x1, y1);
     ctx.bezierCurveTo(middle, y1, middle, y2, x2, y2);
-    ctx.moveTo(x2 - 6, y2 - 4);
+    ctx.moveTo(arrow, y2 - 4);
     ctx.lineTo(x2, y2);
-    ctx.lineTo(x2 - 6, y2 + 4);
+    ctx.lineTo(arrow, y2 + 4);
     ctx.stroke();
   }
-  for (const area of [...left.values(), ...right.values()]) {
+  for (const area of positions.values()) {
     const { x, y, width: w, height: h, node } = area;
     graphAreas.push(area);
     ctx.fillStyle = node.hash ? "#302646" : "#23344a";
@@ -949,7 +1090,11 @@ new ResizeObserver(() => {
   if (graphVisible) drawGraph();
 }).observe($("graph-canvas").parentElement);
 $("graph-open").onclick = () => showGraph();
-$("refresh-graph").onclick = () => showGraph(graphPage);
+$("refresh-graph").onclick = () => showGraph(graphPage, graphData.root);
+$("graph-limits").addEventListener("submit", (event) => {
+  event.preventDefault();
+  showGraph(graphPage, graphData.root);
+});
 $("previous-graph").onclick = () => showGraph(graphPage - 1);
 $("next-graph").onclick = () => showGraph(graphPage + 1);
 
