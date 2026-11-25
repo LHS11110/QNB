@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Lean 4와 Jupyter를 위한 VM 기반 웹 IDE">
+  <title>QNB · Proof Workspace</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="QNB 홈"><span class="brand-icon">Q</span><strong>QNB</strong></a>
+    <div class="top-divider"></div>
+    <span class="product">Proof Workspace</span>
+    <div class="spacer"></div>
+    <span id="account-label" class="account-label"></span>
+    <button id="header-login" class="quiet" hidden>로그인</button>
+    <button id="logout" class="quiet" hidden>로그아웃</button>
+  </header>
+
+  <main id="home" hidden>
+    <section class="hero">
+      <div class="intro">
+        <div class="eyebrow"><span class="dot"></span> VM 기반 연구 워크스페이스</div>
+        <h1>코드를 쓰고,<br>증명을 연결하세요.</h1>
+        <p>나만의 가상 머신에서 파일을 편집하고 Lean 4 증명과 Python 노트북을 실행하세요. 검증된 정리와 그 의존 관계는 그래프에 쌓입니다.</p>
+        <div class="home-actions">
+          <button id="signup-open" class="primary">워크스페이스 시작</button>
+          <button id="login-open">로그인</button>
+          <a id="ide-link" class="primary button" href="/ide" hidden>워크스페이스 열기</a>
+        </div>
+      </div>
+      <div class="preview" aria-label="Lean 노트북 예시">
+        <div class="preview-bar"><span class="window-dots"><i></i><i></i><i></i></span><span>proofs.ipynb</span><span class="preview-lean">Lean 4</span></div>
+        <div class="preview-cell">
+          <div class="preview-label">셀 01</div>
+          <pre><span class="violet">theorem</span> base : <span class="orange">1</span> = <span class="orange">1</span> := <span class="violet">by</span>
+  <span class="blue">rfl</span></pre>
+          <div class="preview-label">셀 02</div>
+          <pre><span class="violet">theorem</span> derived : <span class="orange">1</span> = <span class="orange">1</span> := base</pre>
+        </div>
+        <div class="preview-graph"><span class="node-example">derived</span><span class="edge-example"></span><span class="node-example secondary">base</span><span class="preview-ok">✓ 검증 완료</span></div>
+      </div>
+    </section>
+    <section class="capabilities" aria-label="워크스페이스 기능">
+      <article><span class="feature-icon">▱</span><div><h2>개인 VM</h2><p>VM 디스크의 파일을 브라우저에서 편집합니다.</p></div></article>
+      <article><span class="feature-icon">⌘</span><div><h2>Lean 4 · Jupyter</h2><p>노트북에서 셀마다 실행할 커널을 선택합니다.</p></div></article>
+      <article><span class="feature-icon">◎</span><div><h2>정리 의존 그래프</h2><p>증명이 참조하는 정리와 저장된 해시를 살펴봅니다.</p></div></article>
+    </section>
+  </main>
+
+  <main id="ide" hidden>
+    <aside class="sidebar">
+      <div class="side-head">
+        <h2>파일 탐색기</h2>
+        <div class="icon-actions">
+          <button id="create-file" title="새 파일" aria-label="새 파일">＋</button>
+          <button id="create-folder" title="새 폴더" aria-label="새 폴더">▱</button>
+          <button id="refresh-files" title="새로 고침" aria-label="새로 고침">↻</button>
+        </div>
+      </div>
+      <div class="directory">
+        <button id="parent" title="상위 폴더" aria-label="상위 폴더">↑</button>
+        <span id="folder-path">/workspace</span>
+        <button id="folder-menu" title="현재 폴더 관리" aria-label="현재 폴더 관리">⋯</button>
+      </div>
+      <div id="file-list"></div>
+      <button id="more-files" class="quiet" hidden>더 보기</button>
+      <div class="side-footer"><button id="graph-open">◎ &nbsp; 정리 의존 그래프</button></div>
+    </aside>
+    <section class="workbench" aria-label="편집기">
+      <div class="tab-bar" id="tabs" aria-label="열린 파일"></div>
+      <div id="workspace-welcome" class="workspace-welcome">
+        <span class="welcome-symbol">∴</span>
+        <h1>워크스페이스</h1>
+        <p>파일을 열거나 노트북을 만들어 시작하세요.</p>
+        <button id="new-notebook" class="primary">새 노트북</button>
+      </div>
+      <section id="editor" hidden>
+        <div class="editor-toolbar">
+          <div id="file-path"></div>
+          <div class="spacer"></div>
+          <button id="file-menu" class="quiet">파일 관리</button>
+          <button id="save" class="primary">저장 <kbd>Ctrl S</kbd></button>
+        </div>
+        <div id="plain-editor" class="plain-editor" hidden>
+          <pre id="line-numbers" aria-hidden="true"></pre>
+          <textarea id="file-content" aria-label="파일 내용" spellcheck="false" wrap="off"></textarea>
+        </div>
+        <div id="notebook" hidden>
+          <div id="invalid-notebook" class="notice" hidden></div>
+          <div class="notebook-tools">
+            <button id="add-code">＋ 코드 셀</button>
+            <button id="add-markdown">＋ Markdown 셀</button>
+            <div class="spacer"></div>
+            <button id="prepare-python" class="quiet">Python 준비</button>
+            <button id="reset-python" class="quiet">Python 재시작</button>
+            <button id="edit-json" class="quiet">JSON 편집</button>
+          </div>
+          <div id="cells"></div>
+        </div>
+      </section>
+      <section id="graph" hidden>
+        <div class="graph-header">
+          <div><h1>정리 의존 그래프</h1><p>화살표는 증명이나 명제가 직접 참조한 정리를 가리킵니다.</p></div>
+          <button id="refresh-graph">↻ 새로 고침</button>
+        </div>
+        <div id="graph-status" class="notice" role="status"></div>
+        <div class="graph-layout">
+          <div class="graph-view">
+            <canvas id="graph-canvas" aria-label="정리 의존 그래프. 옆의 정리 목록에서 각 정리를 선택할 수 있습니다."></canvas>
+          </div>
+          <div class="graph-inspector">
+            <div class="graph-page"><button id="previous-graph">이전</button><span id="graph-page"></span><button id="next-graph">다음</button></div>
+            <div id="theorem-list"></div>
+            <div id="theorem-detail"></div>
+          </div>
+        </div>
+      </section>
+    </section>
+    <footer class="statusbar"><span id="vm-state"><i class="dot"></i> VM 연결 중</span><span id="status" role="status"></span><span id="editor-mode"></span></footer>
+  </main>
+
+  <dialog id="auth-dialog">
+    <form id="auth-form">
+      <div class="dialog-head"><h2 id="auth-title">회원가입</h2><button id="auth-close" type="button" aria-label="닫기">×</button></div>
+      <label>이메일<input id="email" name="email" type="email" autocomplete="email" maxlength="254" required></label>
+      <label>비밀번호<input id="password" name="password" type="password" minlength="8" maxlength="128" required></label>
+      <p id="auth-error" role="alert" hidden></p>
+      <button id="auth-submit" class="primary" type="submit">가입하고 시작</button>
+      <button id="auth-toggle" type="button" class="quiet">이미 계정이 있나요? 로그인</button>
+    </form>
+  </dialog>
+
+  <dialog id="file-dialog">
+    <form id="file-form">
+      <div class="dialog-head"><h2 id="dialog-title"></h2><button id="dialog-close" type="button" aria-label="닫기">×</button></div>
+      <p id="dialog-description"></p>
+      <label id="name-label">이름<input id="entry-name" maxlength="255"></label>
+      <p id="file-error" role="alert" hidden></p>
+      <div class="dialog-actions">
+        <button id="dialog-delete" type="button" class="danger" hidden>삭제</button>
+        <button id="dialog-submit" class="primary" type="submit">만들기</button>
+      </div>
+    </form>
+  </dialog>
+</body>
+</html>

@@ -1,0 +1,67 @@
+services:
+  web:
+    image: qnb-web
+    build: .
+    ports:
+      - "127.0.0.1:${QNB_PORT:-8765}:8080"
+    environment:
+      QNB_VM_ID_BASE: "${QNB_VM_ID_BASE:-1900000000}"
+      QNB_VM_DISK_GIB: "${QNB_VM_DISK_GIB:-12}"
+      QNB_VM_ID_COUNT: "${QNB_VM_ID_COUNT:-32}"
+      QNB_SECURE_COOKIE: "${QNB_SECURE_COOKIE:-0}"
+    volumes:
+      - qnb-data:/data
+      - type: bind
+        source: "${QNB_VM_SOCKET_DIR:-/run/agora-runtime}"
+        target: /run/agora-runtime
+        read_only: true
+        bind:
+          create_host_path: false
+    networks: [frontend, graph]
+    depends_on: [neo4j]
+  persistence:
+    image: qnb-web
+    build: .
+    command: ["python", "-m", "qnb.persistence"]
+    restart: unless-stopped
+    environment:
+      QNB_POSTGRES_DSN: "host=/var/run/postgresql dbname=qnb user=qnb"
+      QNB_BATCH_SIZE: "${QNB_BATCH_SIZE:-100}"
+      QNB_BATCH_INTERVAL: "${QNB_BATCH_INTERVAL:-30}"
+    volumes:
+      - qnb-data:/data
+      - postgres-socket:/var/run/postgresql
+    networks: [graph]
+    depends_on: [postgres, neo4j]
+  postgres:
+    image: postgres:16
+    command: ["postgres", "-c", "listen_addresses="]
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: qnb
+      POSTGRES_DB: qnb
+      POSTGRES_HOST_AUTH_METHOD: trust
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - postgres-socket:/var/run/postgresql
+    network_mode: none
+  neo4j:
+    image: neo4j:5.26-community
+    environment:
+      NEO4J_AUTH: none
+      NEO4J_server_memory_heap_initial__size: 256m
+      NEO4J_server_memory_heap_max__size: 512m
+      NEO4J_server_memory_pagecache_size: 256m
+    volumes:
+      - neo4j-data:/data
+    networks: [graph]
+
+networks:
+  frontend:
+  graph:
+    internal: true
+volumes:
+  qnb-data:
+  neo4j-data:
+  postgres-data:
+  postgres-socket:
