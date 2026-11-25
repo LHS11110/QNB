@@ -10,9 +10,11 @@ let graphVisible = false;
 let graphPage = 0;
 let graphData = { theorems: [], nodes: [], edges: [] };
 let selectedTheorem = null;
-let graphAreas = [];
 let busy = false;
 let authMode = "signup";
+let authNextPath = "/ide";
+let currentSession = { email: null };
+let ideInitialized = false;
 let fileAction;
 let listRequest = 0;
 let listing = false;
@@ -21,6 +23,31 @@ let workspaceSyncRunning = false;
 let graphRequest = 0;
 const standaloneProofPage = location.pathname === "/proofs";
 document.body.classList.toggle("proof-page", standaloneProofPage);
+
+const THEME_KEY = "qnb_ide_theme";
+
+function applyTheme(theme) {
+  const normalized = theme === "dark" ? "dark" : "light";
+  document.documentElement.dataset.ideTheme = normalized;
+  try {
+    localStorage.setItem(THEME_KEY, normalized);
+  } catch {
+    // Ignore storage errors in restricted contexts.
+  }
+  const toggle = $("theme-toggle");
+  if (toggle) {
+    toggle.setAttribute("aria-pressed", String(normalized === "dark"));
+    toggle.title = normalized === "dark" ? "라이트 테마로 전환" : "다크 테마로 전환";
+  }
+}
+
+applyTheme((() => {
+  try {
+    return localStorage.getItem(THEME_KEY) || "light";
+  } catch {
+    return "light";
+  }
+})());
 
 function element(tag, text, className) {
   const node = document.createElement(tag);
@@ -169,19 +196,110 @@ function alertIn(id, message = "") {
   $(id).hidden = !message;
 }
 
-function setAuth(mode) {
+function setAuth(mode, notice = "") {
   authMode = mode;
   const signingUp = mode === "signup";
-  $("auth-title").textContent = signingUp ? "회원가입" : "로그인";
-  $("auth-submit").textContent = signingUp ? "가입하고 시작" : "로그인";
-  $("auth-toggle").textContent = signingUp ? "이미 계정이 있나요? 로그인" : "처음인가요? 회원가입";
+  $("auth-title").textContent = signingUp ? "워크스페이스 생성" : "다시 오신 것을 환영합니다";
+  $("auth-subtitle").textContent = signingUp
+    ? "개인 VM 워크스페이스와 검증 정리 데이터베이스를 즉시 배정받으세요."
+    : "계정에 연결된 노트북과 증명 트리를 이어서 탐색합니다.";
+  $("auth-submit").textContent = signingUp ? "가입하고 시작하기" : "로그인";
+  $("auth-toggle").textContent = signingUp ? "이미 계정이 있나요? 로그인" : "처음인가요? 무료 회원가입";
+  $("auth-tab-login").setAttribute("aria-selected", String(!signingUp));
+  $("auth-tab-signup").setAttribute("aria-selected", String(signingUp));
+  $("auth-tab-login").classList.toggle("active", !signingUp);
+  $("auth-tab-signup").classList.toggle("active", signingUp);
   $("password").autocomplete = signingUp ? "new-password" : "current-password";
+  alertIn("auth-context-notice", notice);
   alertIn("auth-error");
 }
 
-function openAuth(mode) {
-  setAuth(mode);
-  if (!$("auth-dialog").open) $("auth-dialog").showModal();
+function showView(view) {
+  document.body.dataset.view = view;
+  const isHome = view === "home";
+  const isAuth = view === "auth";
+  const isIDE = view === "ide";
+  $("home").hidden = !isHome;
+  $("auth-page").hidden = !isAuth;
+  $("ide").hidden = !isIDE;
+  $("home-nav").hidden = !isHome;
+  $("ide-header-controls").hidden = !isIDE || standaloneProofPage;
+  $("theme-toggle").hidden = !isIDE;
+
+  const loggedIn = Boolean(currentSession.email);
+  $("account-label").textContent = currentSession.email || "";
+  $("logout").hidden = !loggedIn;
+  $("header-login").hidden = loggedIn || isAuth;
+  $("header-signup").hidden = loggedIn || isAuth;
+  $("header-ide-link").hidden = !loggedIn || isIDE;
+  $("signup-open").hidden = loggedIn;
+  $("login-open").hidden = loggedIn;
+  $("ide-link").hidden = !loggedIn;
+  $("bottom-signup").hidden = loggedIn;
+  $("bottom-ide").hidden = !loggedIn;
+  $("proofs-link").hidden = !loggedIn || !isIDE || standaloneProofPage;
+  $("proofs-editor-link").hidden = !loggedIn || !standaloneProofPage;
+
+  if (isHome) {
+    window.QNBParticles?.start();
+  } else {
+    window.QNBParticles?.stop();
+  }
+}
+
+function routePath() {
+  return location.pathname.replace(/\/+$/, "") || "/";
+}
+
+async function applyRoute() {
+  const path = routePath();
+  const loggedIn = Boolean(currentSession.email);
+  const workspaceRoute = path === "/ide" || path === "/proofs";
+
+  if ((path === "/login" || path === "/signup") && loggedIn) {
+    location.assign("/ide");
+    return;
+  }
+
+  if (workspaceRoute && !loggedIn) {
+    authNextPath = path;
+    setAuth("login", "워크스페이스에 접근하려면 먼저 로그인하세요.");
+    showView("auth");
+    return;
+  }
+
+  if (path === "/login" || path === "/signup") {
+    authNextPath = "/ide";
+    setAuth(path === "/signup" ? "signup" : "login");
+    showView("auth");
+    return;
+  }
+
+  if (workspaceRoute && loggedIn) {
+    showView("ide");
+    if (!ideInitialized) {
+      ideInitialized = true;
+      if (standaloneProofPage) {
+        await showGraph();
+      } else {
+        renderWorkbench();
+        await showFolder("/");
+        setInterval(syncWorkspace, 2000);
+        document.addEventListener("visibilitychange", syncWorkspace);
+      }
+    }
+    return;
+  }
+
+  showView("home");
+}
+
+function navigateSpa(path, mode = null) {
+  if (routePath() !== path) {
+    history.pushState(null, "", path);
+  }
+  if (mode) setAuth(mode);
+  applyRoute();
 }
 
 function dirtyTabs() {
@@ -197,54 +315,77 @@ window.addEventListener("beforeunload", (event) => {
 
 async function boot() {
   try {
-    const session = await api("session");
-    const workspaceRoute = location.pathname === "/ide" || standaloneProofPage;
-    const inIDE = Boolean(session.email && workspaceRoute);
-    $("home").hidden = inIDE;
-    $("ide").hidden = !inIDE;
-    $("account-label").textContent = session.email || "";
-    $("logout").hidden = !session.email;
-    $("header-login").hidden = Boolean(session.email);
-    $("signup-open").hidden = Boolean(session.email);
-    $("login-open").hidden = Boolean(session.email);
-    $("ide-link").hidden = !session.email;
-    $("proofs-link").hidden = !session.email || standaloneProofPage;
-    $("proofs-editor-link").hidden = !session.email || !standaloneProofPage;
-    if (inIDE) {
-      if (standaloneProofPage) {
-        await showGraph();
-      } else {
-        renderWorkbench();
-        await showFolder("/");
-        setInterval(syncWorkspace, 2000);
-        document.addEventListener("visibilitychange", syncWorkspace);
-      }
-    } else if (workspaceRoute) {
-      openAuth("login");
-    }
+    currentSession = await api("session");
+    await applyRoute();
   } catch (error) {
-    $("home").hidden = false;
-    openAuth("login");
+    currentSession = { email: null };
+    setAuth("login");
+    showView("auth");
     alertIn("auth-error", error.message);
   }
 }
 
-$("signup-open").onclick = () => openAuth("signup");
-$("login-open").onclick = $("header-login").onclick = () => openAuth("login");
-$("auth-toggle").onclick = () => setAuth(authMode === "signup" ? "login" : "signup");
-$("auth-close").onclick = () => $("auth-dialog").close();
+window.addEventListener("popstate", () => {
+  applyRoute();
+});
+
+for (const [id, path, mode] of [
+  ["header-login", "/login", "login"],
+  ["header-signup", "/signup", "signup"],
+  ["login-open", "/login", "login"],
+  ["signup-open", "/signup", "signup"],
+  ["bottom-signup", "/signup", "signup"],
+  ["auth-home-link", "/", null],
+]) {
+  $(id)?.addEventListener("click", (event) => {
+    event.preventDefault();
+    navigateSpa(path, mode);
+  });
+}
+
+$("brand-link")?.addEventListener("click", (event) => {
+  if (document.body.dataset.view === "ide") return;
+  event.preventDefault();
+  navigateSpa("/");
+});
+
+$("auth-tab-login").onclick = () => {
+  if (routePath() === "/signup") history.replaceState(null, "", "/login");
+  setAuth("login", $("auth-context-notice").textContent);
+};
+$("auth-tab-signup").onclick = () => {
+  if (routePath() === "/login") history.replaceState(null, "", "/signup");
+  setAuth("signup", $("auth-context-notice").textContent);
+};
+$("auth-toggle").onclick = () => {
+  const nextMode = authMode === "signup" ? "login" : "signup";
+  if (routePath() === "/login" || routePath() === "/signup") {
+    history.replaceState(null, "", "/" + nextMode);
+  }
+  setAuth(nextMode, $("auth-context-notice").textContent);
+};
+
+$("password-toggle").onclick = () => {
+  const input = $("password");
+  const show = input.type === "password";
+  input.type = show ? "text" : "password";
+  $("password-toggle").textContent = show ? "숨김" : "표시";
+  $("password-toggle").setAttribute("aria-label", show ? "비밀번호 숨기기" : "비밀번호 표시");
+};
+
 $("auth-form").onsubmit = async (event) => {
   event.preventDefault();
   $("auth-submit").disabled = true;
   alertIn("auth-error");
   try {
     await api(authMode, { email: $("email").value, password: $("password").value });
-    location.assign(standaloneProofPage ? "/proofs" : "/ide");
+    location.assign(authNextPath || "/ide");
   } catch (error) {
     alertIn("auth-error", error.message);
     $("auth-submit").disabled = false;
   }
 };
+
 $("logout").onclick = async () => {
   if (busy) return;
   if (dirtyTabs() && !confirm("저장하지 않은 편집 내용이 있습니다. 로그아웃할까요?")) return;
@@ -254,6 +395,26 @@ $("logout").onclick = async () => {
     location.assign("/");
   } catch (error) { status(error.message, true); }
 };
+
+$("theme-toggle").onclick = () => {
+  const current = document.documentElement.dataset.ideTheme === "dark" ? "dark" : "light";
+  applyTheme(current === "dark" ? "light" : "dark");
+};
+
+$("sidebar-toggle").onclick = () => {
+  const collapsed = $("ide").classList.toggle("sidebar-collapsed");
+  $("sidebar-toggle").setAttribute("aria-expanded", String(!collapsed));
+  if (graphVisible) {
+    setTimeout(() => proofGraph.fit(), 60);
+  }
+};
+
+$("view-editor").onclick = () => {
+  graphVisible = false;
+  renderWorkbench();
+  renderEntries();
+};
+$("view-graph").onclick = () => showGraph(graphPage, graphData.root);
 
 const basename = (path) => path.split("/").at(-1);
 const dirname = (path) => path.slice(0, path.lastIndexOf("/")) || "/";
@@ -267,6 +428,16 @@ function vmStatus(kind, message) {
   node.replaceChildren(element("i", undefined, "dot"), document.createTextNode(message));
 }
 
+function fileBadgeFor(path, type) {
+  if (type === "directory") return ["dir", "▱"];
+  const ext = path.split(".").at(-1).toLowerCase();
+  if (ext === "ipynb") return ["nb", "∴"];
+  if (ext === "lean") return ["lean", "λ"];
+  if (ext === "md" || ext === "markdown") return ["md", "M"];
+  if (ext === "py") return ["py", "Py"];
+  return ["file", "·"];
+}
+
 function renderEntries() {
   $("folder-path").textContent = "/workspace" + (folder === "/" ? "" : folder);
   $("folder-path").title = $("folder-path").textContent;
@@ -278,7 +449,11 @@ function renderEntries() {
     const row = button("", () => type === "directory" ? showFolder(path) : openFile(path),
       "file-row" + (active === path && !graphVisible ? " active" : ""));
     row.title = name;
-    row.append(element("span", type === "directory" ? "▱" : isNotebook(path) ? "∴" : "·", "file-icon"), element("span", name));
+    const [badgeKind, glyph] = fileBadgeFor(path, type);
+    row.append(
+      element("span", glyph, "file-icon badge-" + badgeKind),
+      element("span", name),
+    );
     return row;
   });
   if (!rows.length) rows.push(element("div", "이 폴더가 비어 있습니다.", "notice"));
@@ -350,9 +525,6 @@ function updateRemoteChange(tab, message) {
 }
 
 function replaceTabFromVM(tab, data) {
-  const field = $("file-content");
-  const selection = document.activeElement === field
-    ? [field.selectionStart, field.selectionEnd, field.scrollTop, field.scrollLeft] : null;
   Object.assign(tab, {
     text: data.text, fileId: data.fileId, etag: data.etag, resourceId: data.resourceId,
     chunked: data.chunked === true, notebook: null, dirty: false, remoteChange: null,
@@ -360,11 +532,6 @@ function replaceTabFromVM(tab, data) {
   });
   if (activeTab() === tab && !graphVisible) {
     renderWorkbench();
-    if (selection) {
-      field.setSelectionRange(selection[0], selection[1]);
-      field.scrollTop = selection[2];
-      field.scrollLeft = selection[3];
-    }
   } else {
     renderTabs();
   }
@@ -457,7 +624,7 @@ function renderTabs() {
   });
   if (graphVisible) {
     const wrapper = element("div", undefined, "tab active");
-    wrapper.append(button("의존 그래프", () => showGraph(graphPage)), button("×", () => selectFile(active), "", "그래프 닫기"));
+    wrapper.append(button("증명 트리", () => showGraph(graphPage)), button("×", () => selectFile(active), "", "증명 트리 닫기"));
     items.push(wrapper);
   }
   $("tabs").replaceChildren(...items);
@@ -471,19 +638,63 @@ function markDirty(tab) {
   if (activeTab() === tab && !graphVisible) $("editor-mode").textContent = "저장되지 않음";
 }
 
-function numbers() {
-  const text = $("file-content");
-  $("line-numbers").textContent = Array.from({ length: text.value.split("\n").length }, (_, n) => n + 1).join("\n");
-  $("line-numbers").scrollTop = text.scrollTop;
+const editors = new Map();
+const editingMarkdown = new WeakSet();
+
+function mountEditor(key, host, options) {
+  let editor = editors.get(key);
+  if (editor) editor.update(options);
+  else {
+    editor = new QNBEditing.CodeEditor(options);
+    editors.set(key, editor);
+  }
+  if (editor.view.dom.parentNode !== host) host.replaceChildren(editor.view.dom);
+  return editor.view;
 }
 
-function indent(event) {
-  if (event.key !== "Tab" || event.shiftKey || event.ctrlKey || event.metaKey || event.altKey) return;
-  event.preventDefault();
-  const field = event.target;
-  field.setRangeText("  ", field.selectionStart, field.selectionEnd, "end");
-  field.dispatchEvent(new Event("input"));
+function retainEditors(keys) {
+  for (const [key, editor] of editors) {
+    if (keys.has(key)) continue;
+    editor.view.destroy();
+    editor.view.dom.remove();
+    editors.delete(key);
+  }
 }
+
+function fileLanguage(path) {
+  return {
+    lean: "lean4", py: "python", md: "markdown", markdown: "markdown", json: "json",
+    ipynb: "json", js: "javascript", jsx: "javascript", ts: "typescript", tsx: "typescript",
+  }[path.split(".").at(-1).toLowerCase()] || "";
+}
+
+function renderPlainFile(tab) {
+  retainEditors(new Set([tab]));
+  const language = fileLanguage(tab.path);
+  const preview = $("file-markdown");
+  const previewButton = $("markdown-file-preview");
+  const markdownFile = language === "markdown";
+  previewButton.hidden = !markdownFile;
+  previewButton.setAttribute("aria-pressed", markdownFile && tab.markdownPreview !== false);
+  preview.hidden = !markdownFile || tab.markdownPreview === false;
+  if (!preview.hidden) QNBEditing.renderMarkdown(preview, tab.text);
+  mountEditor(tab, $("file-content"), {
+    text: tab.text, language, label: "파일 내용", readOnly: busy,
+    onChange(text) {
+      tab.text = text;
+      tab.notebook = null;
+      markDirty(tab);
+      if (!preview.hidden) QNBEditing.renderMarkdown(preview, text);
+    },
+  });
+}
+
+$("markdown-file-preview").onclick = () => {
+  const tab = activeTab();
+  if (!tab) return;
+  tab.markdownPreview = tab.markdownPreview === false;
+  renderPlainFile(tab);
+};
 
 function readNotebook(tab) {
   if (tab.notebook) return tab.notebook;
@@ -522,7 +733,17 @@ function newNotebook() {
     nbformat: 4,
     nbformat_minor: 5,
     metadata: { kernelspec: { name: "lean4", display_name: "Lean 4", language: "lean4" } },
-    cells: [newCell("code", "lean4", "theorem identity (n : Nat) : n = n := by\n  rfl")],
+    cells: [
+      newCell(
+        "markdown",
+        null,
+        "# 병렬 증명 노트북\n\n" +
+          "각 **Lean 4 셀**은 독립적으로 실행되며, `sorry` 없이 검증을 통과한 정리와 정의만 데이터베이스에 저장됩니다.\n" +
+          "첫 번째 셀에서 보조정리를 검증해 DB에 저장한 뒤, 두 번째 셀에서 바로 불러와 이어서 증명해 보세요.",
+      ),
+      newCell("code", "lean4", "theorem base_refl (n : Nat) : n = n := by\n  rfl"),
+      newCell("code", "lean4", "theorem derived_pair (n : Nat) : n = n ∧ True :=\n  ⟨base_refl n, True.intro⟩"),
+    ],
   };
 }
 
@@ -543,12 +764,18 @@ function cellLanguage(doc, cell) {
 function renderWorkbench() {
   const tab = activeTab();
   renderTabs();
+  $("view-editor")?.classList.toggle("active", !graphVisible);
+  $("view-graph")?.classList.toggle("active", graphVisible);
+  $("graph-open")?.classList.toggle("active", graphVisible);
   $("graph").hidden = !graphVisible;
   $("workspace-welcome").hidden = graphVisible || Boolean(tab);
   $("editor").hidden = graphVisible || !tab;
   $("editor-mode").textContent = "";
   showFileSyncNotice(tab);
-  if (!tab || graphVisible) return;
+  if (!tab || graphVisible) {
+    if (!tab) retainEditors(new Set());
+    return;
+  }
   $("file-path").textContent = tab.path;
   $("file-path").title = tab.path;
   $("save").disabled = busy;
@@ -559,24 +786,12 @@ function renderWorkbench() {
   $("json-return").hidden = !(isNotebook(tab.path) && tab.jsonMode);
   $("editor-mode").textContent = tab.dirty ? "저장되지 않음" : notebookVisible ? "Jupyter Notebook" : "UTF-8";
   if (notebookVisible) {
+    $("markdown-file-preview").hidden = true;
     renderNotebook(tab);
   } else {
-    const field = $("file-content");
-    field.value = tab.text;
-    field.readOnly = busy;
-    numbers();
+    renderPlainFile(tab);
   }
 }
-
-$("file-content").oninput = (event) => {
-  const tab = activeTab();
-  tab.text = event.target.value;
-  tab.notebook = null;
-  markDirty(tab);
-  numbers();
-};
-$("file-content").onscroll = () => { $("line-numbers").scrollTop = $("file-content").scrollTop; };
-$("file-content").onkeydown = indent;
 
 async function saveTab(tab) {
   if (!tab.dirty) return;
@@ -607,8 +822,10 @@ function setBusy(value) {
   busy = value;
   $("create-file").disabled = value;
   $("create-folder").disabled = value;
+  $("sidebar-new-notebook").disabled = value;
   $("folder-menu").disabled = value || folder === "/";
   $("new-notebook").disabled = value;
+  $("welcome-new-file").disabled = value;
   $("logout").disabled = value;
   renderWorkbench();
 }
@@ -661,7 +878,7 @@ function editEntry(action, path = folder) {
   $("dialog-description").textContent = "/workspace" + (path === "/" ? "" : path);
   if (action === "delete") $("dialog-description").textContent += " 파일 또는 폴더를 삭제합니다.";
   $("entry-name").value = action === "manage" ? basename(path) : action === "notebook" ? "proofs.ipynb" : "";
-  $("entry-name").placeholder = action === "file" ? "예: Main.lean 또는 notes.ipynb" : "";
+  $("entry-name").placeholder = action === "file" ? "예: Main.lean 또는 notes.md" : "";
   $("name-label").hidden = action === "delete";
   $("dialog-delete").hidden = action !== "manage";
   $("dialog-submit").textContent = action === "manage" ? "이름 변경" : action === "delete" ? "삭제" : "만들기";
@@ -672,8 +889,10 @@ function editEntry(action, path = folder) {
 }
 
 $("create-file").onclick = () => editEntry("file");
+$("welcome-new-file").onclick = () => editEntry("file");
 $("create-folder").onclick = () => editEntry("folder");
 $("new-notebook").onclick = () => editEntry("notebook");
+$("sidebar-new-notebook").onclick = () => editEntry("notebook");
 $("file-menu").onclick = () => active && editEntry("manage", active);
 $("folder-menu").onclick = () => editEntry("manage", folder);
 $("dialog-close").onclick = () => $("file-dialog").close();
@@ -771,11 +990,20 @@ function imageOutputSource(data) {
 function renderOutput(cell, feedback) {
   const output = element("div", undefined, "output");
   if (feedback) {
-    let label = feedback.exitCode === 0 ? "실행 성공" : "실행 실패";
-    if (feedback.saved?.length) label += " · 정리 저장 " + feedback.saved.join(", ");
-    if (feedback.graphPending) label += " · 그래프 동기화 대기 중";
+    const statusRow = element("div", undefined, "output-status-row");
+    let label = feedback.exitCode === 0 ? "✓ 실행 성공" : "✕ 실행 실패";
     if (feedback.error) label += " · " + feedback.error;
-    output.append(element("div", label, "output-status" + (feedback.exitCode === 0 ? "" : " failed")));
+    statusRow.append(element("span", label, "output-status" + (feedback.exitCode === 0 ? "" : " failed")));
+    if (feedback.saved?.length) {
+      const savedGroup = element("div", undefined, "saved-theorems");
+      savedGroup.append(element("span", "DB 저장", "saved-label"));
+      for (const name of feedback.saved) {
+        savedGroup.append(button(name, () => showGraph(0, null, name), "saved-chip", name + " 증명 트리 보기"));
+      }
+      savedGroup.append(button("증명 트리 →", () => showGraph(0, null, feedback.saved[0]), "quiet saved-tree-link"));
+      statusRow.append(savedGroup);
+    }
+    output.append(statusRow);
   }
   if (feedback?.truncated) {
     output.append(element("div", "셀 출력이 크기 제한을 초과해 일부 생략됐습니다.", "notice"));
@@ -803,28 +1031,65 @@ function renderOutput(cell, feedback) {
   return output;
 }
 
-function renderNotebook(tab) {
-  const scroll = $("cells").scrollTop;
+function renderNotebook(tab, focusCell) {
+  const container = $("cells");
+  const scroll = container.scrollTop;
+  const focused = [...editors].find(([, editor]) => editor.view.hasFocus)?.[0];
+  const used = new Set();
   let doc;
   try {
     doc = readNotebook(tab);
     alertIn("invalid-notebook");
   } catch (error) {
     alertIn("invalid-notebook", "노트북을 열 수 없습니다. JSON 편집에서 내용을 확인하세요.");
-    $("cells").replaceChildren();
+    container.replaceChildren();
+    retainEditors(used);
   }
   $("edit-json").disabled = busy;
   for (const id of ["add-code", "add-markdown", "prepare-python", "reset-python"]) $(id).disabled = busy || !doc;
   if (!doc) return;
   const cells = doc.cells.map((cell, index) => {
     const code = cell.cell_type === "code";
-    const cellView = element("article", undefined, "cell");
+    const markdown = cell.cell_type === "markdown";
+    const kernelLang = code ? cellLanguage(doc, cell) : "";
+    const cellTypeClass = code ? " cell-code" + (kernelLang ? " kernel-" + kernelLang : "") : markdown ? " cell-markdown" : " cell-raw";
+    const cellView = element("article", undefined, "cell" + cellTypeClass + (cell === tab.selectedCell ? " selected" : ""));
     const header = element("div", undefined, "cell-head");
-    header.append(element("span", (index + 1) + " · " + (code ? "코드" : cell.cell_type === "markdown" ? "Markdown" : "텍스트")));
+    const activate = () => {
+      if (!cellView.isConnected) return;
+      tab.selectedCell = cell;
+      container.querySelector(".cell.selected")?.classList.remove("selected");
+      cellView.classList.add("selected");
+    };
+    cellView.addEventListener("focusin", activate);
+    cellView.addEventListener("click", activate);
+    header.append(element("span", code ? "[" + (cell.execution_count ?? " ") + "]" : markdown ? "MD" : String(index + 1), "cell-prompt"));
+    const kind = element("select");
+    kind.setAttribute("aria-label", (index + 1) + "번 셀 유형");
+    for (const [value, text] of [["code", "코드"], ["markdown", "Markdown"], ["raw", "텍스트"]]) {
+      kind.add(new Option(text, value));
+    }
+    kind.value = code || markdown ? cell.cell_type : "raw";
+    kind.disabled = busy;
+    kind.onchange = () => {
+      cell.cell_type = kind.value;
+      if (kind.value === "code") {
+        cell.outputs = [];
+        cell.execution_count = null;
+      } else {
+        delete cell.outputs;
+        delete cell.execution_count;
+      }
+      if (kind.value === "markdown") editingMarkdown.add(cell);
+      tab.feedback.delete(cell);
+      markDirty(tab);
+      renderNotebook(tab, cell);
+    };
+    header.append(kind);
     if (code) {
       const chooser = element("select");
       chooser.setAttribute("aria-label", (index + 1) + "번 셀 커널");
-      const current = cellLanguage(doc, cell);
+      const current = kernelLang;
       for (const [value, label] of [["", "커널 선택"], ["lean4", "Lean 4"], ["python", "Python"]]) {
         if (!value && current) continue;
         const opt = element("option", label);
@@ -841,11 +1106,23 @@ function renderNotebook(tab) {
         cell.execution_count = null;
         tab.feedback.delete(cell);
         markDirty(tab);
-        renderNotebook(tab);
+        renderNotebook(tab, cell);
       };
-      const run = button("▶ 실행", () => runCell(tab, cell, index), "primary");
+      const run = button("▶ 실행", () => runCell(tab, cell, index), "primary cell-run-btn");
       run.disabled = busy || !current;
       header.append(chooser, run);
+      if (current === "lean4") {
+        header.append(element("span", "독립 검증 · DB 저장", "cell-kernel-tag"));
+      }
+    }
+    if (markdown) {
+      const toggle = button(editingMarkdown.has(cell) ? "문서 보기" : "편집", () => {
+        if (editingMarkdown.has(cell)) editingMarkdown.delete(cell);
+        else editingMarkdown.add(cell);
+        renderNotebook(tab, cell);
+      }, "quiet");
+      toggle.disabled = busy;
+      header.append(toggle);
     }
     header.append(element("div", undefined, "spacer"));
     for (const [label, title, delta] of [["↑", "셀 위로 이동", -1], ["↓", "셀 아래로 이동", 1]]) {
@@ -853,7 +1130,7 @@ function renderNotebook(tab) {
         const other = index + delta;
         [doc.cells[index], doc.cells[other]] = [doc.cells[other], doc.cells[index]];
         markDirty(tab);
-        renderNotebook(tab);
+        renderNotebook(tab, cell);
       }, "quiet", title);
       move.disabled = busy || index + delta < 0 || index + delta >= doc.cells.length;
       header.append(move);
@@ -867,27 +1144,69 @@ function renderNotebook(tab) {
     }, "quiet", "셀 삭제");
     remove.disabled = busy;
     header.append(remove);
-    const field = element("textarea", undefined, "cell-input");
-    field.setAttribute("aria-label", (index + 1) + "번 셀 소스");
-    field.rows = Math.max(2, Math.min(sourceOf(cell).split("\n").length + 1, 12));
-    field.spellcheck = false;
-    field.readOnly = busy;
-    field.value = sourceOf(cell);
-    field.oninput = () => { cell.source = field.value; markDirty(tab); };
-    field.onkeydown = (event) => {
-      if (event.shiftKey && event.key === "Enter" && code && cellLanguage(doc, cell)) {
-        event.preventDefault();
-        runCell(tab, cell, index);
-      } else indent(event);
+    cellView.append(header);
+    const body = element("div", undefined, "cell-body");
+    cellView.append(body);
+    const preview = markdown ? element("div", undefined, "markdown-body") : null;
+    const renderPreview = () => {
+      QNBEditing.renderMarkdown(preview, sourceOf(cell));
+      if (!sourceOf(cell).trim()) {
+        preview.append(element("p", "Markdown을 입력하세요. (더블클릭하여 편집)", "markdown-placeholder"));
+      }
     };
-    cellView.append(header, field);
+    if (markdown && !editingMarkdown.has(cell)) {
+      renderPreview();
+      preview.ondblclick = () => {
+        if (busy || window.getSelection()?.toString()) return;
+        editingMarkdown.add(cell);
+        renderNotebook(tab, cell);
+      };
+      body.append(preview);
+    } else {
+      const host = element("div", undefined, "cell-editor");
+      body.append(host);
+      used.add(cell);
+      if (markdown) {
+        body.classList.add("markdown-split");
+        renderPreview();
+        body.append(preview);
+      }
+      mountEditor(cell, host, {
+        text: sourceOf(cell),
+        language: code ? kernelLang : markdown ? "markdown" : "",
+        label: (index + 1) + "번 셀 소스", readOnly: busy,
+        onChange(text) {
+          cell.source = text;
+          markDirty(tab);
+          if (preview) renderPreview();
+        },
+        onRun() {
+          if (busy) return false;
+          if (markdown) {
+            editingMarkdown.delete(cell);
+            renderNotebook(tab, cell);
+            return true;
+          }
+          if (!code || !cellLanguage(doc, cell)) return false;
+          runCell(tab, cell, index);
+          return true;
+        },
+      });
+    }
     if (code && (tab.feedback.has(cell) || cell.outputs?.length)) {
       cellView.append(renderOutput(cell, tab.feedback.get(cell)));
     }
     return cellView;
   });
-  $("cells").replaceChildren(...cells);
-  $("cells").scrollTop = scroll;
+  retainEditors(used);
+  container.replaceChildren(...cells);
+  container.scrollTop = scroll;
+  const target = focusCell || focused;
+  if (target && !busy && doc.cells.includes(target)) {
+    const view = editors.get(target)?.view;
+    if (view) view.focus();
+    else if (focusCell) cells[doc.cells.indexOf(target)].querySelector("button")?.focus();
+  }
 }
 
 function appendCell(type) {
@@ -898,10 +1217,13 @@ function appendCell(type) {
     doc.nbformat_minor = 5;
     for (const cell of doc.cells) cell.id = cellId();
   }
-  doc.cells.push(newCell(type, kernel || "python"));
+  const selected = doc.cells.indexOf(tab.selectedCell);
+  const cell = newCell(type, kernel || "python");
+  doc.cells.splice(selected < 0 ? doc.cells.length : selected + 1, 0, cell);
+  tab.selectedCell = cell;
+  if (type === "markdown") editingMarkdown.add(cell);
   markDirty(tab);
-  renderNotebook(tab);
-  $("cells").querySelector(".cell:last-child textarea")?.focus();
+  renderNotebook(tab, cell);
 }
 
 $("add-code").onclick = () => appendCell("code");
@@ -945,7 +1267,7 @@ function pythonAction(operation) {
 $("prepare-python").onclick = () => pythonAction("prepare");
 $("reset-python").onclick = () => pythonAction("reset");
 
-async function showGraph(page = 0, root = null) {
+async function showGraph(page = 0, root = null, focusName = null) {
   graphVisible = true;
   graphPage = page;
   selectedTheorem = null;
@@ -954,7 +1276,7 @@ async function showGraph(page = 0, root = null) {
   renderWorkbench();
   renderEntries();
   $("graph-status").textContent = "저장된 증명 의존 관계를 불러오는 중…";
-  $("graph-status").className = "notice";
+  $("graph-status").className = "graph-status-pill";
   $("theorem-detail").replaceChildren();
   $("theorem-list").replaceChildren();
   $("previous-graph").disabled = $("next-graph").disabled = true;
@@ -967,6 +1289,12 @@ async function showGraph(page = 0, root = null) {
     if (root) params.set("root", root);
     const data = await api("proof-tree?" + params);
     if (request !== graphRequest || !graphVisible) return;
+    if (focusName && !root) {
+      const target = data.theorems.find((node) => node.name === focusName);
+      if (target && target.id !== data.root) {
+        return showGraph(page, target.id);
+      }
+    }
     graphData = data;
     const limits = data.limitedBy.map((key) => key === "nodes" ? "노드 수" : "깊이");
     $("graph-status").textContent = data.root
@@ -1035,90 +1363,18 @@ async function selectTheorem(id) {
   }
 }
 
+const proofGraph = new QNBGraph.ProofGraph($("graph-canvas"), selectTheorem);
+
 function drawGraph() {
-  const canvas = $("graph-canvas");
-  const layers = [];
-  for (const node of graphData.nodes) {
-    (layers[node.depth] ??= []).push(node);
-  }
-  const columnWidth = 225;
-  const nodeWidth = 170;
-  const width = Math.max(1, canvas.parentElement.clientWidth, layers.length * columnWidth);
-  const height = Math.max(352, 62 + Math.max(0, ...layers.map((layer) => layer.length)) * 35);
-  const ratio = Math.min(devicePixelRatio || 1, 2, Math.sqrt(8_000_000 / (width * height)));
-  canvas.width = width * ratio;
-  canvas.height = height * ratio;
-  canvas.style.width = width + "px";
-  canvas.style.height = height + "px";
-  const ctx = canvas.getContext("2d");
-  ctx.scale(ratio, ratio);
-  graphAreas = [];
-  const positions = new Map();
-  ctx.fillStyle = "#a3adc1";
-  ctx.font = "14px system-ui, sans-serif";
-  layers.forEach((nodes, depth) => {
-    const x = 14 + depth * columnWidth;
-    ctx.fillText(depth === 0 ? "기준 정리" : "깊이 " + depth, x, 25);
-    nodes.forEach((node, index) => positions.set(node.id, {
-      node, x, y: 40 + 35 * index, width: nodeWidth, height: 27,
-    }));
-  });
-  for (const edge of graphData.edges) {
-    const source = positions.get(edge.from);
-    const target = positions.get(edge.to);
-    const emphatic = selectedTheorem === edge.to || selectedTheorem === edge.from;
-    const forward = target.x > source.x;
-    const x1 = source.x + nodeWidth, y1 = source.y + 13.5;
-    const x2 = target.x + (forward ? 0 : nodeWidth), y2 = target.y + 13.5;
-    const middle = forward ? (x1 + x2) / 2 : Math.max(x1, x2) + 24;
-    const arrow = x2 + (forward ? -6 : 6);
-    ctx.strokeStyle = emphatic ? "#bba7ff" : "#6f819c";
-    ctx.lineWidth = emphatic ? 1.7 : 1;
-    ctx.beginPath();
-    ctx.moveTo(x1, y1);
-    ctx.bezierCurveTo(middle, y1, middle, y2, x2, y2);
-    ctx.moveTo(arrow, y2 - 4);
-    ctx.lineTo(x2, y2);
-    ctx.lineTo(arrow, y2 + 4);
-    ctx.stroke();
-  }
-  for (const area of positions.values()) {
-    const { x, y, width: w, height: h, node } = area;
-    graphAreas.push(area);
-    ctx.fillStyle = node.hash ? "#302646" : "#23344a";
-    ctx.strokeStyle = node.id === selectedTheorem ? "#d0c3ff" : node.hash ? "#6e5895" : "#526982";
-    ctx.lineWidth = node.id === selectedTheorem ? 2 : 1;
-    ctx.beginPath();
-    ctx.roundRect(x, y, w, h, 5);
-    ctx.fill();
-    ctx.stroke();
-    ctx.font = "13px monospace";
-    ctx.fillStyle = "#edf1fc";
-    let name = node.name;
-    while (name.length > 1 && ctx.measureText(name + "…").width > w - 12) name = name.slice(0, -1);
-    ctx.fillText(name === node.name ? name : name + "…", x + 7, y + 18, w - 12);
-  }
+  proofGraph.render(graphData, selectedTheorem);
 }
 
-$("graph-canvas").addEventListener("click", (event) => {
-  const rect = event.target.getBoundingClientRect();
-  const x = event.clientX - rect.left;
-  const y = event.clientY - rect.top;
-  const area = graphAreas.find((item) => x >= item.x && x <= item.x + item.width &&
-    y >= item.y && y <= item.y + item.height);
-  if (area) {
-    selectTheorem(area.node.id);
-  } else {
-    selectedTheorem = null;
-    $("theorem-detail").replaceChildren();
-    drawTheoremList();
-    drawGraph();
-  }
-});
-new ResizeObserver(() => {
-  if (graphVisible) drawGraph();
-}).observe($("graph-canvas").parentElement);
+$("graph-zoom-in").onclick = () => proofGraph.zoom(1.25);
+$("graph-zoom-out").onclick = () => proofGraph.zoom(.8);
+$("graph-fit").onclick = () => proofGraph.fit();
 $("graph-open").onclick = () => showGraph();
+$("welcome-graph").onclick = () => showGraph();
+$("welcome-terminal").onclick = () => $("terminal-open").click();
 $("refresh-graph").onclick = () => showGraph(graphPage, graphData.root);
 $("graph-limits").addEventListener("submit", (event) => {
   event.preventDefault();

@@ -18,24 +18,18 @@ structure SavedStatement where
   needsContext : Bool
   deriving FromJson, ToJson
 
-def addTrustedTheorem (env : Environment) (value : AxiomVal) (trusted : IO.Ref NameSet) : IO Environment := do
-  match env.addDecl {} (.axiomDecl value) with
-  | .ok next =>
-    trusted.modify (·.insert value.name)
-    return next
-  | .error _ => throw (IO.userError s!"Kernel rejected saved statement {value.name}")
-
-def restoreStatement (value : SavedStatement) (trusted : IO.Ref NameSet) (env : Environment) : IO Environment :=
-  addTrustedTheorem env {
-    name := value.name
-    type := value.type
-    levelParams := value.levelParams
-    isUnsafe := false } trusted
-
 def expressionDependencies (expr : Expr) : NameSet :=
-  (expr.foldlM (m := Id) (fun names term => pure <| match term with
-    | .const name _ | .proj name _ _ => names.insert name
-    | _ => names) {} : Id NameSet).run
+  collect expr {}
+where
+  collect (term : Expr) (names : NameSet) : NameSet :=
+    match term with
+    | .const name _ => names.insert name
+    | .proj name _ value => collect value (names.insert name)
+    | .app fn arg => collect arg (collect fn names)
+    | .lam _ type body _ | .forallE _ type body _ => collect body (collect type names)
+    | .letE _ type value body _ => collect body (collect value (collect type names))
+    | .mdata _ value => collect value names
+    | _ => names
 
 -- Match the assumptions accepted by Lean's standard library.
 def allowedAxioms : List Name := [`propext, `Classical.choice, `Quot.sound]
@@ -67,20 +61,17 @@ def usedAxioms (env : Environment) (name : Name) : List Name :=
   let (_, state) := ((Elab.Command.CollectAxioms.collect name).run env).run {}
   state.axioms.toList
 
-def verified (env : Environment) (name : Name) (trusted : NameSet) (axioms : List Name) : Bool :=
-  axioms.all (fun axiomName =>
-    allowedAxioms.contains axiomName || trusted.contains axiomName)
-    && recheckLocal env [name]
+def verified (env : Environment) (name : Name) (axioms : List Name) : Bool :=
+  axioms.all allowedAxioms.contains && recheckLocal env [name]
 
-def declaration (env : Environment) (name : Name) (info : ConstantInfo) (trusted : NameSet) : Option Json := do
+def declaration (env : Environment) (name : Name) (info : ConstantInfo) : Option Json := do
   let range ← (declRangeExt.find? env name).map (·.range)
   let dependencies := info.getUsedConstantsAsSet.toList
   let axioms := usedAxioms env name
-  if !verified env name trusted axioms || info.isUnsafe || info.isPartial then none else
+  if !verified env name axioms || info.isUnsafe || info.isPartial then none else
     let names := (dependencies.filter fun name =>
       match env.find? name with
       | some (.thmInfo _) => true
-      | some (.axiomInfo _) => trusted.contains name
       | _ => false).eraseDups.map Name.toString
     let statement := match info with
       | .thmInfo value => toJson ({ name, type := value.type, levelParams := value.levelParams,
@@ -103,9 +94,15 @@ inductive SavedDeclaration where
       (statements : List SavedStatement)
   deriving FromJson
 
-private partial def processWithRestores (actions : List (Nat × (Environment → IO Environment))) :
+private def archiveQuery (command : Syntax) : Bool :=
+  [`Lean.Parser.Command.eval, `Lean.Parser.Command.check, `Lean.Parser.Command.check_failure,
+   `Lean.Parser.Command.print, `Lean.Parser.Command.printAxioms, `Lean.Parser.Command.printEqns,
+   `Lean.Parser.Command.synth, `Lean.Parser.Command.reduce].contains command.getKind
+
+private partial def processWithRestores (actions : List (Nat × (Environment → IO Environment)))
+    (replay : Bool) :
     Elab.Frontend.FrontendM Unit := do
-  if actions.isEmpty then
+  if actions.isEmpty && !replay then
     Elab.Frontend.processCommands
   else
     let ctx ← Elab.Frontend.getInputContext
@@ -114,24 +111,28 @@ private partial def processWithRestores (actions : List (Nat × (Environment →
     let scope := state.scopes.head!
     let parserCtx := { env := state.env, options := scope.opts, currNamespace := scope.currNamespace,
                        openDecls := scope.openDecls : Parser.ParserModuleContext }
-    let (command, _, _) := Parser.parseCommand ctx parserCtx parser state.messages
+    let (command, next, messages) := Parser.parseCommand ctx parserCtx parser state.messages
+    if replay && archiveQuery command then
+      Elab.Frontend.setParserState next
+      Elab.Frontend.setMessages messages
+      return ← processWithRestores actions replay
     let lastLine := (ctx.fileMap.toPosition (command.getTailPos?.getD parser.pos)).line
     let (ready, later) := actions.partition (fun action => action.1 ≤ lastLine)
     let env ← ready.foldlM (fun env action => liftM (action.2 env)) state.env
     Elab.Frontend.setCommandState { state with env }
     unless ← Elab.Frontend.processCommand do
-      processWithRestores later
+      processWithRestores later replay
 
-def frontend (source fileName : String) (extraImports : Array Import := #[])
-    (actions : List (Nat × (Environment → IO Environment)) := []) : IO (Environment × MessageLog) := do
+def frontend (base : Environment) (source fileName : String)
+    (actions : List (Nat × (Environment → IO Environment)) := [])
+    (replay := false) : IO (Environment × MessageLog) := do
   let ctx := Parser.mkInputContext source fileName
-  let (header, parserState, messages) ← Parser.parseHeader ctx
-  let opts := ({} : Options).setNat `maxHeartbeats 200000
-  let env ← importModules (leakEnv := true) (Elab.headerToImports header ++ extraImports) opts
-  let commandState := Elab.Command.mkState (env.setMainModule `Notebook) messages opts
+  let (_, parserState, messages) ← Parser.parseHeader ctx
+  let opts := (({} : Options).setNat `maxHeartbeats 200000).setBool `autoImplicit replay
+  let commandState := Elab.Command.mkState (base.setMainModule `Notebook) messages opts
   let ordered := (actions.toArray.mapIdx fun i action => (i, action)).qsort fun a b =>
     (a.2.1 < b.2.1) || (a.2.1 == b.2.1 && a.1 < b.1)
-  let (_, result) ← ((processWithRestores (ordered.toList.map Prod.snd)).run { inputCtx := ctx }).run {
+  let (_, result) ← ((processWithRestores (ordered.toList.map Prod.snd) replay).run { inputCtx := ctx }).run {
     commandState, parserState, cmdPos := parserState.pos
   }
   return (result.commandState.env, result.commandState.messages)
@@ -170,67 +171,66 @@ def inductiveDeclaration (origin : Environment) (value : InductiveVal) :
 
 -- Transfer the checked declaration and its local kernel dependencies.
 partial def transfer (origin target : Environment) (name : Name)
-    (originTrusted : NameSet) (targetTrusted : IO.Ref NameSet) (pending : NameSet := {}) :
+    (pending : NameSet := {}) :
     IO Environment := do
   if (origin.getModuleIdxFor? name).isSome then return target
   let some info := origin.find? name | throw (IO.userError s!"Missing declaration {name}")
-  let isTrusted := originTrusted.contains name
   let existingDecl := target.find? name
   if let some existing := existingDecl then
-    let alreadyTrusted := (← targetTrusted.get).contains name
-    let sameDeclaration := declarationValue existing == declarationValue info
-    let validTheorem := match existing with
-      | .thmInfo _ => isTrusted
-      | .axiomInfo _ => isTrusted && alreadyTrusted
-      | _ => false
-    let allowed := match info with
-      | .axiomInfo _ => validTheorem
-      | _ => sameDeclaration
+    let allowed := match existing, info with
+      | .thmInfo _, .thmInfo _ => true
+      | _, _ => declarationValue existing == declarationValue info
     unless existing.type == info.type && existing.levelParams == info.levelParams && allowed do
       throw (IO.userError s!"Conflicting stored declaration {name}")
+    return target
   if pending.contains name || info.isUnsafe || info.isPartial then
     throw (IO.userError s!"Cannot restore declaration {name}")
   let pending := pending.insert name
   if let .ctorInfo ctor := info then
-    return ← transfer origin target ctor.induct originTrusted targetTrusted pending
+    return ← transfer origin target ctor.induct pending
   if let .recInfo recursor := info then
-    let rebuilt ← recursor.all.foldlM (fun env decl => transfer origin env decl originTrusted targetTrusted pending) target
+    let rebuilt ← recursor.all.foldlM (fun env decl => transfer origin env decl pending) target
     if (rebuilt.find? name).isSome then return rebuilt
     throw (IO.userError s!"Cannot restore recursor {name}")
   let dependencies := expressionDependencies info.type ++
     ((declarationValue info).map expressionDependencies).getD {}
   let (decl, dependencies) ← match info with
-    | .axiomInfo value =>
-      if isTrusted then pure (.axiomDecl value, dependencies)
-      else throw (IO.userError s!"Untrusted assumption {name}")
+    | .thmInfo value => pure (.thmDecl value, dependencies)
     | .defnInfo value => pure (.defnDecl value, dependencies)
     | .opaqueInfo value => pure (.opaqueDecl value, dependencies)
     | .inductInfo value => inductiveDeclaration origin value
     | _ => throw (IO.userError s!"Unsupported dependency of stored declaration: {name}")
-  let target ← dependencies.toList.foldlM (fun env dep => transfer origin env dep originTrusted targetTrusted pending) target
-  if existingDecl.isSome then return target
-  if let .axiomDecl value := decl then
-    return registerParents (← addTrustedTheorem target value targetTrusted) name.getPrefix
+  let target ← dependencies.toList.foldlM (fun env dep => transfer origin env dep pending) target
   match target.addDecl {} decl with
-  | .ok env => return registerParents env name.getPrefix
-  | .error _ => throw (IO.userError s!"Kernel rejected stored declaration {name}")
+  | .ok env =>
+    let env := if let some structureInfo := getStructureInfo? origin name then
+      structureExt.addEntry env structureInfo else env
+    let env := if let some proj := origin.getProjectionFnInfo? name then
+      addProjectionFnInfo env name proj.ctorName proj.numParams proj.i proj.fromClass else env
+    return registerParents env name.getPrefix
+  | .error error =>
+    let reason := match error with
+      | .unknownConstant _ missing => s!"unknown constant {missing}"
+      | .alreadyDeclared _ duplicate => s!"already declared {duplicate}"
+      | .declTypeMismatch .. => "type mismatch"
+      | .appTypeMismatch .. => "application type mismatch"
+      | .invalidProj .. => "invalid projection"
+      | .other message => message
+      | _ => "declaration failed kernel checking"
+    throw (IO.userError s!"Kernel rejected stored declaration {name}: {reason}")
 
-partial def restore (saved : SavedDeclaration) (targetTrusted : IO.Ref NameSet) (target : Environment) : IO Environment := do
+partial def restore (base : Environment) (saved : SavedDeclaration) (target : Environment) : IO Environment := do
   let .entry name source prerequisites _ statements := saved
-  if let some statement := statements.find? (fun statement => statement.name.toString == name) then
-    if !statement.needsContext && (target.find? statement.name).isNone then
-      return registerParents (← restoreStatement statement targetTrusted target) statement.name.getPrefix
-  let imports ← savedImports saved
-  let originTrusted ← IO.mkRef ({} : NameSet)
+  if (target.find? name.toName).isSome then return target
+  unless statements.isEmpty do
+    throw (IO.userError s!"Missing original proof source for {name}")
   let dependencies := prerequisites.map fun item =>
     let .entry _ _ _ line _ := item
-    (line, restore item originTrusted)
-  let assumptions := statements.map fun statement => (statement.line, restoreStatement statement originTrusted)
-  let (origin, messages) ← frontend source "<QNB archive>" imports (dependencies ++ assumptions)
-  let trusted ← originTrusted.get
-  if messages.hasErrors || !verified origin name.toName trusted (usedAxioms origin name.toName) then
+    (line, restore base item)
+  let (origin, messages) ← frontend base source "<QNB archive>" dependencies true
+  if messages.hasErrors || !verified origin name.toName (usedAxioms origin name.toName) then
     throw (IO.userError s!"Could not load stored declaration {name}")
-  transfer origin target name.toName trusted targetTrusted
+  transfer origin target name.toName
 
 def main (args : List String) : IO UInt32 := do
   let (source, report, archives, started) ← match args with
@@ -245,23 +245,25 @@ def main (args : List String) : IO UInt32 := do
     stdout.putStrLn started
     stdout.flush
   let input ← IO.FS.readFile source
-  let imports ← archives.foldlM (fun acc item => do return acc ++ (← savedImports item)) #[]
+  let ctx := Parser.mkInputContext input source
+  let (header, _, _) ← Parser.parseHeader ctx
+  let imports ← archives.foldlM (fun acc item => do return acc ++ (← savedImports item))
+    (Elab.headerToImports header)
+  let base ← importModules (leakEnv := true) imports {}
   let recoveredRef ← IO.mkRef ({} : NameSet)
-  let trustedRef ← IO.mkRef ({} : NameSet)
   let originsRef ← IO.mkRef (#[] : Array Json)
   let actions := archives.map fun saved =>
     let .entry root _ _ line _ := saved
     (line, fun env => do
-      let restored ← restore saved trustedRef env
+      let restored ← restore base saved env
       let added := restored.constants.fold (fun names name _ =>
         if (env.find? name).isNone then names.insert name else names) ({} : NameSet)
       recoveredRef.modify (· ++ added)
       originsRef.modify (·.push (Json.mkObj [
         ("root", toJson root), ("names", toJson (added.toList.map Name.toString))]))
       return restored)
-  let (env, messages) ← frontend input source imports actions
+  let (env, messages) ← frontend base input source actions
   let recovered ← recoveredRef.get
-  let trusted ← trustedRef.get
   let origins ← originsRef.get
   let diagnostics ← messages.toList.mapM Message.toJson
   let (rows, defs, rejected) := env.constants.fold (fun (rows, defs, rejected) name info =>
@@ -269,13 +271,13 @@ def main (args : List String) : IO UInt32 := do
     else
       match info with
       | .thmInfo _ =>
-        match declaration env name info trusted with
+        match declaration env name info with
         | some row => (rows.push row, defs, rejected)
         | none =>
           if (declRangeExt.find? env name).isSome then (rows, defs, rejected.push name.toString)
           else (rows, defs, rejected)
       | .defnInfo _ | .opaqueInfo _ | .inductInfo _ =>
-        match declaration env name info trusted with
+        match declaration env name info with
         | some row => (rows, defs.push row, rejected)
         | none => (rows, defs, rejected)
       | _ => (rows, defs, rejected)) ((#[] : Array Json), (#[] : Array Json), (#[] : Array String))

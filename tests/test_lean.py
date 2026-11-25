@@ -6,7 +6,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from qnb.runtime import RequestError, check_lean, digest, lean_prefix, missing_names, proof_records
+from qnb.runtime import RequestError, check_lean, digest, lean_cell_source, missing_names, proof_records
+from qnb.runtime import lean_ready_until
 from qnb import store
 from qnb.store import archive_entry
 
@@ -15,6 +16,24 @@ INSPECTOR = Path(__file__).resolve().parents[1] / "qnb" / "Inspect.lean"
 
 
 class ProofRecordsTests(unittest.TestCase):
+    def test_recently_ready_vm_skips_probe_until_readiness_expires(self):
+        readiness = {"ok": True, "diagnostics": [], "declarations": [], "definitions": [],
+                     "recovered": [], "rejected": []}
+
+        def report(marker):
+            return {"exitCode": 0, "output": f"\n{marker}\n" + json.dumps(readiness)}
+
+        with patch.dict(lean_ready_until, clear=True), patch("qnb.runtime.vm", side_effect=[
+            report("first-ready"), report("first"), report("second"),
+            report("expired-ready"), report("expired"),
+        ]) as vm:
+            for marker in ("first", "second"):
+                self.assertEqual(check_lean(1, "/proof.ipynb", "", 0, marker, lambda _: None)[0], 0)
+            self.assertEqual(vm.call_count, 3)
+            lean_ready_until[1] = 0
+            self.assertEqual(check_lean(1, "/proof.ipynb", "", 0, "expired", lambda _: None)[0], 0)
+            self.assertEqual(vm.call_count, 5)
+
     def test_vm_warmup_has_separate_retries_from_a_started_lean_cell(self):
         warmup_timeout = {"exitCode": 1, "timedOut": True, "output": "run-ready-started\n"}
         ready = {"exitCode": 0, "output": 'run-ready-started\n\nrun-ready\n{"ok":true,"diagnostics":[]}'}
@@ -33,16 +52,15 @@ class ProofRecordsTests(unittest.TestCase):
                 check_lean(1, "/test.ipynb", code, 0, "run", lambda _: None)
         self.assertEqual(vm.call_count, 3)
 
-    def test_prefix_keeps_notebook_order_and_excludes_python(self):
+    def test_only_the_selected_cell_is_used_and_magic_keeps_its_line(self):
         def cell(code, lang=None):
             return {"cell_type": "code", "source": code,
                     "metadata": {"qnb_language": lang} if lang else {}}
 
         doc = {"cells": [cell("%%lean4 intro\ndef n := 1"), cell(["n = 3"], "python"),
                          cell("theorem t : n = n := rfl", "lean4"), cell("unfinished", "lean4")]}
-        document, offset = lean_prefix(doc, 2)
-        self.assertEqual(document, "\ndef n := 1\n\ntheorem t : n = n := rfl")
-        self.assertEqual(offset, 3)
+        self.assertEqual(lean_cell_source(doc["cells"][2]), "theorem t : n = n := rfl")
+        self.assertEqual(lean_cell_source(doc["cells"][0]), "\ndef n := 1")
 
     def test_hash_uses_exact_declaration_and_edge_tracks_dependency_revision(self):
         source = "  theorem α : True := True.intro\ntheorem β : True := α\n"
@@ -65,9 +83,11 @@ class ProofRecordsTests(unittest.TestCase):
         diagnostics = [
             {"severity": "error", "data": "unknown identifier 'Stored.actual'", "pos": pos},
             {"severity": "error", "data": "function expected at\n  helper\nterm has type\n  ?m.9", "pos": pos},
+            {"severity": "error", "data": "invalid field 'value', the environment does not contain 'Widget.value'\n  widget",
+             "pos": pos},
             {"severity": "warning", "data": "unknown identifier 'ignored'", "pos": pos},
         ]
-        self.assertEqual(missing_names(diagnostics), {"Stored.actual": 3, "helper": 3})
+        self.assertEqual(missing_names(diagnostics), {"Stored.actual": 3, "helper": 3, "Widget.value": 3})
 
     def inspect(self, source, archives=()):
         with tempfile.TemporaryDirectory() as folder:
@@ -80,7 +100,7 @@ class ProofRecordsTests(unittest.TestCase):
             return json.loads(output.read_text())
 
     @unittest.skipUnless(LEAN, "set QNB_TEST_LEAN to the Lean 4.10 guest binary")
-    def test_recovery_loads_statement_and_reuses_local_dependencies(self):
+    def test_recovery_loads_proof_and_reuses_local_dependencies(self):
         saved = """namespace Stored
 def next (n : Nat) := n + 1
 theorem zero : next 0 = 1 := rfl
@@ -91,11 +111,7 @@ def next (n : Nat) := n + 1
 end Stored
 theorem recovered : Stored.next 0 = 1 := Stored.zero
 """
-        archived = self.inspect(saved)
-        statements = [{"span": row["span"], "statement": row["statement"]}
-                      for row in proof_records(saved, archived["declarations"])]
-        entry = archive_entry("Stored.zero", saved, [], statements)
-        self.assertNotIn(":= rfl", entry["entry"]["source"])
+        entry = archive_entry("Stored.zero", saved, [])
         entry["entry"]["line"] = 4
         first = self.inspect(current)
         self.assertEqual(missing_names(first["diagnostics"]), {"Stored.zero": 4})
@@ -107,23 +123,54 @@ theorem recovered : Stored.next 0 = 1 := Stored.zero
         self.assertEqual([row["name"] for row in report["definitions"]], ["Stored.next"])
 
     @unittest.skipUnless(LEAN, "set QNB_TEST_LEAN to the Lean 4.10 guest binary")
-    def test_trusted_statement_keeps_proof_only_section_binders(self):
+    def test_restored_proof_keeps_proof_only_section_binders(self):
         source = """section
 variable (h : False)
 theorem stored : False := h
 end
 """
-        original = self.inspect(source)
-        rows = proof_records(source, original["declarations"])
-        statement = {"span": rows[0]["span"], "statement": rows[0]["statement"]}
-        entry = archive_entry("stored", source, [], [statement])
+        entry = archive_entry("stored", source, [])
         result = self.inspect("theorem valid (h : False) : False := stored h\n#print axioms valid", [entry])
         self.assertTrue(result["ok"], result)
         self.assertEqual(result["declarations"][0]["dependencies"], ["stored"])
-        self.assertIn("depends on axioms: [stored]", result["diagnostics"][0]["data"])
+        self.assertIn("does not depend on any axioms", result["diagnostics"][0]["data"])
         self.assertFalse(self.inspect("theorem invalid : False := stored", [entry])["ok"])
         malicious = self.inspect("axiom fake : False\ntheorem fakeProof : False := fake")
         self.assertEqual(malicious["rejected"], ["fakeProof"])
+
+    @unittest.skipUnless(LEAN, "set QNB_TEST_LEAN to the Lean 4.10 guest binary")
+    def test_database_replays_legacy_nested_proofs_and_missing_names_are_lean_errors(self):
+        premise = "def cellDouble (n : Nat) := n + n\ntheorem cellProven (n : Nat) : cellDouble n = n + n := rfl"
+        conclusion = ("theorem cellResult (n : Nat) : cellDouble n = n + n ∧ True := "
+                      "⟨cellProven n, True.intro⟩")
+        with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {
+            "QNB_DATABASE": str(Path(folder) / "qnb.sqlite3"),
+        }):
+            store.initialize()
+            with store.database() as db:
+                db.execute("INSERT INTO accounts VALUES (1, 'test@example.com', 'hash', 1)")
+            initial = self.inspect(premise)
+            proofs = proof_records(premise, initial["declarations"])
+            definitions = proof_records(premise, initial["definitions"])
+            store.save_declarations(1, "/one.ipynb", proofs, definitions, premise, [], {})
+            entries = [store.lookup_declaration(1, name)[0] for name in ("cellDouble", "cellProven")]
+            self.assertEqual(set(missing_names(self.inspect(conclusion)["diagnostics"])), {"cellDouble", "cellProven"})
+            report = self.inspect(conclusion, entries)
+            self.assertTrue(report["ok"], report)
+            legacy = archive_entry("cellProven", premise, [])
+            typed = [{"span": row["span"], "statement": row["statement"]} for row in proofs]
+            legacy["entry"]["source"] = store.masked_archive_source(premise, typed)
+            legacy["entry"]["statements"] = [item["statement"] for item in typed]
+            store.save_declarations(1, "/two.ipynb", proof_records(conclusion, report["declarations"]),
+                                    [], conclusion, [legacy], {})
+            recovered, _ = store.lookup_declaration(1, "cellResult")
+            self.assertIn(":= rfl", recovered["entry"]["prerequisites"][0]["entry"]["source"])
+            final = self.inspect("#print axioms cellResult", [recovered])
+            self.assertTrue(final["ok"], final)
+            self.assertIn("does not depend on any axioms", final["diagnostics"][0]["data"])
+            unknown = self.inspect("theorem typo : qnbUnknownName := by trivial")
+            self.assertFalse(unknown["ok"])
+            self.assertIn("qnbUnknownName", missing_names(unknown["diagnostics"]))
 
     @unittest.skipUnless(LEAN, "set QNB_TEST_LEAN to the Lean 4.10 guest binary")
     def test_storage_deduplicates_notation_and_binder_names_and_preserves_aliases(self):

@@ -1,139 +1,422 @@
 <!doctype html>
-<html lang="ko">
+<html lang="ko" data-ide-theme="light">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Lean 4와 Jupyter를 위한 VM 기반 웹 IDE">
+  <meta name="description" content="병렬 Lean 4 셀, 마크다운 해설, 증명 트리, 검증된 정리 데이터베이스를 결합한 차세대 형식 연구 워크스페이스 QNB">
   <title>QNB · Proof Workspace</title>
   <link rel="stylesheet" href="/static/styles.css">
   <link rel="stylesheet" href="/static/vendor/xterm.css">
   <script src="/static/vendor/xterm.js" defer></script>
   <script src="/static/vendor/addon-fit.js" defer></script>
+  <script src="/static/vendor/editor.js" defer></script>
+  <script src="/static/vendor/graph.js" defer></script>
+  <script src="/static/particles.js" defer></script>
   <script src="/static/app.js" defer></script>
   <script src="/static/terminal.js" defer></script>
 </head>
-<body>
+<body data-view="home">
   <header class="topbar">
-    <a class="brand" href="/" aria-label="QNB 홈"><span class="brand-icon">Q</span><strong>QNB</strong></a>
-    <div class="top-divider"></div>
-    <span class="product">Proof Workspace</span>
+    <a id="brand-link" class="brand" href="/" aria-label="QNB 홈">
+      <span class="brand-icon" aria-hidden="true">Q</span>
+      <span class="brand-text">
+        <strong>QNB</strong>
+        <span class="product">Proof Workspace</span>
+      </span>
+    </a>
+
+    <nav id="home-nav" class="top-nav" aria-label="홈 내비게이션">
+      <a href="#philosophy">핵심 배경</a>
+      <a href="#workflow">병렬 증명 · 마크다운</a>
+      <a href="#database-arch">검증 DB 재사용</a>
+    </nav>
+
+    <div id="ide-header-controls" class="ide-header-controls" hidden>
+      <button id="sidebar-toggle" type="button" class="icon-btn" title="탐색기 접기/펴기" aria-label="탐색기 접기/펴기" aria-expanded="true">
+        <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M2 3a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3Zm4 0v10h7V3H6Z"/></svg>
+      </button>
+      <div class="view-switch" role="group" aria-label="작업 뷰 전환">
+        <button id="view-editor" type="button" class="view-pill active">노트북 · 편집기</button>
+        <button id="view-graph" type="button" class="view-pill">증명 트리</button>
+      </div>
+    </div>
+
     <div class="spacer"></div>
-    <a id="proofs-link" href="/proofs" target="_blank" rel="noopener" hidden>증명 그래프 ↗</a>
-    <a id="proofs-editor-link" href="/ide" hidden>편집기</a>
-    <span id="account-label" class="account-label"></span>
-    <button id="header-login" class="quiet" hidden>로그인</button>
-    <button id="logout" class="quiet" hidden>로그아웃</button>
+
+    <div class="top-actions">
+      <button id="theme-toggle" type="button" class="quiet icon-btn" title="IDE 테마 전환" aria-label="IDE 테마 전환" hidden>
+        <span class="theme-label-light">다크</span>
+        <span class="theme-label-dark">라이트</span>
+      </button>
+      <a id="proofs-link" class="quiet button-link" href="/proofs" target="_blank" rel="noopener" hidden>증명 트리 새 창 ↗</a>
+      <a id="proofs-editor-link" class="quiet button-link" href="/ide" hidden>IDE로 돌아가기</a>
+      <span id="account-label" class="account-label"></span>
+      <a id="header-login" class="quiet button-link" href="/login" hidden>로그인</a>
+      <a id="header-signup" class="primary button" href="/signup" hidden>시작하기</a>
+      <a id="header-ide-link" class="primary button" href="/ide" hidden>워크스페이스 열기</a>
+      <button id="logout" type="button" class="quiet" hidden>로그아웃</button>
+    </div>
   </header>
 
   <main id="home" hidden>
+    <canvas id="particle-canvas" aria-hidden="true"></canvas>
+    <div class="home-ambient" aria-hidden="true"></div>
+
     <section class="hero">
       <div class="intro">
-        <div class="eyebrow"><span class="dot"></span> VM 기반 연구 워크스페이스</div>
-        <h1>코드를 쓰고,<br>증명을 연결하세요.</h1>
-        <p>나만의 가상 머신에서 파일을 편집하고 Lean 4 증명과 Python 노트북을 실행하세요. 검증된 정리와 그 의존 관계는 그래프에 쌓입니다.</p>
+        <div class="eyebrow"><span class="dot"></span> 에이전트 시대의 인간 중심 형식 증명 워크스페이스</div>
+        <h1>빠르게 쌓이는 증명,<br><span class="accent-gradient">인간이 읽고 이어갈 수 있게.</span></h1>
+        <p class="hero-copy">
+          AI 에이전트가 수학과 공학의 업적을 폭발적으로 생산하는 동안, 인간은 수천 줄의 Lean 코드를 따라가기 어렵고 일반 PC에서 전체 증명을 다시 실행하기도 버겁습니다.
+          QNB는 <strong>병렬 Lean 4 셀 · 마크다운 서사 · 증명 트리 · 검증된 정리 데이터베이스</strong>를 결합해 누구나 가볍게 최신 연구를 이해하고 재사용하게 만듭니다.
+        </p>
         <div class="home-actions">
-          <button id="signup-open" class="primary">워크스페이스 시작</button>
-          <button id="login-open">로그인</button>
-          <a id="ide-link" class="primary button" href="/ide" hidden>워크스페이스 열기</a>
+          <a id="signup-open" class="primary button cta-lg" href="/signup">무료 워크스페이스 시작</a>
+          <a id="login-open" class="button cta-lg ghost-btn" href="/login">로그인</a>
+          <a id="ide-link" class="primary button cta-lg" href="/ide" hidden>IDE 워크스페이스 열기</a>
         </div>
+        <dl class="hero-metrics">
+          <div>
+            <dt>셀 단위 병렬 검증</dt>
+            <dd>독립 실행 · 즉시 피드백</dd>
+          </div>
+          <div>
+            <dt>검증 선언만 DB 보존</dt>
+            <dd>SHA-256 · 무결성 아카이브</dd>
+          </div>
+          <div>
+            <dt>일반 PC 웹 IDE</dt>
+            <dd>전체 재컴파일 없이 재사용</dd>
+          </div>
+        </dl>
       </div>
-      <div class="preview" aria-label="Lean 노트북 예시">
-        <div class="preview-bar"><span class="window-dots"><i></i><i></i><i></i></span><span>proofs.ipynb</span><span class="preview-lean">Lean 4</span></div>
-        <div class="preview-cell">
-          <div class="preview-label">셀 01</div>
-          <pre><span class="violet">theorem</span> base : <span class="orange">1</span> = <span class="orange">1</span> := <span class="violet">by</span>
-  <span class="blue">rfl</span></pre>
-          <div class="preview-label">셀 02</div>
-          <pre><span class="violet">theorem</span> derived : <span class="orange">1</span> = <span class="orange">1</span> := base</pre>
+
+      <div class="preview" aria-label="병렬 Lean 셀과 마크다운, 증명 트리 미리보기">
+        <div class="preview-bar">
+          <span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+          <span class="preview-filename">harmonic_bounds.ipynb</span>
+          <span class="preview-badge">병렬 Lean 4 · Markdown</span>
         </div>
-        <div class="preview-graph"><span class="node-example">derived</span><span class="edge-example"></span><span class="node-example secondary">base</span><span class="preview-ok">✓ 검증 완료</span></div>
+
+        <div class="preview-body">
+          <div class="preview-md-cell">
+            <span class="cell-tag tag-md">Markdown 해설</span>
+            <p><strong>보조정리 분할 전략:</strong> 에이전트가 도출한 긴 증명을 두 개의 독립 Lean 셀로 분리하고, 검증된 정리만 DB에 저장해 다음 단계에서 즉시 불러옵니다.</p>
+          </div>
+
+          <div class="preview-parallel-grid">
+            <div class="preview-cell-card">
+              <div class="preview-cell-head">
+                <span class="cell-tag tag-lean">셀 A · Lean 4</span>
+                <span class="cell-ok">✓ DB 저장됨</span>
+              </div>
+              <pre><span class="violet">theorem</span> norm_bound :
+  <span class="orange">0</span> ≤ norm x := <span class="violet">by</span>
+  <span class="blue">positivity</span></pre>
+            </div>
+            <div class="preview-cell-card">
+              <div class="preview-cell-head">
+                <span class="cell-tag tag-lean">셀 B · Lean 4</span>
+                <span class="cell-ok">✓ DB 저장됨</span>
+              </div>
+              <pre><span class="violet">def</span> energy (x : ℝ) :=
+  x ^ <span class="orange">2</span> + <span class="orange">1</span></pre>
+            </div>
+          </div>
+
+          <div class="preview-cell-card reuse-card">
+            <div class="preview-cell-head">
+              <span class="cell-tag tag-reuse">셀 C · DB 복원 &amp; 결합</span>
+              <span class="cell-hash">sha256:9f4a…c21e</span>
+            </div>
+            <pre><span class="violet">theorem</span> stability : <span class="orange">0</span> ≤ energy x :=
+  add_nonneg (sq_nonneg x) zero_le_one</pre>
+          </div>
+        </div>
+
+        <div class="preview-graph">
+          <span class="node-example">stability</span>
+          <span class="edge-example"></span>
+          <span class="node-example secondary">norm_bound</span>
+          <span class="edge-example"></span>
+          <span class="node-example secondary">energy</span>
+          <span class="preview-ok">✓ 증명 트리 연결 완료</span>
+        </div>
       </div>
     </section>
-    <section class="capabilities" aria-label="워크스페이스 기능">
-      <article><span class="feature-icon">▱</span><div><h2>개인 VM</h2><p>VM 디스크의 파일을 브라우저에서 편집합니다.</p></div></article>
-      <article><span class="feature-icon">⌘</span><div><h2>Lean 4 · Jupyter</h2><p>노트북에서 셀마다 실행할 커널을 선택합니다.</p></div></article>
-      <article><span class="feature-icon">◎</span><div><h2>정리 의존 그래프</h2><p>증명이 참조하는 정리와 저장된 해시를 살펴봅니다.</p></div></article>
+
+    <section id="philosophy" class="home-section">
+      <div class="section-head">
+        <span class="section-kicker">왜 QNB인가</span>
+        <h2>에이전트의 속도와 인간의 이해력 사이의 간극을 메우다</h2>
+        <p>형식 증명의 생산 속도는 이미 사람의 독해 속도를 넘어섰습니다. QNB는 증명을 읽고, 검증하고, 이어 쓰는 방식을 근본적으로 가볍게 재설계했습니다.</p>
+      </div>
+      <div class="capabilities">
+        <article class="cap-card">
+          <div class="feature-icon" aria-hidden="true">⫘</div>
+          <h3>병렬 Lean 4 셀 &amp; 마크다운 서사</h3>
+          <p>거대한 증명 스크립트를 의미 단위의 Lean 셀로 쪼개 서로 다른 셀에서 병렬로 작업하고, 마크다운 문서와 수식 설명을 나란히 배치해 인간의 직관적 이해를 돕습니다.</p>
+        </article>
+        <article class="cap-card">
+          <div class="feature-icon" aria-hidden="true">◎</div>
+          <h3>인터랙티브 증명 트리</h3>
+          <p>정리와 정의가 어떤 보조정리와 Lean 표준 공리에 의존하는지 그래프(Neo4j)로 시각화합니다. 복잡한 논증 구조를 깊이·노드별로 한눈에 탐색하세요.</p>
+        </article>
+        <article class="cap-card">
+          <div class="feature-icon" aria-hidden="true">◈</div>
+          <h3>검증된 정리 DB 저장 · 경량 재사용</h3>
+          <p><code>sorry</code>나 임의 공리가 없는 검증 완료 선언만 SHA-256 해시와 함께 DB에 영속화합니다. 일반 PC 브라우저에서도 무거운 전체 컴파일 없이 최신 정리를 불러와 재사용할 수 있습니다.</p>
+        </article>
+      </div>
+    </section>
+
+    <section id="workflow" class="home-section">
+      <div class="section-head">
+        <span class="section-kicker">작업 방식 비교</span>
+        <h2>수천 줄을 한 번에 실행하는 대신, 검증된 단위만 연결합니다</h2>
+      </div>
+      <div class="comparison-grid">
+        <article class="compare-card legacy">
+          <div class="compare-label">기존 단일 파일 Lean 워크플로우</div>
+          <ul>
+            <li>수천~수만 줄 전체를 로컬 PC에서 매번 빌드해야 해서 일반 PC로 따라가기 버거움</li>
+            <li>코드와 자연어 설명이 분리되어 에이전트가 작성한 증명의 핵심 아이디어를 파악하기 어려움</li>
+            <li>앞부분 수정 시 전체 파일이 재검증되어 병렬 실험이 느림</li>
+          </ul>
+        </article>
+        <article class="compare-card qnb">
+          <div class="compare-label">QNB 노트북 + 증명 DB 워크플로우</div>
+          <ul>
+            <li>노트북의 서로 다른 Lean 4 셀에서 독립·병렬로 정리와 정의를 검증</li>
+            <li>코드 셀 사이에 마크다운 해설과 Python 수치·시각화 셀을 자유롭게 배치</li>
+            <li>검증 통과 정리·정의만 DB에 저장해 다른 노트북·셀에서 즉시 복원 및 증명 트리 탐색</li>
+          </ul>
+        </article>
+      </div>
+    </section>
+
+    <section id="database-arch" class="home-section">
+      <div class="section-head">
+        <span class="section-kicker">검증 파이프라인</span>
+        <h2>가벼운 브라우저 IDE 뒤에서 동작하는 3단계 무결성 아키텍처</h2>
+      </div>
+      <div class="pipeline-steps">
+        <article class="pipe-step">
+          <span class="pipe-num">01</span>
+          <h3>격리된 VM 셀 실행</h3>
+          <p>계정별 경량 VM에서 선택한 Lean 4 셀만 빠르게 타입 검사합니다. Python Jupyter 셀과 VM 터미널도 동일한 WebSocket으로 연결됩니다.</p>
+        </article>
+        <article class="pipe-step">
+          <span class="pipe-num">02</span>
+          <h3>검증 정리·정의 정규화 저장</h3>
+          <p>통과한 <code>theorem</code>, <code>def</code>, <code>abbrev</code>와 의존성 및 정규화된 명제를 SQLite·PostgreSQL에 저장해 중복을 제거하고 재사용 가능하게 만듭니다.</p>
+        </article>
+        <article class="pipe-step">
+          <span class="pipe-num">03</span>
+          <h3>증명 트리 탐색 및 즉시 복원</h3>
+          <p>Neo4j 그래프에 반영된 의존 관계를 증명 트리에서 탐색하고, 새 셀에서 이름만 참조하면 DB에서 검증된 선언을 자동 복원해 이어서 증명합니다.</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="home-cta-banner">
+      <div>
+        <h2>지금 바로 브라우저에서 가벼운 증명 연구를 시작하세요</h2>
+        <p>고성능 워크스테이션 없이도 에이전트와 인간의 연구 결과를 따라가고 확장할 수 있습니다.</p>
+      </div>
+      <div class="home-actions">
+        <a id="bottom-signup" class="primary button cta-lg" href="/signup">워크스페이스 만들기</a>
+        <a id="bottom-ide" class="primary button cta-lg" href="/ide" hidden>IDE 열기</a>
+      </div>
     </section>
   </main>
 
+  <main id="auth-page" hidden>
+    <div class="auth-shell">
+      <aside class="auth-aside">
+        <a id="auth-home-link" class="auth-back" href="/">← 홈으로 돌아가기</a>
+        <div class="auth-aside-badge">QNB Proof Workspace</div>
+        <h2>증명 트리와 마크다운으로<br>복잡한 형식을 명확하게.</h2>
+        <p>계정마다 독립된 VM 워크스페이스와 검증 정리 데이터베이스가 즉시 배정됩니다.</p>
+        <ul class="auth-highlights">
+          <li><strong>병렬 Lean 4 셀</strong> — 셀 단위로 나눠 독립 검증 및 실행</li>
+          <li><strong>마크다운 + Python 통합</strong> — 수학적 서사와 수치 실험을 한 노트북에</li>
+          <li><strong>검증 DB 재사용</strong> — <code>sorry</code> 없는 정리만 저장해 가볍게 복원</li>
+        </ul>
+        <div class="auth-mini-tree" aria-hidden="true">
+          <span class="mini-node root">MainTheorem</span>
+          <span class="mini-branch"></span>
+          <div class="mini-row">
+            <span class="mini-node">Lemma A (DB)</span>
+            <span class="mini-node">Def B (DB)</span>
+          </div>
+        </div>
+      </aside>
+
+      <section class="auth-card" aria-labelledby="auth-title">
+        <div class="auth-tabs" role="tablist" aria-label="인증 방식">
+          <button id="auth-tab-login" type="button" role="tab" aria-selected="false">로그인</button>
+          <button id="auth-tab-signup" type="button" role="tab" aria-selected="true">회원가입</button>
+        </div>
+        <p id="auth-context-notice" class="auth-notice" hidden></p>
+        <div class="auth-card-head">
+          <h1 id="auth-title">회원가입</h1>
+          <p id="auth-subtitle">개인 VM 워크스페이스와 정리 저장소를 생성합니다.</p>
+        </div>
+        <form id="auth-form">
+          <label class="field">
+            <span>이메일</span>
+            <input id="email" name="email" type="email" autocomplete="email" maxlength="254" placeholder="researcher@example.com" required>
+          </label>
+          <label class="field">
+            <span>비밀번호</span>
+            <div class="password-wrap">
+              <input id="password" name="password" type="password" minlength="8" maxlength="128" placeholder="8자 이상 입력" required>
+              <button id="password-toggle" type="button" class="quiet password-toggle" aria-label="비밀번호 표시">표시</button>
+            </div>
+          </label>
+          <p id="auth-error" role="alert" hidden></p>
+          <button id="auth-submit" class="primary auth-submit" type="submit">가입하고 시작</button>
+        </form>
+        <div class="auth-footer">
+          <button id="auth-toggle" type="button" class="quiet">이미 계정이 있나요? 로그인</button>
+        </div>
+      </section>
+    </div>
+  </main>
+
   <main id="ide" hidden>
-    <aside class="sidebar">
+    <aside id="sidebar" class="sidebar">
       <div class="side-head">
-        <h2>파일 탐색기</h2>
+        <h2>탐색기</h2>
         <div class="icon-actions">
-          <button id="create-file" title="새 파일" aria-label="새 파일">＋</button>
-          <button id="create-folder" title="새 폴더" aria-label="새 폴더">▱</button>
-          <button id="refresh-files" title="새로 고침" aria-label="새로 고침">↻</button>
+          <button id="sidebar-new-notebook" type="button" title="새 노트북" aria-label="새 노트북">∴</button>
+          <button id="create-file" type="button" title="새 파일" aria-label="새 파일">＋</button>
+          <button id="create-folder" type="button" title="새 폴더" aria-label="새 폴더">▱</button>
+          <button id="refresh-files" type="button" title="새로 고침" aria-label="새로 고침">↻</button>
         </div>
       </div>
       <div class="directory">
-        <button id="parent" title="상위 폴더" aria-label="상위 폴더">↑</button>
+        <button id="parent" type="button" title="상위 폴더" aria-label="상위 폴더">↑</button>
         <span id="folder-path">/workspace</span>
-        <button id="folder-menu" title="현재 폴더 관리" aria-label="현재 폴더 관리">⋯</button>
+        <button id="folder-menu" type="button" title="현재 폴더 관리" aria-label="현재 폴더 관리">⋯</button>
       </div>
       <div id="file-list"></div>
-      <button id="more-files" class="quiet" hidden>더 보기</button>
-      <div class="side-footer"><button id="graph-open">◎ &nbsp; 정리 의존 그래프</button></div>
-    </aside>
-    <section class="workbench" aria-label="편집기">
-      <div class="tab-bar" id="tabs" aria-label="열린 파일"></div>
-      <div class="terminal-toolbar"><button id="terminal-open" type="button" aria-expanded="false" aria-controls="terminal-panel">터미널</button></div>
-      <div id="workspace-welcome" class="workspace-welcome">
-        <span class="welcome-symbol">∴</span>
-        <h1>워크스페이스</h1>
-        <p>파일을 열거나 노트북을 만들어 시작하세요.</p>
-        <button id="new-notebook" class="primary">새 노트북</button>
+      <button id="more-files" type="button" class="quiet" hidden>더 보기</button>
+      <div class="side-footer">
+        <button id="graph-open" type="button" class="graph-shortcut">
+          <span class="graph-shortcut-icon" aria-hidden="true">◎</span>
+          <span class="graph-shortcut-copy">
+            <strong>증명 트리 탐색</strong>
+            <small>DB에 저장된 정리 · 공리 구조</small>
+          </span>
+        </button>
       </div>
+    </aside>
+
+    <section class="workbench" aria-label="편집기">
+      <div class="workspace-toolbar">
+        <div class="tab-bar" id="tabs" aria-label="열린 파일"></div>
+        <div class="terminal-toolbar">
+          <button id="terminal-open" type="button" aria-expanded="false" aria-controls="terminal-panel">터미널</button>
+        </div>
+      </div>
+
+      <div id="workspace-welcome" class="workspace-welcome">
+        <div class="welcome-card">
+          <span class="welcome-symbol" aria-hidden="true">∴</span>
+          <h1>가벼운 증명 워크스페이스</h1>
+          <p>마크다운 해설과 병렬 Lean 4 셀로 증명을 분할하고, 검증된 정리를 DB에 축적해 어디서든 이어 쓰세요.</p>
+          <div class="welcome-actions">
+            <button id="new-notebook" type="button" class="primary">새 연구 노트북 만들기</button>
+            <button id="welcome-new-file" type="button">새 Lean / Markdown 파일</button>
+          </div>
+          <div class="welcome-shortcuts">
+            <button id="welcome-graph" type="button" class="welcome-mini-card">
+              <strong>◎ 증명 트리 보기</strong>
+              <span>저장된 정리와 의존 그래프 탐색</span>
+            </button>
+            <button id="welcome-terminal" type="button" class="welcome-mini-card">
+              <strong>⌘ VM 터미널 열기</strong>
+              <span>계정 전용 셸에서 직접 명령 실행</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
       <section id="editor" hidden>
         <div class="editor-toolbar">
           <div id="file-path"></div>
           <div class="spacer"></div>
-          <button id="file-menu" class="quiet">파일 관리</button>
-          <button id="save" class="primary">저장 <kbd>Ctrl S</kbd></button>
+          <button id="markdown-file-preview" type="button" aria-pressed="false" hidden>미리 보기</button>
+          <button id="file-menu" type="button" class="quiet">파일 관리</button>
+          <button id="save" type="button" class="primary">저장 <kbd>Ctrl S</kbd></button>
         </div>
         <div id="file-sync-notice" class="notice" hidden>
           <span id="file-sync-message" role="status"></span>
           <button id="reload-file" type="button">VM 파일 다시 열기</button>
         </div>
         <div id="plain-editor" class="plain-editor" hidden>
-          <pre id="line-numbers" aria-hidden="true"></pre>
-          <textarea id="file-content" aria-label="파일 내용" spellcheck="false" wrap="off"></textarea>
+          <div id="file-content"></div>
+          <article id="file-markdown" class="markdown-body" aria-label="Markdown 미리 보기" hidden></article>
         </div>
         <div id="notebook" hidden>
           <div id="invalid-notebook" class="notice" hidden></div>
           <div class="notebook-tools">
-            <button id="add-code">＋ 코드 셀</button>
-            <button id="add-markdown">＋ Markdown 셀</button>
+            <button id="add-code" type="button">＋ 코드 셀</button>
+            <button id="add-markdown" type="button">＋ Markdown 셀</button>
+            <span class="notebook-hint">병렬 Lean 셀 · <code>Shift+Enter</code> 실행</span>
             <div class="spacer"></div>
-            <button id="prepare-python" class="quiet">Python 준비</button>
-            <button id="reset-python" class="quiet">Python 재시작</button>
-            <button id="edit-json" class="quiet">JSON 편집</button>
+            <button id="prepare-python" type="button" class="quiet">Python 준비</button>
+            <button id="reset-python" type="button" class="quiet">Python 재시작</button>
+            <button id="edit-json" type="button" class="quiet">JSON 편집</button>
           </div>
           <div id="cells"></div>
         </div>
       </section>
+
       <section id="graph" hidden>
         <div class="graph-header">
-          <div><h1>정리 의존 그래프</h1><p>정리를 선택하면 그 증명에 사용된 정리와 공리를 볼 수 있습니다.</p></div>
-          <button id="refresh-graph">↻ 새로 고침</button>
+          <div>
+            <h1>증명 트리 · 정리 데이터베이스</h1>
+            <p>검증 완료되어 DB에 저장된 정리와 정의의 의존 관계 및 Lean 표준 공리를 탐색합니다.</p>
+          </div>
+          <div class="graph-header-actions">
+            <div class="graph-legend" aria-label="노드 범례">
+              <span class="legend-item"><i class="legend-dot root"></i>기준 정리</span>
+              <span class="legend-item"><i class="legend-dot theorem"></i>저장된 정리</span>
+              <span class="legend-item"><i class="legend-dot axiom"></i>표준 공리</span>
+            </div>
+            <button id="refresh-graph" type="button">↻ 새로 고침</button>
+          </div>
         </div>
         <form id="graph-limits">
           <label>최대 노드 <input id="graph-limit" type="number" min="1" max="100" value="30" required></label>
           <label>최대 깊이 <input id="graph-depth" type="number" min="0" max="12" value="3" required></label>
           <button type="submit">적용</button>
+          <span id="graph-status" class="graph-status-pill" role="status"></span>
         </form>
-        <div id="graph-status" class="notice" role="status"></div>
         <div class="graph-layout">
           <div class="graph-view">
-            <canvas id="graph-canvas" aria-label="정리 의존 그래프. 옆의 정리 목록에서 각 정리를 선택할 수 있습니다."></canvas>
+            <canvas id="graph-canvas" aria-label="정리 그래프. 옆의 정리 목록에서 정리를 선택할 수 있습니다."></canvas>
+            <div class="graph-navigation" aria-label="그래프 보기 조작">
+              <button id="graph-zoom-out" aria-label="그래프 축소" type="button">−</button>
+              <button id="graph-zoom-in" aria-label="그래프 확대" type="button">＋</button>
+              <button id="graph-fit" type="button">전체 보기</button>
+            </div>
           </div>
           <div class="graph-inspector">
-            <div class="graph-page"><button id="previous-graph">이전</button><span id="graph-page"></span><button id="next-graph">다음</button></div>
+            <div class="graph-page">
+              <button id="previous-graph" type="button">이전</button>
+              <span id="graph-page"></span>
+              <button id="next-graph" type="button">다음</button>
+            </div>
             <div id="theorem-list"></div>
             <div id="theorem-detail"></div>
           </div>
         </div>
       </section>
+
       <section id="terminal-panel" aria-label="VM 터미널" hidden>
         <div class="terminal-header">
           <strong>VM 터미널</strong>
@@ -143,19 +426,13 @@
         <div id="terminal-screen"></div>
       </section>
     </section>
-    <footer class="statusbar"><span id="vm-state"><i class="dot"></i> VM 연결 중</span><span id="status" role="status"></span><span id="editor-mode"></span></footer>
-  </main>
 
-  <dialog id="auth-dialog">
-    <form id="auth-form">
-      <div class="dialog-head"><h2 id="auth-title">회원가입</h2><button id="auth-close" type="button" aria-label="닫기">×</button></div>
-      <label>이메일<input id="email" name="email" type="email" autocomplete="email" maxlength="254" required></label>
-      <label>비밀번호<input id="password" name="password" type="password" minlength="8" maxlength="128" required></label>
-      <p id="auth-error" role="alert" hidden></p>
-      <button id="auth-submit" class="primary" type="submit">가입하고 시작</button>
-      <button id="auth-toggle" type="button" class="quiet">이미 계정이 있나요? 로그인</button>
-    </form>
-  </dialog>
+    <footer class="statusbar">
+      <span id="vm-state"><i class="dot"></i> VM 연결 중</span>
+      <span id="status" role="status"></span>
+      <span id="editor-mode"></span>
+    </footer>
+  </main>
 
   <dialog id="file-dialog">
     <form id="file-form">

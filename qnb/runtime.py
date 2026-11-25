@@ -1,10 +1,12 @@
 import base64
+import gzip
 import hashlib
 import json
 import os
 import posixpath
 import re
 import socket
+import time
 from contextlib import contextmanager
 from threading import Lock
 from pathlib import Path
@@ -16,6 +18,9 @@ LARGE_FILE_LIMIT = 8 * 1024 * 1024
 VM_DISK_GIB = int(os.environ.get("QNB_VM_DISK_GIB", "12"))
 configured = set()
 configuration_lock = Lock()
+LEAN_READY_TTL = 60
+lean_ready_until = {}
+lean_readiness_locks = {}
 
 
 class RequestError(Exception):
@@ -239,17 +244,12 @@ def language(doc, cell):
     raise RequestError(f"지원하지 않는 노트북 커널입니다 ({name}). 셀의 커널을 선택하세요.")
 
 
-def lean_prefix(doc, index):
-    blocks = []
-    for cell in doc["cells"][:index + 1]:
-        if cell.get("cell_type") != "code" or language(doc, cell) != "lean4":
-            continue
-        code = source(cell).replace("\r\n", "\n")
-        if re.match(r"^%%lean4(?:[ \t][^\n]*)?(?:\n|$)", code):
-            # Preserve the line occupied by the cell magic for diagnostic offsets.
-            code = "\n" + code.partition("\n")[2]
-        blocks.append(code)
-    return "\n\n".join(blocks), sum(block.count("\n") + 2 for block in blocks[:-1])
+def lean_cell_source(cell):
+    code = source(cell).replace("\r\n", "\n")
+    if re.match(r"^%%lean4(?:[ \t][^\n]*)?(?:\n|$)", code):
+        # Preserve the line occupied by the cell magic in Lean's diagnostics.
+        return "\n" + code.partition("\n")[2]
+    return code
 
 
 def lean_command(document, directory, marker, archives):
@@ -257,6 +257,8 @@ def lean_command(document, directory, marker, archives):
     from shlex import quote
 
     saved = json.dumps(archives, ensure_ascii=False, separators=(",", ":")).encode()
+    if len(saved) > FILE_LIMIT:
+        raise RequestError("저장된 Lean 선언의 복원 데이터가 128 KiB를 초과했습니다.", 413)
     working = quote("/workspace" + (directory if directory != "/" else ""))
     return f"""(
 set -e
@@ -265,7 +267,7 @@ tmp=$(/usr/bin/mktemp -d)
 trap '/bin/rm -rf -- "$tmp"' EXIT
 printf '%s' '{b64(INSPECTOR)}' | /usr/bin/base64 -d > "$tmp/Inspect.lean"
 printf '%s' '{b64(document.encode())}' | /usr/bin/base64 -d > "$tmp/Notebook.lean"
-printf '%s' '{b64(saved)}' | /usr/bin/base64 -d > "$tmp/archives.json"
+printf '%s' '{b64(gzip.compress(saved, mtime=0))}' | /usr/bin/base64 -d | /usr/bin/gzip -d > "$tmp/archives.json"
 lean=/opt/agora/proof/lean/bin/lean
 if [ ! -x "$lean" ]; then printf '%s\n' 'Lean 4 도구가 VM에 설치되어 있지 않습니다.'; exit 1; fi
 export LEAN_PATH="$PWD:/workspace"
@@ -335,6 +337,7 @@ def proof_records(document, rows, recovered=None):
 UNKNOWN_NAME = re.compile(r"unknown (?:identifier|constant) '(.+)'")
 UNKNOWN_NAMESPACE = re.compile(r"unknown namespace '(.+)'")
 UNKNOWN_FUNCTION = re.compile(r"function expected at\n  ([^\s]+)\nterm has type\n  \?m\.\d+")
+UNKNOWN_FIELD = re.compile(r"invalid field '[^']+', the environment does not contain '([^']+)'")
 
 
 def missing_names(diagnostics):
@@ -342,7 +345,8 @@ def missing_names(diagnostics):
     for message in diagnostics:
         if message["severity"] != "error":
             continue
-        match = UNKNOWN_NAME.fullmatch(message["data"]) or UNKNOWN_FUNCTION.fullmatch(message["data"])
+        match = (UNKNOWN_NAME.fullmatch(message["data"]) or UNKNOWN_FUNCTION.fullmatch(message["data"])
+                 or UNKNOWN_FIELD.match(message["data"]))
         if match and 0 < len(match[1]) <= 500:
             name = match[1].removeprefix("_root_.")
             names.setdefault(name, message["pos"]["line"])
@@ -390,27 +394,35 @@ def lean_attempt(vm_id, file_path, document, marker, archives, *, preparing=Fals
     return inspection, "\n".join(filter(None, [notes, *formatted]))
 
 
-def check_lean(vm_id, file_path, document, offset, marker, lookup):
-    entries, bindings = [], {}
-    attempted = set()
-    try:
+def ensure_lean_ready(vm_id, marker):
+    with lean_readiness_locks.setdefault(vm_id, Lock()):
+        if time.monotonic() < lean_ready_until.get(vm_id, 0):
+            return
         readiness, output = lean_attempt(
             vm_id, "/qnb-readiness.lean", "theorem qnbRuntimeReady : True := True.intro\n",
             marker + "-ready", [], preparing=True,
         )
         if readiness is None or not readiness["ok"]:
             raise RequestError(f"VM의 Lean 실행 환경을 준비하지 못했습니다. {output}", 503)
-        for attempt in range(4):
+        lean_ready_until[vm_id] = time.monotonic() + LEAN_READY_TTL
+
+
+def check_lean(vm_id, file_path, document, offset, marker, lookup):
+    entries, bindings = [], {}
+    attempted = set()
+    try:
+        ensure_lean_ready(vm_id, marker)
+        while True:
             inspection, output = lean_attempt(vm_id, file_path, document, marker, entries)
             if inspection is None:
+                lean_ready_until.pop(vm_id, None)
                 return 1, output, [], [], [], [], {}
+            lean_ready_until[vm_id] = time.monotonic() + LEAN_READY_TTL
             if inspection["ok"]:
                 break
-            if attempt == 3:
-                return 1, output, [], [], [], [], {}
             missing = {name: line for name, line in missing_names(inspection["diagnostics"]).items()
                        if name not in attempted}
-            if not missing or len(attempted) + len(missing) > 12:
+            if not missing:
                 return 1, output, [], [], [], [], {}
             attempted.update(missing)
             existing = {entry["entry"]["name"] for entry in entries}
@@ -433,6 +445,8 @@ def check_lean(vm_id, file_path, document, offset, marker, lookup):
                 if legacy:
                     output += "\n저장된 커널 명제가 필요합니다. 원본 노트북을 다시 실행하세요 · " + ", ".join(legacy)
                 return 1, output, [], [], [], [], {}
+            if len(entries) + len(additions) > 64:
+                raise RequestError("한 셀에서 복원할 수 있는 DB 선언은 최대 64개입니다.", 413)
             entries.extend(additions)
         recovered = inspection["recovered"]
         imported = {}
@@ -447,14 +461,14 @@ def check_lean(vm_id, file_path, document, offset, marker, lookup):
         if not isinstance(rejected, list) or not all(isinstance(name, str) for name in rejected):
             raise ValueError("Invalid rejected declarations")
         notes = []
-        assumed = [name for origin in recovered for name in origin["names"] if name in imported]
-        if assumed:
-            notes.append("DB 검증을 신뢰해 공리로 추가한 정리 · " + ", ".join(assumed))
         if entries:
             notes.append("DB에서 복원한 Lean 선언 · " + ", ".join(entry["entry"]["name"] for entry in entries))
         if rejected:
             notes.append("검증 조건을 충족하지 않아 DB 저장에서 제외된 정리 · " + ", ".join(rejected))
         output = "\n".join(filter(None, [output, *notes]))
+    except RequestError:
+        lean_ready_until.pop(vm_id, None)
+        raise
     except (ValueError, KeyError, TypeError, RecursionError) as error:
         raise RequestError("Lean 검사 결과를 해석할 수 없습니다.", 502) from error
     return 0, output, rows, [row["name"] for row in rows if row["line"] > offset], definitions, entries, imported

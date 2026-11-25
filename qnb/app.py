@@ -117,6 +117,8 @@ def start_session(account):
 
 
 @app.get("/")
+@app.get("/login")
+@app.get("/signup")
 @app.get("/ide")
 @app.get("/proofs")
 def index():
@@ -466,10 +468,10 @@ def kernel_operation(data):
         if code.startswith(("%%lean4", "%%rocq")):
             raise RequestError("셀의 매직 명령과 선택한 커널을 확인하세요.")
         return runtime.jupyter(vm_id, "execute", file_path, code)
-    document, offset = runtime.lean_prefix(doc, index)
+    document = runtime.lean_cell_source(cell)
     owner = g.account["id"]
     status, output, rows, names, definitions, entries, imported = runtime.check_lean(
-        vm_id, file_path, document, offset, secrets.token_hex(24),
+        vm_id, file_path, document, 0, secrets.token_hex(24),
         lambda name: store.lookup_declaration(owner, name),
     )
     projection_pending = False
@@ -477,10 +479,8 @@ def kernel_operation(data):
         inserted = store.save_declarations(owner, file_path, rows, definitions, document, entries, imported)
         saved = {row["name"] for row in inserted}
         names = [name for name in names if name in saved]
-        try:
-            store.project(owner, inserted)
-        except RequestError:
-            projection_pending = True
+        # The durable proof queue publishes to Neo4j after the notebook response.
+        projection_pending = bool(inserted)
     if status == 0 and not output:
         output = "Lean 검사 통과"
     return {"exitCode": status, "saved": names, "graphPending": projection_pending,

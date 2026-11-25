@@ -20,7 +20,8 @@ class ProofTreeTests(unittest.TestCase):
                     (1, "one@example.test", 10), (2, "two@example.test", 20),
                 ])
                 records = [
-                    (1, "root", [{"id": "left", "name": "left"}, {"id": "right", "name": "right"}]),
+                    (1, "root", [{"id": "external:helper", "name": "Imported.helper"},
+                                 {"id": "left", "name": "left"}, {"id": "right", "name": "right"}]),
                     (1, "left", [{"id": "shared", "name": "shared"}]),
                     (1, "right", [{"id": "shared", "name": "shared"}]),
                     (1, "shared", [{"id": "axiom:choice", "name": "Classical.choice", "kind": "axiom"}]),
@@ -32,16 +33,19 @@ class ProofTreeTests(unittest.TestCase):
                 """, [(owner, key, key, json.dumps(deps)) for owner, key, deps in records])
 
             shallow = store.proof_tree(1, 0, "root", 100, 1)
-            self.assertEqual([node["depth"] for node in shallow["nodes"]], [0, 1, 1])
+            self.assertEqual([node["depth"] for node in shallow["nodes"]], [0, 1, 1, 1])
             self.assertEqual(shallow["limitedBy"], ["depth"])
+            capped = store.proof_tree(1, 0, "root", 3, 1)
+            self.assertEqual([node["id"] for node in capped["nodes"]], ["root", "left", "right"])
+            self.assertEqual(capped["limitedBy"], ["depth", "nodes"])
 
             narrow = store.proof_tree(1, 0, "root", 1, 12)
             self.assertEqual([node["id"] for node in narrow["nodes"]], ["root"])
             self.assertEqual(narrow["edges"], [])
             self.assertEqual(narrow["limitedBy"], ["nodes"])
 
-            full = store.proof_tree(1, 0, "root", 5, 3)
-            self.assertEqual(len(full["nodes"]), 5)
+            full = store.proof_tree(1, 0, "root", 6, 3)
+            self.assertEqual(len(full["nodes"]), 6)
             self.assertEqual(full["nodes"][-1]["kind"], "axiom")
             self.assertEqual([edge["from"] for edge in full["edges"] if edge["to"] == "shared"], ["left", "right"])
             self.assertEqual(full["limitedBy"], [])

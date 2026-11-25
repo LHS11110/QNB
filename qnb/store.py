@@ -262,8 +262,8 @@ def save_declarations(account_id, file_path, rows, definitions, document, entrie
     return inserted
 
 
-def archive_entry(name, source, prerequisites, statements=()):
-    # Keep line positions intact for prerequisites and kernel statement insertion.
+def masked_archive_source(source, statements):
+    # Older snapshots stored spaces in place of theorem proofs.
     lines = [list(line) for line in source.split("\n")]
     for row in statements:
         start, start_col, end, end_col = row["span"]
@@ -271,11 +271,37 @@ def archive_entry(name, source, prerequisites, statements=()):
             left = start_col if line == start - 1 else 0
             right = end_col if line == end - 1 else len(lines[line])
             lines[line][left:right] = " " * (right - left)
-    return {"entry": {
-        "name": name, "source": "\n".join("".join(line) for line in lines),
-        "prerequisites": prerequisites, "line": 1,
-        "statements": [row["statement"] for row in statements],
-    }}
+    return "\n".join("".join(line) for line in lines)
+
+
+def archive_entry(name, source, prerequisites):
+    return {"entry": {"name": name, "source": source, "prerequisites": prerequisites, "line": 1,
+                      "statements": []}}
+
+
+def restore_archive_source(db, account_id, snapshot):
+    entry = snapshot["entry"]
+    source = entry["source"]
+    if entry["statements"]:
+        candidates = set()
+        for row in db.execute("""
+            SELECT a.source, typed.statements, a.prerequisites
+            FROM lean_symbols s JOIN lean_archives a
+              ON a.account_id = s.account_id AND a.id = s.archive_id
+            JOIN lean_archive_statements typed
+              ON typed.account_id = a.account_id AND typed.archive_id = a.id
+            WHERE s.account_id = ? AND s.name = ?
+        """, (account_id, entry["name"])):
+            statements = json.loads(row["statements"])
+            if ([item["statement"] for item in statements] == entry["statements"]
+                    and json.loads(row["prerequisites"]) == entry["prerequisites"]
+                    and masked_archive_source(row["source"], statements) == source):
+                candidates.add(row["source"])
+        if len(candidates) != 1:
+            raise RequestError(f"저장된 선언 {entry['name']}의 증명 원본을 확인할 수 없습니다. 원본 셀을 다시 실행하세요.", 409)
+        source = candidates.pop()
+    prerequisites = [restore_archive_source(db, account_id, item) for item in entry["prerequisites"]]
+    return {"entry": entry | {"source": source, "prerequisites": prerequisites, "statements": []}}
 
 
 def lookup_declaration(account_id, name):
@@ -298,9 +324,15 @@ def lookup_declaration(account_id, name):
             if len(matches) == 1:
                 record = db.execute(query + " AND s.name = ? ORDER BY s.rowid DESC LIMIT 1",
                                     (account_id, matches[0]["name"])).fetchone()
+        parent = name
+        while not record and "." in parent:
+            parent = parent.rsplit(".", 1)[0]
+            record = db.execute(query + " AND s.name = ? ORDER BY s.rowid DESC LIMIT 1",
+                                (account_id, parent)).fetchone()
         if record:
-            entry = archive_entry(record["name"], record["source"], json.loads(record["prerequisites"]),
-                                  json.loads(record["statements"]))
+            prerequisites = [restore_archive_source(db, account_id, item)
+                             for item in json.loads(record["prerequisites"])]
+            entry = archive_entry(record["name"], record["source"], prerequisites)
             return entry, json.loads(record["bindings"])
         legacy = db.execute("""
             SELECT 1 FROM lean_symbols WHERE account_id = ? AND name = ?
@@ -364,6 +396,7 @@ def proof_tree(owner, page, root_id, limit, max_depth):
         nodes = {root_id: root | {"depth": 0}}
         pending = deque([(root_id, 0, dependencies)])
         edges = {}
+        external = []
         limited = set()
         while pending:
             source, depth, dependencies = pending.popleft()
@@ -373,17 +406,29 @@ def proof_tree(owner, page, root_id, limit, max_depth):
                 continue
             for dependency in dependencies:
                 target = dependency["id"]
+                if target.startswith(("axiom:", "external:")):
+                    external.append((source, depth + 1, dependency))
+                    continue
                 if target not in nodes:
                     if len(nodes) == limit:
                         limited.add("nodes")
                         continue
-                    node, children = load(target) if not target.startswith(("axiom:", "external:")) else (None, [])
+                    node, children = load(target)
                     nodes[target] = (node or {
                         "id": target, "name": dependency["name"], "kind": dependency.get("kind", "theorem"),
                     }) | {"depth": depth + 1}
                     if children:
                         pending.append((target, depth + 1, children))
                 edges[source, target] = {"from": source, "to": target}
+        # Keep the saved proof chain visible when imported lemmas exhaust the node budget.
+        for source, depth, dependency in external:
+            target = dependency["id"]
+            if target not in nodes:
+                if len(nodes) == limit:
+                    limited.add("nodes")
+                    continue
+                nodes[target] = dependency | {"kind": dependency.get("kind", "theorem"), "depth": depth}
+            edges[source, target] = {"from": source, "to": target}
         return result | {"root": root_id, "nodes": list(nodes.values()), "edges": list(edges.values()),
                          "limitedBy": sorted(limited)}
 
