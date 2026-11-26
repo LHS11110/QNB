@@ -14,7 +14,7 @@ from flask_sock import Sock
 from simple_websocket import ConnectionClosed
 from werkzeug.security import check_password_hash, generate_password_hash
 
-from . import auth, runtime, store
+from . import auth, codegraph, runtime, store
 from .runtime import RequestError
 
 app = Flask(__name__)
@@ -1020,6 +1020,28 @@ def graph():
     if not 0 <= page <= 100000:
         raise RequestError("올바르지 않은 그래프 페이지입니다.")
     return store.dependency_graph(g.workspace["owner_id"], page)
+
+
+@app.get("/api/code-graph")
+def code_graph():
+    """VM 워크스페이스의 Python, C++, Java 소스를 읽어 의존성 그래프를 만든다."""
+    vm_id = g.workspace["vm_id"]
+    root = runtime.path(request.args.get("path", "/"))
+
+    def list_directory(path, cursor):
+        return runtime.workspace(vm_id, "list", path, cursor=cursor)
+
+    def read_file(path):
+        return runtime.read_text(vm_id, path)["text"]
+
+    started = time.monotonic()
+    files, skipped, truncated = codegraph.collect(list_directory, read_file, root)
+    result = codegraph.analyze(files)
+    result.update(
+        root=root, skipped=skipped, truncated=truncated or result["truncated"],
+        fileCount=len(files), elapsed=round(time.monotonic() - started, 3),
+    )
+    return result
 
 
 @app.get("/api/proof-tree")

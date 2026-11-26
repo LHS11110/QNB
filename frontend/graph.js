@@ -67,12 +67,16 @@ export class ProofGraph {
     this.selected = selected;
     if (data !== this.data) {
       this.data = data;
-      this.network = layout(data);
+      this.network = this.buildNetwork(data);
       this.hovered = null;
       this.fit();
     } else {
       this.draw();
     }
+  }
+
+  buildNetwork(data) {
+    return layout(data);
   }
 
   fit() {
@@ -221,6 +225,171 @@ export class ProofGraph {
       ctx.stroke();
       ctx.fillStyle = "#26354a";
       ctx.fillText(name, x + 7, y + 14);
+    }
+  }
+}
+
+const kindStyle = {
+  file: { color: "#456d9f", radius: 8.5 },
+  class: { color: "#6d5b9f", radius: 7.5 },
+  function: { color: "#377989", radius: 5.5 },
+  variable: { color: "#b0653f", radius: 4.2 },
+};
+export const edgeColors = {
+  imports: "#456d9f",
+  calls: "#6844a4",
+  reads: "#3f8a57",
+  writes: "#c0492f",
+  inherits: "#a2761f",
+  contains: "#8e9aab",
+  declares: "#8e9aab",
+};
+
+function codeLayout(data) {
+  const nodes = data.nodes.map((node) => ({ ...node, degree: 0 }));
+  const index = new Map(nodes.map((node) => [node.id, node]));
+  const links = data.edges.flatMap((edge) => index.has(edge.from) && index.has(edge.to)
+    ? [{ ...edge, source: index.get(edge.from), target: index.get(edge.to) }] : []);
+  const neighbors = new Map(nodes.map((node) => [node.id, new Set()]));
+  for (const link of links) {
+    link.source.degree++;
+    link.target.degree++;
+    neighbors.get(link.source.id).add(link.target.id);
+    neighbors.get(link.target.id).add(link.source.id);
+  }
+  for (const node of nodes) {
+    const style = kindStyle[node.kind] || kindStyle.function;
+    node.color = style.color;
+    node.radius = style.radius + Math.min(6, Math.sqrt(node.degree) * .9);
+  }
+  if (nodes.length) {
+    const structural = (link) => link.kind === "contains" || link.kind === "declares";
+    forceSimulation(nodes)
+      .force("links", forceLink(links)
+        .distance((link) => structural(link) ? 18 + link.target.radius * 2 : 70)
+        .strength((link) => structural(link) ? .9 : link.kind === "imports" ? .12 : .05))
+      .force("charge", forceManyBody().strength((node) => node.kind === "file" ? -220 : -60).distanceMax(420))
+      .force("center", forceCenter())
+      .force("collide", forceCollide((node) => node.radius + 3))
+      .stop().tick(nodes.length > 1200 ? 70 : nodes.length > 500 ? 110 : 160);
+  }
+  return { nodes, links, neighbors };
+}
+
+function nodeShape(ctx, node) {
+  const r = node.radius;
+  ctx.beginPath();
+  if (node.kind === "file") {
+    ctx.roundRect(node.x - r, node.y - r * .8, r * 2, r * 1.6, r * .35);
+  } else if (node.kind === "class") {
+    ctx.moveTo(node.x, node.y - r * 1.15);
+    ctx.lineTo(node.x + r * 1.15, node.y);
+    ctx.lineTo(node.x, node.y + r * 1.15);
+    ctx.lineTo(node.x - r * 1.15, node.y);
+    ctx.closePath();
+  } else {
+    ctx.arc(node.x, node.y, r, 0, Math.PI * 2);
+  }
+}
+
+export class CodeGraph extends ProofGraph {
+  buildNetwork(data) {
+    return codeLayout(data);
+  }
+
+  centerOn(id) {
+    const node = this.network.nodes.find((item) => item.id === id);
+    if (!node || !this.width) return;
+    this.scale = Math.max(this.scale, 1.2);
+    this.offset = { x: this.width / 2 - node.x * this.scale, y: this.height / 2 - node.y * this.scale };
+    this.draw();
+  }
+
+  draw() {
+    if (!this.width || !this.data) return;
+    const ctx = this.canvas.getContext("2d");
+    ctx.setTransform(this.ratio, 0, 0, this.ratio, 0, 0);
+    ctx.clearRect(0, 0, this.width, this.height);
+    ctx.translate(this.offset.x, this.offset.y);
+    ctx.scale(this.scale, this.scale);
+    const focus = this.hovered?.id || this.selected;
+    const { nodes, links, neighbors } = this.network;
+    const near = focus && neighbors?.get(focus);
+    const lit = (id) => !focus || id === focus || near?.has(id);
+    for (const link of links) {
+      const { source, target, kind } = link;
+      const dx = target.x - source.x;
+      const dy = target.y - source.y;
+      const length = Math.hypot(dx, dy);
+      if (!length) continue;
+      const active = source.id === focus || target.id === focus;
+      const structural = kind === "contains" || kind === "declares";
+      if (focus && !active && structural) continue;
+      const angle = Math.atan2(dy, dx);
+      const x = target.x - Math.cos(angle) * (target.radius + 1.5);
+      const y = target.y - Math.sin(angle) * (target.radius + 1.5);
+      ctx.strokeStyle = edgeColors[kind] || "#657485";
+      ctx.globalAlpha = active ? .85 : focus ? .06 : structural ? .18 : .3;
+      ctx.lineWidth = (active ? 1.7 : 1) / this.scale;
+      ctx.setLineDash(structural ? [3 / this.scale, 3 / this.scale] : []);
+      ctx.beginPath();
+      ctx.moveTo(source.x, source.y);
+      ctx.lineTo(x, y);
+      if (!structural && (active || this.scale >= 1.4)) {
+        const tip = 6 / this.scale;
+        ctx.moveTo(x - tip * Math.cos(angle - .5), y - tip * Math.sin(angle - .5));
+        ctx.lineTo(x, y);
+        ctx.lineTo(x - tip * Math.cos(angle + .5), y - tip * Math.sin(angle + .5));
+      }
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+    for (const node of nodes) {
+      const active = node.id === focus;
+      ctx.globalAlpha = lit(node.id) ? 1 : .2;
+      nodeShape(ctx, node);
+      ctx.fillStyle = node.color;
+      ctx.fill();
+      ctx.lineWidth = (active ? 2.6 : .9) / this.scale;
+      ctx.strokeStyle = active ? "#1b1a33" : "#ffffffcc";
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+    ctx.setTransform(this.ratio, 0, 0, this.ratio, 0, 0);
+    const screen = (node) => ({
+      x: this.offset.x + this.scale * node.x,
+      y: this.offset.y + this.scale * (node.y + node.radius) + 6,
+    });
+    let labelled = [];
+    if (focus) {
+      labelled = nodes.filter((node) => node.id === focus || near?.has(node.id)).slice(0, 60);
+    } else if (this.scale >= 1.1 || nodes.length <= 40) {
+      labelled = nodes.filter((node) => {
+        const point = screen(node);
+        return point.x > -40 && point.x < this.width + 40 && point.y > -20 && point.y < this.height + 20 &&
+          (this.scale >= 1.8 || node.kind === "file" || node.kind === "class" || nodes.length <= 40);
+      }).slice(0, 160);
+    } else {
+      labelled = nodes.filter((node) => node.kind === "file").slice(0, 40);
+    }
+    ctx.font = "600 11px system-ui, sans-serif";
+    for (const node of labelled) {
+      const text = node.kind === "file" ? node.name : node.qualname || node.name;
+      const name = text.length > 40 ? text.slice(0, 39) + "…" : text;
+      const width = ctx.measureText(name).width + 12;
+      const point = screen(node);
+      const x = Math.max(4, Math.min(this.width - width - 4, point.x - width / 2));
+      const y = Math.max(4, Math.min(this.height - 20, point.y));
+      const strong = node.id === focus;
+      ctx.fillStyle = strong ? "#1f2b40" : "#ffffffe8";
+      ctx.strokeStyle = strong ? "#1f2b40" : "#c3cdd8";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.roundRect(x, y, width, 18, 4);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = strong ? "#ffffff" : "#26354a";
+      ctx.fillText(name, x + 6, y + 12.5);
     }
   }
 }

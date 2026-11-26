@@ -7,6 +7,7 @@ let folder = "/";
 let cursor = null;
 let entries = [];
 let graphVisible = false;
+let graphMode = "proof";
 let graphPage = 0;
 let graphData = { theorems: [], nodes: [], edges: [] };
 let selectedTheorem = null;
@@ -581,7 +582,7 @@ $("sidebar-toggle").onclick = () => {
   const collapsed = $("ide").classList.toggle("sidebar-collapsed");
   $("sidebar-toggle").setAttribute("aria-expanded", String(!collapsed));
   if (graphVisible) {
-    setTimeout(() => proofGraph.fit(), 60);
+    setTimeout(() => (graphMode === "code" ? codeGraph : proofGraph).fit(), 60);
   }
 };
 
@@ -591,6 +592,7 @@ $("view-editor").onclick = () => {
   renderEntries();
 };
 $("view-graph").onclick = () => showGraph(graphPage, graphData.root);
+$("view-code").onclick = () => showCodeGraph();
 
 function renderWorkspaceBadge() {
   const ws = currentSession.workspace;
@@ -999,6 +1001,8 @@ function fileBadgeFor(path, type) {
   if (ext === "lean") return ["lean", "λ"];
   if (ext === "md" || ext === "markdown") return ["md", "M"];
   if (ext === "py") return ["py", "Py"];
+  if (["c", "cc", "cpp", "cxx", "h", "hh", "hpp", "hxx"].includes(ext)) return ["cpp", "C+"];
+  if (ext === "java") return ["java", "J"];
   return ["file", "·"];
 }
 
@@ -1196,7 +1200,9 @@ function renderTabs() {
   });
   if (graphVisible) {
     const wrapper = element("div", undefined, "tab active");
-    wrapper.append(button("증명 트리", () => showGraph(graphPage)), button("×", () => selectFile(active), "", "증명 트리 닫기"));
+    const label = graphMode === "code" ? "코드 의존성" : "증명 트리";
+    wrapper.append(button(label, () => graphMode === "code" ? showCodeGraph() : showGraph(graphPage)),
+      button("×", () => selectFile(active), "", label + " 닫기"));
     items.push(wrapper);
   }
   $("tabs").replaceChildren(...items);
@@ -1337,10 +1343,15 @@ function cellLanguage(doc, cell) {
 function renderWorkbench() {
   const tab = activeTab();
   renderTabs();
+  const proofVisible = graphVisible && graphMode === "proof";
+  const codeVisible = graphVisible && graphMode === "code";
   $("view-editor")?.classList.toggle("active", !graphVisible);
-  $("view-graph")?.classList.toggle("active", graphVisible);
-  $("graph-open")?.classList.toggle("active", graphVisible);
-  $("graph").hidden = !graphVisible;
+  $("view-graph")?.classList.toggle("active", proofVisible);
+  $("view-code")?.classList.toggle("active", codeVisible);
+  $("graph-open")?.classList.toggle("active", proofVisible);
+  $("code-graph-open")?.classList.toggle("active", codeVisible);
+  $("graph").hidden = !proofVisible;
+  $("codegraph").hidden = !codeVisible;
   $("workspace-welcome").hidden = graphVisible || Boolean(tab);
   $("editor").hidden = graphVisible || !tab;
   $("editor-mode").textContent = "";
@@ -1885,6 +1896,7 @@ $("reset-python").onclick = () => pythonAction("reset");
 
 async function showGraph(page = 0, root = null, focusName = null) {
   graphVisible = true;
+  graphMode = "proof";
   graphPage = page;
   selectedTheorem = null;
   graphData = { theorems: [], nodes: [], edges: [] };
@@ -1904,7 +1916,7 @@ async function showGraph(page = 0, root = null, focusName = null) {
     });
     if (root) params.set("root", root);
     const data = await api("proof-tree?" + params);
-    if (request !== graphRequest || !graphVisible) return;
+    if (request !== graphRequest || !graphVisible || graphMode !== "proof") return;
     if (focusName && !root) {
       const target = data.theorems.find((node) => node.name === focusName);
       if (target && target.id !== data.root) {
@@ -1924,7 +1936,7 @@ async function showGraph(page = 0, root = null, focusName = null) {
     if (data.root) selectTheorem(data.root);
     else drawGraph();
   } catch (error) {
-    if (request !== graphRequest || !graphVisible) return;
+    if (request !== graphRequest || !graphVisible || graphMode !== "proof") return;
     $("graph-status").textContent = error.message;
     $("graph-status").classList.add("error");
   }
@@ -1998,5 +2010,293 @@ $("graph-limits").addEventListener("submit", (event) => {
 });
 $("previous-graph").onclick = () => showGraph(graphPage - 1);
 $("next-graph").onclick = () => showGraph(graphPage + 1);
+
+// ---------------------------------------------------------------- 코드 의존성 그래프
+
+const CODE_KIND_LABELS = { file: "파일", class: "클래스", function: "함수", variable: "변수" };
+const CODE_LANGUAGE_LABELS = { python: "Python", cpp: "C++", java: "Java" };
+const CODE_EDGE_LABELS = {
+  imports: ["가져오는 파일", "가져가는 파일"],
+  calls: ["호출하는 대상", "호출하는 곳"],
+  reads: ["읽는 대상", "읽는 곳"],
+  writes: ["쓰는 대상", "쓰는 곳"],
+  inherits: ["상속하는 타입", "상속받는 타입"],
+  contains: ["포함 항목", "포함하는 곳"],
+  declares: ["선언 항목", "선언 위치"],
+};
+let codeGraphData = null;
+let codeGraphView = { nodes: [], edges: [] };
+let codeGraphNodes = new Map();
+let selectedCode = null;
+let codeGraphRequest = 0;
+let codeGraphLoading = false;
+const codeGraph = new QNBGraph.CodeGraph($("code-graph-canvas"), (id) => selectCodeNode(id));
+
+function codeFilters() {
+  const checked = (name) => new Set([...document.querySelectorAll(`.code-graph-filters input[name="${name}"]:checked`)]
+    .map((input) => input.value));
+  const edges = checked("edge");
+  if (edges.has("contains")) edges.add("declares");
+  return {
+    languages: checked("language"), kinds: checked("kind"), edges,
+    neighborhood: $("code-graph-neighborhood").checked,
+    depth: Math.max(1, Math.min(6, Number($("code-graph-depth").value) || 2)),
+  };
+}
+
+function rebuildCodeView() {
+  if (!codeGraphData) {
+    codeGraphView = { nodes: [], edges: [] };
+    return;
+  }
+  const filters = codeFilters();
+  let nodes = codeGraphData.nodes.filter((node) =>
+    filters.kinds.has(node.kind) && filters.languages.has(node.language));
+  let ids = new Set(nodes.map((node) => node.id));
+  let edges = codeGraphData.edges.filter((edge) =>
+    filters.edges.has(edge.kind) && ids.has(edge.from) && ids.has(edge.to));
+  if (filters.neighborhood && selectedCode && ids.has(selectedCode)) {
+    const adjacent = new Map();
+    for (const edge of edges) {
+      if (!adjacent.has(edge.from)) adjacent.set(edge.from, []);
+      if (!adjacent.has(edge.to)) adjacent.set(edge.to, []);
+      adjacent.get(edge.from).push(edge.to);
+      adjacent.get(edge.to).push(edge.from);
+    }
+    const keep = new Set([selectedCode]);
+    let frontier = [selectedCode];
+    for (let level = 0; level < filters.depth && frontier.length; level++) {
+      const next = [];
+      for (const id of frontier) {
+        for (const other of adjacent.get(id) || []) {
+          if (!keep.has(other)) {
+            keep.add(other);
+            next.push(other);
+          }
+        }
+      }
+      frontier = next;
+    }
+    nodes = nodes.filter((node) => keep.has(node.id));
+    ids = keep;
+    edges = edges.filter((edge) => keep.has(edge.from) && keep.has(edge.to));
+  }
+  codeGraphView = { nodes, edges, neighborhood: filters.neighborhood ? selectedCode : null };
+}
+
+function codeStatusText() {
+  if (!codeGraphData) return "";
+  const { summary = {}, fileCount, elapsed, truncated } = codeGraphData;
+  const parts = [
+    `파일 ${fileCount}`, `클래스 ${summary.class || 0}`, `함수 ${summary.function || 0}`, `변수 ${summary.variable || 0}`,
+    `표시 ${codeGraphView.nodes.length}노드 · ${codeGraphView.edges.length}간선`,
+  ];
+  if (truncated) parts.push("크기 제한으로 일부 생략");
+  if (codeGraphData.errors.length || codeGraphData.skipped.length) {
+    parts.push(`경고 ${codeGraphData.errors.length + codeGraphData.skipped.length}`);
+  }
+  return parts.join(" · ") + ` · ${elapsed}s`;
+}
+
+function drawCodeGraph() {
+  codeGraph.render(codeGraphView, selectedCode);
+  $("code-graph-status").textContent = codeStatusText();
+  drawCodeNodeList();
+}
+
+function refreshCodeView() {
+  rebuildCodeView();
+  drawCodeGraph();
+  if (selectedCode) drawCodeNodeDetail();
+}
+
+function showCodeGraph(refresh = false) {
+  graphVisible = true;
+  graphMode = "code";
+  renderWorkbench();
+  renderEntries();
+  if (!codeGraphData && !codeGraphLoading) {
+    $("code-graph-path").value = folder;
+    analyzeCode();
+  } else if (refresh) {
+    analyzeCode();
+  } else {
+    drawCodeGraph();
+    setTimeout(() => codeGraph.fit(), 0);
+  }
+}
+
+async function analyzeCode() {
+  let path = $("code-graph-path").value.trim() || "/";
+  if (path.startsWith("/workspace")) path = path.slice("/workspace".length) || "/";
+  if (!path.startsWith("/")) path = "/" + path;
+  if (path.length > 1) path = path.replace(/\/+$/, "");
+  $("code-graph-path").value = path;
+  const request = ++codeGraphRequest;
+  codeGraphLoading = true;
+  $("code-graph-status").textContent = "VM에서 소스를 읽고 의존성을 분석하는 중…";
+  $("code-graph-status").className = "graph-status-pill";
+  try {
+    const data = await api("code-graph?" + new URLSearchParams({ path }));
+    if (request !== codeGraphRequest) return;
+    codeGraphData = data;
+    codeGraphNodes = new Map(data.nodes.map((node) => [node.id, node]));
+    if (!codeGraphNodes.has(selectedCode)) selectedCode = null;
+    rebuildCodeView();
+    drawCodeGraph();
+    if (!data.nodes.length) {
+      $("code-graph-status").textContent = "분석할 Python, C++, Java 파일이 없습니다.";
+    }
+    if (selectedCode) drawCodeNodeDetail();
+    else drawCodeSummary();
+  } catch (error) {
+    if (request !== codeGraphRequest) return;
+    $("code-graph-status").textContent = error.message;
+    $("code-graph-status").classList.add("error");
+  } finally {
+    if (request === codeGraphRequest) codeGraphLoading = false;
+  }
+}
+
+function codeNodeButton(node, action, className = "") {
+  const item = button("", action, "code-node " + className);
+  item.title = node.path + (node.line ? ":" + node.line : "");
+  item.append(element("span", CODE_KIND_LABELS[node.kind]?.[0] || "?", "code-kind kind-" + node.kind),
+    element("span", node.kind === "file" ? node.path : node.qualname, "code-node-name"));
+  return item;
+}
+
+function drawCodeNodeList() {
+  const query = $("code-graph-search").value.trim().toLowerCase();
+  const visible = new Set(codeGraphView.nodes.map((node) => node.id));
+  if (!query) {
+    $("code-node-list").replaceChildren();
+    $("code-node-list").hidden = true;
+    return;
+  }
+  const matches = (codeGraphData?.nodes || []).filter((node) =>
+    (node.qualname + " " + node.path).toLowerCase().includes(query)).slice(0, 80);
+  const items = matches.map((node) => {
+    const item = codeNodeButton(node, () => selectCodeNode(node.id, true),
+      (node.id === selectedCode ? "selected " : "") + (visible.has(node.id) ? "" : "filtered"));
+    return item;
+  });
+  if (!items.length) items.push(element("p", "일치하는 노드가 없습니다.", "notice"));
+  $("code-node-list").hidden = false;
+  $("code-node-list").replaceChildren(...items);
+}
+
+function drawCodeSummary() {
+  const panel = $("code-node-detail");
+  if (!codeGraphData) return panel.replaceChildren();
+  const languages = Object.entries(codeGraphData.languages)
+    .map(([language, count]) => `${CODE_LANGUAGE_LABELS[language] || language} ${count}개`).join(" · ");
+  const children = [element("h2", "분석 요약"),
+    element("p", `${codeGraphData.root} · ${languages || "지원 언어 파일 없음"}`),
+    element("p", "노드를 클릭하거나 검색해 의존 관계를 확인하세요. 파일은 사각형, 클래스는 마름모, 함수는 원, 변수는 작은 원으로 표시됩니다.")];
+  const warnings = [...codeGraphData.errors, ...codeGraphData.skipped];
+  if (warnings.length) {
+    children.push(element("p", "분석 경고"));
+    const list = element("ul");
+    for (const warning of warnings.slice(0, 30)) {
+      const item = element("li");
+      item.append(button(warning.path + (warning.line ? ":" + warning.line : ""),
+        () => openCodeLocation(warning.path, warning.line), "quiet"), element("small", " " + warning.message));
+      list.append(item);
+    }
+    children.push(list);
+  }
+  panel.replaceChildren(...children);
+}
+
+function selectCodeNode(id, center = false) {
+  if (!codeGraphNodes.has(id)) return;
+  selectedCode = selectedCode === id && !center ? null : id;
+  if (codeGraphView.neighborhood !== undefined && $("code-graph-neighborhood").checked) {
+    rebuildCodeView();
+  }
+  drawCodeGraph();
+  if (center && selectedCode) codeGraph.centerOn(selectedCode);
+  if (selectedCode) drawCodeNodeDetail();
+  else drawCodeSummary();
+}
+
+function drawCodeNodeDetail() {
+  const node = codeGraphNodes.get(selectedCode);
+  const panel = $("code-node-detail");
+  if (!node) return drawCodeSummary();
+  const header = element("div", undefined, "code-detail-head");
+  header.append(element("span", CODE_KIND_LABELS[node.kind], "code-kind-pill kind-" + node.kind),
+    element("span", CODE_LANGUAGE_LABELS[node.language] || "", "code-language"));
+  const location = node.path + (node.line && node.kind !== "file" ? ":" + node.line : "");
+  const actions = element("div", undefined, "code-detail-actions");
+  actions.append(button("파일 열기", () => openCodeLocation(node.path, node.kind === "file" ? null : node.line)),
+    button("주변만 보기", () => {
+      $("code-graph-neighborhood").checked = true;
+      refreshCodeView();
+      codeGraph.fit();
+    }, "quiet"), button("선택 해제", () => selectCodeNode(node.id), "quiet"));
+  const children = [header, element("h2", node.kind === "file" ? node.name : node.qualname),
+    element("p", location, "code-location"), actions];
+  const outgoing = new Map();
+  const incoming = new Map();
+  for (const edge of codeGraphData.edges) {
+    if (edge.from === node.id) {
+      if (!outgoing.has(edge.kind)) outgoing.set(edge.kind, []);
+      outgoing.get(edge.kind).push(edge);
+    } else if (edge.to === node.id) {
+      if (!incoming.has(edge.kind)) incoming.set(edge.kind, []);
+      incoming.get(edge.kind).push(edge);
+    }
+  }
+  const section = (map, direction) => {
+    for (const kind of ["imports", "inherits", "calls", "reads", "writes", "contains", "declares"]) {
+      const list = map.get(kind);
+      if (!list?.length) continue;
+      const title = element("p", CODE_EDGE_LABELS[kind][direction] + " " + list.length, "code-edge-title edge-" + kind);
+      const items = element("ul");
+      for (const edge of list.slice(0, 200)) {
+        const other = codeGraphNodes.get(direction === 0 ? edge.to : edge.from);
+        if (!other) continue;
+        const item = element("li");
+        item.append(codeNodeButton(other, () => selectCodeNode(other.id, true)));
+        if (edge.count > 1) item.append(element("small", "×" + edge.count, "code-edge-count"));
+        items.append(item);
+      }
+      children.push(title, items);
+    }
+  };
+  section(outgoing, 0);
+  section(incoming, 1);
+  if (!outgoing.size && !incoming.size) children.push(element("p", "추적된 의존 관계가 없습니다."));
+  panel.replaceChildren(...children);
+}
+
+async function openCodeLocation(path, line) {
+  await openFile(path);
+  const tab = tabs.get(path);
+  const editor = tab && editors.get(tab);
+  if (!editor || !line) return;
+  const { doc } = editor.view.state;
+  const position = doc.line(Math.max(1, Math.min(doc.lines, line))).from;
+  editor.view.dispatch({ selection: { anchor: position }, scrollIntoView: true });
+  editor.view.focus();
+}
+
+$("code-graph-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  analyzeCode();
+});
+document.querySelector(".code-graph-filters").addEventListener("change", () => refreshCodeView());
+$("code-graph-search").addEventListener("input", () => drawCodeNodeList());
+$("code-graph-search").addEventListener("keydown", (event) => {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  $("code-node-list").querySelector("button")?.click();
+});
+$("code-graph-zoom-in").onclick = () => codeGraph.zoom(1.25);
+$("code-graph-zoom-out").onclick = () => codeGraph.zoom(.8);
+$("code-graph-fit").onclick = () => codeGraph.fit();
+$("code-graph-open").onclick = () => showCodeGraph();
 
 boot();
