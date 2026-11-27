@@ -21,7 +21,7 @@ window.QNBVisualizer = (() => {
   let catStepIdx = 0;
   let catTimer = null;
   let catContext = { path: null, cell: null };
-  let catMode = "quiver";
+  let catMode = "commute";
   let catZoom = 1;
   let catPanX = 0;
   let catPanY = 0;
@@ -97,7 +97,7 @@ window.QNBVisualizer = (() => {
       langGroup: "category",
       badge: "Category · .cat 도식 증명",
       title: "자연변환(Naturality)과 함자 보존 법칙",
-      description: "두 함자 F, G 사이의 자연변환 α가 만드는 가환 사각형과 함자 보존 법칙을 Quiver/String 다이어그램으로 보며 증명합니다.",
+      description: "두 함자 F, G 사이의 자연변환 α가 만드는 가환 사각형과 함자 보존 법칙을 단계마다 가환 도식(사각형 · 삼각형)으로 보며 증명합니다.",
       entryPath: "/examples/naturality_square.cat",
       runMode: "plain",
       files: {
@@ -1544,18 +1544,14 @@ window.QNBVisualizer = (() => {
         renderCatStep(catStepIdx + 1);
       }, 950);
     };
-    $("viz-cat-mode-quiver").onclick = () => {
-      catMode = "quiver";
-      $("viz-cat-mode-quiver").classList.add("active");
-      $("viz-cat-mode-string").classList.remove("active");
+    const setCatMode = (mode) => {
+      catMode = mode;
+      $("viz-cat-mode-commute").classList.toggle("active", mode === "commute");
+      $("viz-cat-mode-context").classList.toggle("active", mode === "context");
       drawCategoryCanvas();
     };
-    $("viz-cat-mode-string").onclick = () => {
-      catMode = "string";
-      $("viz-cat-mode-string").classList.add("active");
-      $("viz-cat-mode-quiver").classList.remove("active");
-      drawCategoryCanvas();
-    };
+    $("viz-cat-mode-commute").onclick = () => setCatMode("commute");
+    $("viz-cat-mode-context").onclick = () => setCatMode("context");
     $("viz-cat-zoom-in").onclick = () => { catZoom = Math.min(2.4, catZoom * 1.18); drawCategoryCanvas(); };
     $("viz-cat-zoom-out").onclick = () => { catZoom = Math.max(0.55, catZoom / 1.18); drawCategoryCanvas(); };
     $("viz-cat-fit").onclick = () => { catZoom = 1; catPanX = 0; catPanY = 0; drawCategoryCanvas(); };
@@ -1667,6 +1663,550 @@ window.QNBVisualizer = (() => {
     $("viz-proj-fit").onclick = () => projectGraph?.fit();
   }
 
+  // ---------- category diagrams (tikz-cd style) ----------
+  // Two views:
+  //  · "commute": the current goal lhs = rhs drawn as a commutative diagram — two paths of arrows
+  //    from dom to cod, shared ends pasted (square / triangle / parallel pair / polygon).
+  //  · "context": the declarations as a 2-category picture — categories as frames holding their
+  //    quivers, functors as arrows between frames, natural transformations as ⇓ 2-cells, F ⊣ G.
+  // Labels use light TeX markup from the server: `_{…}` subscript, `^{…}` superscript.
+
+  const CAT_FONT = '"STIX Two Math", "Cambria Math", "Latin Modern Math", "Times New Roman", serif';
+
+  function catPalette(dark) {
+    return {
+      ink: dark ? "#e5e7eb" : "#111827",
+      muted: dark ? "#94a3b8" : "#64748b",
+      line: dark ? "#cbd5e1" : "#1f2937",
+      frame: dark ? "rgba(148, 163, 184, 0.35)" : "rgba(71, 85, 105, 0.32)",
+      frameFill: dark ? "rgba(30, 41, 59, 0.35)" : "rgba(248, 250, 252, 0.9)",
+      bg: dark ? "#0f172a" : "#ffffff",
+      changed: "#d97706",
+      ok: dark ? "#34d399" : "#059669",
+      open: dark ? "#fbbf24" : "#b45309",
+      twocell: dark ? "#a5b4fc" : "#4338ca",
+    };
+  }
+
+  /** Parse `_{…}` / `^{…}` markup into runs with a nesting level (0 base, ±1 sub/sup, …). */
+  function mathRuns(text, level = 0, out = []) {
+    let i = 0;
+    let buf = "";
+    const flush = () => { if (buf) { out.push({ text: buf, level }); buf = ""; } };
+    while (i < text.length) {
+      const ch = text[i];
+      if ((ch === "_" || ch === "^") && text[i + 1] === "{") {
+        let depth = 1;
+        let j = i + 2;
+        while (j < text.length && depth) { if (text[j] === "{") depth++; else if (text[j] === "}") depth--; j++; }
+        flush();
+        mathRuns(text.slice(i + 2, j - 1), ch === "_" ? Math.min(level, 0) - 1 : Math.max(level, 0) + 1, out);
+        i = j;
+        continue;
+      }
+      buf += ch;
+      i++;
+    }
+    flush();
+    return out;
+  }
+
+  function mathFont(size, level, weight = "") {
+    const s = level === 0 ? size : size * (Math.abs(level) === 1 ? 0.7 : 0.58);
+    return `${weight ? weight + " " : ""}italic ${s.toFixed(1)}px ${CAT_FONT}`;
+  }
+
+  function measureMath(ctx, text, size, weight) {
+    let w = 0;
+    for (const run of mathRuns(text)) { ctx.font = mathFont(size, run.level, weight); w += ctx.measureText(run.text).width; }
+    return w;
+  }
+
+  function drawMath(ctx, text, x, y, size, color, align = "center", weight = "") {
+    const width = measureMath(ctx, text, size, weight);
+    let cx = align === "center" ? x - width / 2 : align === "right" ? x - width : x;
+    ctx.save();
+    ctx.fillStyle = color;
+    ctx.textBaseline = "middle";
+    ctx.textAlign = "left";
+    for (const run of mathRuns(text)) {
+      ctx.font = mathFont(size, run.level, weight);
+      const dy = run.level < 0 ? size * 0.28 : run.level > 0 ? -size * 0.36 : 0;
+      ctx.fillText(run.text, cx, y + dy);
+      cx += ctx.measureText(run.text).width;
+    }
+    ctx.restore();
+    return width;
+  }
+
+  /** A diagram object: a label with a (clip) box arrows stop at. */
+  function catNode(ctx, label, x, y, size = 24) {
+    const w = measureMath(ctx, label, size) + 12;
+    return { label, x, y, w, h: size + 10, size };
+  }
+
+  /** Point where the ray from the box centre towards (tx, ty) leaves the box. */
+  function boxExit(node, tx, ty, pad = 3) {
+    const dx = tx - node.x;
+    const dy = ty - node.y;
+    if (!dx && !dy) return { x: node.x, y: node.y };
+    const hw = node.w / 2 + pad;
+    const hh = node.h / 2 + pad;
+    const t = Math.min(dx ? hw / Math.abs(dx) : Infinity, dy ? hh / Math.abs(dy) : Infinity);
+    return { x: node.x + dx * t, y: node.y + dy * t };
+  }
+
+  /**
+   * Draw an arrow between two nodes.  `bend` bows the arrow (px, + = to the left of travel);
+   * `away` is a point the label should be placed away from (the inside of a diagram cell).
+   */
+  function catArrow(ctx, a, b, opts = {}) {
+    const { bend = 0, label = "", kind = "morphism", color, labelColor, away = null, width = 1.5, labelSize = 19 } = opts;
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const nx = -dy / len;
+    const ny = dx / len;
+    const cx = (a.x + b.x) / 2 + nx * bend;
+    const cy = (a.y + b.y) / 2 + ny * bend;
+    const s = boxExit(a, cx, cy);
+    const e = boxExit(b, cx, cy, 5);
+    const qx = 2 * cx - (s.x + e.x) / 2;   // control point so the curve passes through (cx, cy)
+    const qy = 2 * cy - (s.y + e.y) / 2;
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width;
+    ctx.lineCap = "round";
+    if (kind === "universal") ctx.setLineDash([7, 5]);
+    if (kind === "identity") {
+      // An identity is drawn as an equality: a double line, no head.
+      for (const off of [-2.2, 2.2]) {
+        ctx.beginPath();
+        ctx.moveTo(s.x + nx * off, s.y + ny * off);
+        ctx.quadraticCurveTo(qx + nx * off, qy + ny * off, e.x + nx * off, e.y + ny * off);
+        ctx.stroke();
+      }
+    } else {
+      ctx.beginPath();
+      ctx.moveTo(s.x, s.y);
+      ctx.quadraticCurveTo(qx, qy, e.x, e.y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      // tikz-cd "to" head: two short curved strokes.
+      const ang = Math.atan2(e.y - qy, e.x - qx);
+      const hl = 9 + width;
+      for (const sgn of [-1, 1]) {
+        const ha = ang + sgn * 0.42;
+        ctx.beginPath();
+        ctx.moveTo(e.x, e.y);
+        ctx.quadraticCurveTo(e.x - hl * 0.55 * Math.cos(ang), e.y - hl * 0.55 * Math.sin(ang),
+          e.x - hl * Math.cos(ha), e.y - hl * Math.sin(ha));
+        ctx.stroke();
+      }
+      if (kind === "iso") {   // ≅ written over the middle of the arrow
+        drawMath(ctx, "≅", cx - nx * 12, cy - ny * 12, 15, color);
+      }
+    }
+    ctx.restore();
+    if (label && kind !== "identity") {
+      const lw = measureMath(ctx, label, labelSize);
+      let side = 1;
+      if (away) {
+        const vx = cx - away.x;
+        const vy = cy - away.y;
+        side = vx * nx + vy * ny >= 0 ? 1 : -1;
+      } else if (bend) side = Math.sign(bend);
+      const off = Math.abs(nx) * (lw / 2) + Math.abs(ny) * (labelSize * 0.55) + 7;
+      drawMath(ctx, label, cx + nx * side * off, cy + ny * side * off, labelSize, labelColor || color);
+    }
+    return { cx, cy };
+  }
+
+  function catLoop(ctx, a, opts = {}) {
+    const { label = "", color, labelColor, up = true, r = 22, labelSize = 19 } = opts;
+    const dir = up ? -1 : 1;
+    const cy = a.y + dir * (a.h / 2 + r);
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.ellipse(a.x, cy, r * 0.9, r, 0, up ? 0.68 * Math.PI : -0.32 * Math.PI, up ? 2.32 * Math.PI : 1.32 * Math.PI);
+    ctx.stroke();
+    const tipA = up ? 2.32 * Math.PI : 1.32 * Math.PI;
+    const tx = a.x + r * 0.9 * Math.cos(tipA);
+    const ty = cy + r * Math.sin(tipA);
+    for (const sgn of [-1, 1]) {
+      const ha = (up ? 1.55 : -1.55) + sgn * 0.45;
+      ctx.beginPath();
+      ctx.moveTo(tx, ty);
+      ctx.lineTo(tx - 9 * Math.cos(ha), ty - 9 * Math.sin(ha));
+      ctx.stroke();
+    }
+    ctx.restore();
+    if (label) drawMath(ctx, label, a.x, cy + dir * (r + 13), labelSize, labelColor || color);
+  }
+
+  /** Lay out a path diagram (see category.py path_diagram) in unit-free world coordinates. */
+  function layoutPathDiagram(ctx, d) {
+    const U = 190;
+    const V = 150;
+    const nodes = [];
+    const arrows = [];
+    const add = (label, x, y) => { const n = catNode(ctx, label, x, y); nodes.push(n); return n; };
+    const p = d.top.length;
+    const q = d.bottom.length;
+
+    // Region (split S → merge M) first, at the origin; prefix/suffix chains hang off it.
+    let S;
+    let M;
+    let regionCentre = null;
+    const placeChain = (from, list, pts, lastNode) => {
+      let prev = from;
+      list.forEach((arrow, i) => {
+        const next = i === list.length - 1 && lastNode ? lastNode : add(arrow.dstMath, pts[i].x, pts[i].y);
+        arrows.push({ from: prev, to: next, arrow, bend: pts[i].bend || 0 });
+        prev = next;
+      });
+    };
+    const startMath = d.prefix.length ? d.prefix[d.prefix.length - 1].dstMath : d.domMath;
+    if (p === 0 && q === 0) {
+      S = M = add(startMath, 0, 0);
+    } else if (p === 0 || q === 0) {
+      // One side is the identity on S: the other path is a loop back to S.
+      S = M = add(startMath, 0, 0);
+      const loop = p ? d.top : d.bottom;
+      if (loop.length === 1) {
+        arrows.push({ from: S, to: S, arrow: loop[0], loop: true });
+      } else {
+        // Nodes on a circle standing on S (S at its bottom), walked anticlockwise on screen.
+        const k = loop.length;
+        const R = k === 2 ? V * 0.6 : V * 0.75;
+        const bend = k === 2 ? 46 : 0;   // two arrows between the same pair bow apart (a lens)
+        const pts = [];
+        for (let i = 1; i < k; i++) {
+          const ang = Math.PI / 2 - (Math.PI * 2 * i) / k;
+          pts.push({ x: Math.cos(ang) * R * 1.25, y: -R + Math.sin(ang) * R, bend });
+        }
+        pts.push({ x: 0, y: 0, bend });
+        placeChain(S, loop, pts, S);
+        regionCentre = { x: 0, y: -R };
+      }
+    } else if (p === 1 && q === 1) {
+      S = add(startMath, 0, 0);
+      M = add(d.top[0].dstMath, U * 1.25, 0);
+      arrows.push({ from: S, to: M, arrow: d.top[0], bend: 34 });
+      arrows.push({ from: S, to: M, arrow: d.bottom[0], bend: -34 });
+      regionCentre = { x: U * 0.62, y: 0 };
+    } else if (p === 2 && q === 2) {
+      // The commutative square.
+      S = add(startMath, 0, 0);
+      M = add(d.top[1].dstMath, U, V);
+      placeChain(S, d.top, [{ x: U, y: 0 }, { x: U, y: V }], M);
+      placeChain(S, d.bottom, [{ x: 0, y: V }, { x: U, y: V }], M);
+      regionCentre = { x: U / 2, y: V / 2 };
+    } else if ((p === 2 && q === 1) || (p === 1 && q === 2)) {
+      // The commutative triangle; the longer side goes round the corner.
+      const two = p === 2 ? d.top : d.bottom;
+      const one = p === 2 ? d.bottom : d.top;
+      S = add(startMath, 0, 0);
+      M = add(two[1].dstMath, U, V);
+      placeChain(S, two, [{ x: U, y: 0 }, { x: U, y: V }], M);
+      arrows.push({ from: S, to: M, arrow: one[0] });
+      regionCentre = { x: U * 0.68, y: V * 0.32 };
+    } else {
+      const span = Math.max(p, q) * U * 0.82;
+      S = add(startMath, 0, 0);
+      M = add((d.top[p - 1] || d.bottom[q - 1]).dstMath, span, 0);
+      const side = (n, dir) => {
+        const pts = [];
+        for (let i = 1; i < n; i++) {
+          const t = i / n;
+          pts.push({ x: span * t, y: dir * V * 0.85 * Math.sin(Math.PI * t) ** 0.6 });
+        }
+        pts.push({ x: span, y: 0 });
+        return pts;
+      };
+      placeChain(S, d.top, side(p, -1), M);
+      placeChain(S, d.bottom, side(q, 1), M);
+      regionCentre = { x: span / 2, y: 0 };
+    }
+
+    // Prefix: chain into S from the left, along S's row.
+    let prev = null;
+    if (d.prefix.length) {
+      const k = d.prefix.length;
+      prev = add(d.domMath, S.x - U * k, S.y);
+      d.prefix.forEach((arrow, i) => {
+        const next = i === k - 1 ? S : add(arrow.dstMath, S.x - U * (k - 1 - i), S.y);
+        arrows.push({ from: prev, to: next, arrow, chain: true });
+        prev = next;
+      });
+    }
+    // Suffix: chain out of M to the right, along M's row.
+    prev = M;
+    d.suffix.forEach((arrow, i) => {
+      const next = add(arrow.dstMath, M.x + U * (i + 1), M.y);
+      arrows.push({ from: prev, to: next, arrow, chain: true });
+      prev = next;
+    });
+    return { nodes, arrows, regionCentre, S, M };
+  }
+
+  function previousDiagram(stepIdx) {
+    const step = catViz.steps[stepIdx];
+    for (let i = stepIdx - 1; i >= 0; i--) {
+      const s = catViz.steps[i];
+      if (s.theorem && s.theorem === step.theorem && s.diagram) return s.diagram;
+      if (s.tactic === "theorem") break;
+    }
+    return null;
+  }
+
+  function fitWorld(ctx, items, box) {
+    // items: [{x, y, w, h}] in layout coords → transform into `box` (world coords), never upscaled past 1.15.
+    let x0 = Infinity; let y0 = Infinity; let x1 = -Infinity; let y1 = -Infinity;
+    for (const it of items) {
+      x0 = Math.min(x0, it.x - it.w / 2); x1 = Math.max(x1, it.x + it.w / 2);
+      y0 = Math.min(y0, it.y - it.h / 2); y1 = Math.max(y1, it.y + it.h / 2);
+    }
+    const bw = Math.max(1, x1 - x0);
+    const bh = Math.max(1, y1 - y0);
+    const k = Math.min(1.15, box.w / bw, box.h / bh);
+    ctx.translate(box.x + box.w / 2, box.y + box.h / 2);
+    ctx.scale(k, k);
+    ctx.translate(-(x0 + x1) / 2, -(y0 + y1) / 2);
+    return k;
+  }
+
+  function drawCommuteDiagram(ctx, step, pal) {
+    const d = step.diagram;
+    const solved = d.commutes;
+    const prevD = solved ? null : previousDiagram(catStepIdx);  // a solved step shows the original statement
+    const prevLabels = prevD ? new Set([...prevD.prefix, ...prevD.top, ...prevD.bottom, ...prevD.suffix].map((a) => a.label)) : null;
+    const layout = layoutPathDiagram(ctx, d);
+
+    // Title and the equation as text.
+    const title = step.theorem ? `${step.theorem}` : (step.tactic === "axiom" ? "공리" : "");
+    ctx.save();
+    ctx.font = `600 17px ${CAT_FONT}`;
+    ctx.fillStyle = pal.muted;
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    ctx.fillText(`${title}${title ? " · " : ""}범주 ${d.category}`, 40, 40);
+    ctx.restore();
+    drawMath(ctx, `${d.lhsMath}  =  ${d.rhsMath}`, 500, 560, 21, solved ? pal.ok : pal.ink);
+    ctx.save();
+    ctx.font = `500 14px sans-serif`;
+    ctx.fillStyle = solved ? pal.ok : pal.open;
+    ctx.textAlign = "center";
+    ctx.fillText(solved ? "✓ 도식이 가환함 (commutes)" : "? 가환성을 증명할 도식", 500, 530);
+    ctx.restore();
+
+    ctx.save();
+    const items = layout.nodes.map((n) => ({ x: n.x, y: n.y, w: n.w + 140, h: n.h + 90 }));
+    fitWorld(ctx, items, { x: 60, y: 70, w: 880, h: 430 });
+    const away = layout.regionCentre;
+    for (const a of layout.arrows) {
+      const changed = prevLabels && !prevLabels.has(a.arrow.label);
+      const color = changed ? pal.changed : pal.line;
+      const labelColor = changed ? pal.changed : pal.ink;
+      if (a.loop) {
+        catLoop(ctx, a.from, { label: a.arrow.math, color, labelColor });
+      } else {
+        catArrow(ctx, a.from, a.to, {
+          bend: a.bend || 0, label: a.arrow.math, kind: a.arrow.kind, color, labelColor,
+          away: a.chain ? { x: a.from.x, y: a.from.y + 100 } : away, width: changed ? 2.4 : 1.5,
+        });
+      }
+    }
+    for (const n of layout.nodes) {
+      drawMath(ctx, n.label, n.x, n.y, n.size, pal.ink);
+    }
+    if (away && (d.top.length || d.bottom.length)) {
+      // Cell marker: the equation this region asserts.
+      drawMath(ctx, solved ? "=" : "?", away.x, away.y, 26, solved ? pal.ok : pal.open);
+    }
+    ctx.restore();
+  }
+
+  /** Simple layered layout of one category's quiver (longest-path ranks). */
+  function layoutQuiver(ctx, nodeIds, edges) {
+    const succ = new Map(nodeIds.map((id) => [id, []]));
+    for (const e of edges) if (e.source !== e.target && succ.has(e.source) && succ.has(e.target)) succ.get(e.source).push(e.target);
+    const rank = new Map();
+    const visiting = new Set();
+    const depth = (id) => {
+      if (rank.has(id)) return rank.get(id);
+      if (visiting.has(id)) return 0;
+      visiting.add(id);
+      let r = 0;
+      for (const [src, outs] of succ) if (outs.includes(id)) r = Math.max(r, depth(src) + 1);
+      visiting.delete(id);
+      rank.set(id, r);
+      return r;
+    };
+    nodeIds.forEach(depth);
+    const cols = new Map();
+    for (const id of nodeIds) { const r = rank.get(id); if (!cols.has(r)) cols.set(r, []); cols.get(r).push(id); }
+    const pos = new Map();
+    for (const [r, ids] of cols) {
+      ids.forEach((id, i) => pos.set(id, { x: r * 150, y: (i - (ids.length - 1) / 2) * 110 }));
+    }
+    return pos;
+  }
+
+  function drawContextDiagram(ctx, step, pal) {
+    const diagram = catViz.diagram || {};
+    const math = catViz.math || {};
+    const cats = diagram.categories?.length ? diagram.categories : ["C"];
+    // Highlight what the current line declares (proof steps keep the picture neutral).
+    const highlights = new Set(step?.status === "decl" ? step.highlightEdges || [] : []);
+    const mname = (kind, name) => (math[kind] && math[kind][name]) || name;
+
+    // Frames: one per category, side by side with room between for functor arrows.
+    const gap = 150;
+    const frameW = Math.min(340, (900 - gap * (cats.length - 1)) / cats.length);
+    const frameH = 300;
+    const total = frameW * cats.length + gap * (cats.length - 1);
+    const left = 500 - total / 2;
+    const frames = new Map();
+    cats.forEach((c, i) => frames.set(c, { x: left + i * (frameW + gap), y: 150, w: frameW, h: frameH }));
+
+    for (const [c, f] of frames) {
+      ctx.save();
+      ctx.fillStyle = pal.frameFill;
+      ctx.strokeStyle = pal.frame;
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.roundRect(f.x, f.y, f.w, f.h, 16);
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+      drawMath(ctx, c, f.x + 16, f.y - 18, 24, pal.ink, "left", "600");
+    }
+
+    // Objects and morphisms inside each frame.
+    const placed = new Map();
+    for (const [c, f] of frames) {
+      const ids = (diagram.nodes || []).filter((n) => n.category === c).map((n) => n.id);
+      const edges = (diagram.edges || []).filter((e) => e.category === c);
+      const pos = layoutQuiver(ctx, ids, edges);
+      const pts = [...pos.values()];
+      if (!pts.length) {
+        drawMath(ctx, "(대상 없음)", f.x + f.w / 2, f.y + f.h / 2, 15, pal.muted);
+        continue;
+      }
+      const xs = pts.map((p) => p.x);
+      const ys = pts.map((p) => p.y);
+      const bw = Math.max(...xs) - Math.min(...xs);
+      const bh = Math.max(...ys) - Math.min(...ys);
+      const k = Math.min(1, (f.w - 90) / Math.max(1, bw), (f.h - 90) / Math.max(1, bh));
+      const ox = f.x + f.w / 2 - ((Math.max(...xs) + Math.min(...xs)) / 2) * k;
+      const oy = f.y + f.h / 2 + 10 - ((Math.max(...ys) + Math.min(...ys)) / 2) * k;
+      for (const id of ids) {
+        const p = pos.get(id);
+        const node = (diagram.nodes || []).find((n) => n.id === id);
+        const label = node?.special === "derived" ? id : mname("objects", id);
+        placed.set(id, catNode(ctx, label, ox + p.x * k, oy + p.y * k, 21));
+      }
+      const pairCount = new Map();
+      for (const e of edges) {
+        const a = placed.get(e.source);
+        const b = placed.get(e.target);
+        if (!a || !b) continue;
+        const hot = highlights.has(e.name);
+        const color = hot ? pal.changed : pal.line;
+        const label = mname("morphisms", e.name);
+        if (a === b) {
+          catLoop(ctx, a, { label, color, labelColor: hot ? pal.changed : pal.ink, labelSize: 16 });
+          continue;
+        }
+        const key = [e.source, e.target].sort().join("\u0000");
+        const n = pairCount.get(key) || 0;
+        pairCount.set(key, n + 1);
+        const bend = n === 0 ? 0 : (n % 2 ? 1 : -1) * Math.ceil(n / 2) * 26;
+        catArrow(ctx, a, b, {
+          bend, label, kind: e.kind === "iso" ? "iso" : "morphism",
+          color, labelColor: hot ? pal.changed : pal.ink, width: hot ? 2.2 : 1.4, labelSize: 16,
+        });
+      }
+      for (const id of ids) {
+        const node = placed.get(id);
+        if (node) drawMath(ctx, node.label, node.x, node.y, node.size, pal.ink);
+      }
+    }
+
+    // Functors between frames (and endofunctors as loops above a frame).
+    const frameNode = (c) => { const f = frames.get(c); return { x: f.x + f.w / 2, y: f.y + f.h / 2, w: f.w, h: f.h }; };
+    const functors = catViz.functors || [];
+    const adjPairs = new Map();
+    for (const adj of catViz.adjunctions || []) adjPairs.set(adj.left, adj);
+    const pairSeen = new Map();
+    const functorMid = new Map();
+    for (const fn of functors) {
+      if (!frames.has(fn.src) || !frames.has(fn.dst)) continue;
+      const hot = highlights.has(fn.name);
+      const color = hot ? pal.changed : pal.twocell;
+      const label = mname("functors", fn.name);
+      if (fn.src === fn.dst) {
+        const f = frames.get(fn.src);
+        const n = pairSeen.get(fn.src + "↻") || 0;
+        pairSeen.set(fn.src + "↻", n + 1);
+        catLoop(ctx, { x: f.x + f.w / 2 + n * 60, y: f.y, w: 10, h: 0 }, { label, color, up: true, r: 24 });
+        continue;
+      }
+      const key = [fn.src, fn.dst].sort().join("→");
+      const n = pairSeen.get(key) || 0;
+      pairSeen.set(key, n + 1);
+      // Parallel functors fan out: first above the axis, then below, …
+      const forward = cats.indexOf(fn.src) < cats.indexOf(fn.dst);
+      const bendBase = (n % 2 === 0 ? 1 : -1) * (Math.floor(n / 2) * 30 + 34);
+      const bend = forward ? -bendBase : bendBase;   // first functor above the axis (F over G, α ⇓)
+      const a = frameNode(fn.src);
+      const b = frameNode(fn.dst);
+      const mid = catArrow(ctx, a, b, { bend, label, color, labelColor: color, width: hot ? 2.6 : 1.8, labelSize: 21 });
+      functorMid.set(fn.name, mid);
+    }
+    // Adjunctions: ⊣ between the two functors.
+    for (const adj of catViz.adjunctions || []) {
+      const m1 = functorMid.get(adj.left);
+      const m2 = functorMid.get(adj.right);
+      if (!m1 || !m2) continue;
+      drawMath(ctx, "⊥", (m1.cx + m2.cx) / 2, (m1.cy + m2.cy) / 2, 24, pal.twocell);
+    }
+    // Natural transformations: a ⇓ 2-cell between the two parallel functors.
+    for (const nat of catViz.naturalTransformations || []) {
+      const m1 = functorMid.get(nat.src_f);
+      const m2 = functorMid.get(nat.dst_f);
+      if (!m1 || !m2) continue;
+      const hot = highlights.has(nat.name);
+      const color = hot ? pal.changed : pal.twocell;
+      const sx = m1.cx; const sy = m1.cy; const ex = m2.cx; const ey = m2.cy;
+      const len = Math.hypot(ex - sx, ey - sy) || 1;
+      const ux = (ex - sx) / len; const uy = (ey - sy) / len;
+      const a0 = { x: sx + ux * 16, y: sy + uy * 16 };
+      const a1 = { x: ex - ux * 18, y: ey - uy * 18 };
+      ctx.save();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.5;
+      for (const off of [-2.4, 2.4]) {
+        ctx.beginPath();
+        ctx.moveTo(a0.x - uy * off, a0.y + ux * off);
+        ctx.lineTo(a1.x - uy * off - ux * 4, a1.y + ux * off - uy * 4);
+        ctx.stroke();
+      }
+      const ang = Math.atan2(uy, ux);
+      for (const sgn of [-1, 1]) {
+        ctx.beginPath();
+        ctx.moveTo(a1.x, a1.y);
+        ctx.lineTo(a1.x - 10 * Math.cos(ang + sgn * 0.6), a1.y - 10 * Math.sin(ang + sgn * 0.6));
+        ctx.stroke();
+      }
+      ctx.restore();
+      drawMath(ctx, mname("nats", nat.name), (a0.x + a1.x) / 2 + 16, (a0.y + a1.y) / 2, 20, color, "left");
+    }
+  }
+
   function drawCategoryCanvas() {
     const canvas = $("viz-cat-canvas");
     if (!canvas || !catViz?.diagram) return;
@@ -1680,200 +2220,17 @@ window.QNBVisualizer = (() => {
     }
     const ctx = canvas.getContext("2d");
     const dark = document.documentElement.dataset.ideTheme === "dark" || document.documentElement.dataset.theme === "dark";
+    const pal = catPalette(dark);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
-
     const step = catViz.steps?.[catStepIdx];
-    const highlights = new Set(step?.highlightEdges || []);
     const baseScale = Math.min(w / 1000, h / 600);
     ctx.save();
     ctx.translate(w / 2 + catPanX, h / 2 + catPanY);
     ctx.scale(baseScale * catZoom, baseScale * catZoom);
     ctx.translate(-500, -300);
-
-    const diagram = catViz.diagram;
-    if (catMode === "string") {
-      // String Diagram dual: vertical colored wires = objects, horizontal boxes = morphisms/functors
-      const wires = diagram.stringWires || [];
-      const objs = diagram.nodes || [];
-      const rowH = Math.max(70, 440 / Math.max(1, wires.length + 1));
-      const wireCols = ["#38bdf8", "#f59e0b", "#34d399", "#f472b6", "#a78bfa", "#fb7185"];
-      const objX = new Map();
-      const spanW = 820 / Math.max(1, objs.length);
-      objs.forEach((n, idx) => {
-        const x = 90 + spanW * idx + spanW / 2;
-        objX.set(n.id, x);
-        const col = wireCols[idx % wireCols.length];
-        ctx.strokeStyle = col;
-        ctx.lineWidth = 3;
-        ctx.beginPath();
-        ctx.moveTo(x, 65);
-        ctx.lineTo(x, 540);
-        ctx.stroke();
-        ctx.fillStyle = col;
-        ctx.font = "600 18px sans-serif";
-        ctx.textAlign = "center";
-        ctx.fillText(n.label, x, 44);
-      });
-      wires.forEach((m, idx) => {
-        const y = 100 + idx * Math.min(82, rowH);
-        const x1 = objX.get(m.dom) ?? 250;
-        const x2 = objX.get(m.cod) ?? 650;
-        const bx = (x1 + x2) / 2;
-        const bw = Math.max(110, Math.abs(x2 - x1) + 46);
-        const active = highlights.has(m.name);
-        ctx.save();
-        if (active) {
-          ctx.shadowColor = "rgba(245, 158, 11, 0.55)";
-          ctx.shadowBlur = 16;
-        }
-        ctx.fillStyle = active ? (dark ? "#78350f" : "#fef3c7") : (dark ? "#1e293b" : "#f8fafc");
-        ctx.strokeStyle = active ? "#f59e0b" : (dark ? "#475569" : "#94a3b8");
-        ctx.lineWidth = active ? 3 : 2;
-        ctx.beginPath();
-        ctx.roundRect(bx - bw / 2, y - 22, bw, 44, 12);
-        ctx.fill();
-        ctx.stroke();
-        ctx.restore();
-        ctx.fillStyle = active ? (dark ? "#fef08a" : "#92400e") : (dark ? "#e2e8f0" : "#0f172a");
-        ctx.font = "700 17px monospace";
-        ctx.textAlign = "center";
-        ctx.textBaseline = "middle";
-        ctx.fillText(`${m.name} (${m.dom}→${m.cod})`, bx, y);
-      });
-      ctx.restore();
-      return;
-    }
-
-    // Quiver Mode: category cluster bands
-    const cats = diagram.categories || [];
-    const bandW = 880 / Math.max(1, cats.length);
-    cats.forEach((cname, cIdx) => {
-      const x = 100 + bandW * cIdx;
-      ctx.save();
-      ctx.fillStyle = dark ? "rgba(30, 41, 59, 0.42)" : "rgba(241, 245, 249, 0.72)";
-      ctx.strokeStyle = dark ? "rgba(148, 163, 184, 0.25)" : "rgba(100, 116, 139, 0.24)";
-      ctx.setLineDash([7, 5]);
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.roundRect(x + 14, 34, bandW - 28, 532, 22);
-      ctx.fill();
-      ctx.stroke();
-      ctx.restore();
-      ctx.fillStyle = dark ? "#93c5fd" : "#1d4ed8";
-      ctx.font = "700 20px serif";
-      ctx.textAlign = "left";
-      ctx.fillText(`Cat ${cname}`, x + 34, 66);
-    });
-
-    // Draw functors as dashed bridge arcs between category bands if >= 2 categories
-    if (cats.length >= 2 && catViz.functors?.length) {
-      catViz.functors.forEach((f, idx) => {
-        const sIdx = cats.indexOf(f.src);
-        const dIdx = cats.indexOf(f.dst);
-        if (sIdx < 0 || dIdx < 0 || sIdx === dIdx) return;
-        const sx = 100 + bandW * sIdx + bandW * 0.5;
-        const dx = 100 + bandW * dIdx + bandW * 0.5;
-        const y = 78 + idx * 34;
-        const active = highlights.has(f.name);
-        ctx.save();
-        ctx.setLineDash([6, 4]);
-        ctx.strokeStyle = active ? "#f59e0b" : (dark ? "#818cf8" : "#6366f1");
-        ctx.lineWidth = active ? 3.2 : 2;
-        ctx.beginPath();
-        ctx.moveTo(sx, y);
-        ctx.quadraticCurveTo((sx + dx) / 2, y - 34, dx, y);
-        ctx.stroke();
-        ctx.fillStyle = active ? "#f59e0b" : (dark ? "#c7d2fe" : "#4338ca");
-        ctx.font = "700 17px monospace";
-        ctx.textAlign = "center";
-        ctx.fillText(`Functor ${f.name}`, (sx + dx) / 2, y - 16);
-        ctx.restore();
-      });
-    }
-
-    const posMap = new Map((diagram.nodes || []).map((n) => [n.id, n]));
-    // Draw morphisms
-    for (const edge of diagram.edges || []) {
-      const a = posMap.get(edge.source);
-      const b = posMap.get(edge.target);
-      if (!a || !b) continue;
-      const active = highlights.has(edge.name);
-      const color = active ? "#f59e0b" : edge.kind === "iso" ? "#10b981" : (dark ? "#94a3b8" : "#475569");
-      ctx.save();
-      ctx.strokeStyle = color;
-      ctx.fillStyle = color;
-      ctx.lineWidth = active ? 3.8 : 2.1;
-      if (active) {
-        ctx.shadowColor = "rgba(245, 158, 11, 0.55)";
-        ctx.shadowBlur = 10;
-      }
-      let lx, ly, tx, ty, angle;
-      if (a.id === b.id) {
-        const r = 34 + edge.curveIndex * 16;
-        ctx.beginPath();
-        ctx.arc(a.x, a.y - r - 12, r, 0.25 * Math.PI, 2.15 * Math.PI);
-        ctx.stroke();
-        lx = a.x; ly = a.y - r * 2 - 22;
-        tx = a.x + r * 0.7; ty = a.y - r;
-        angle = 0.7;
-      } else {
-        const dx = b.x - a.x;
-        const dy = b.y - a.y;
-        const len = Math.hypot(dx, dy) || 1;
-        const nx = -dy / len;
-        const ny = dx / len;
-        const bend = (edge.curveIndex % 2 === 0 ? 1 : -1) * (Math.floor((edge.curveIndex + 1) / 2) * 44 + 14);
-        const mx = (a.x + b.x) / 2 + nx * bend;
-        const my = (a.y + b.y) / 2 + ny * bend;
-        const sr = 28;
-        const sx = a.x + (dx / len) * sr;
-        const sy = a.y + (dy / len) * sr;
-        tx = b.x - (dx / len) * (sr + 4);
-        ty = b.y - (dy / len) * (sr + 4);
-        ctx.beginPath();
-        ctx.moveTo(sx, sy);
-        ctx.quadraticCurveTo(mx, my, tx, ty);
-        ctx.stroke();
-        angle = Math.atan2(ty - my, tx - mx);
-        lx = 0.25 * sx + 0.5 * mx + 0.25 * tx + nx * 12;
-        ly = 0.25 * sy + 0.5 * my + 0.25 * ty + ny * 12;
-      }
-      // Arrowhead
-      ctx.beginPath();
-      ctx.moveTo(tx, ty);
-      ctx.lineTo(tx - 12 * Math.cos(angle - 0.35), ty - 12 * Math.sin(angle - 0.35));
-      ctx.lineTo(tx - 12 * Math.cos(angle + 0.35), ty - 12 * Math.sin(angle + 0.35));
-      ctx.closePath();
-      ctx.fill();
-      ctx.font = (active ? "700 18px" : "600 16px") + " monospace";
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.fillStyle = active ? (dark ? "#fde68a" : "#b45309") : (dark ? "#e2e8f0" : "#1e293b");
-      ctx.fillText(edge.kind === "iso" ? `${edge.name} ≅` : edge.name, lx, ly);
-      ctx.restore();
-    }
-
-    // Draw object nodes
-    for (const node of diagram.nodes || []) {
-      const r = node.special === "derived" ? 26 : 29;
-      ctx.save();
-      ctx.beginPath();
-      ctx.arc(node.x, node.y, r, 0, Math.PI * 2);
-      ctx.fillStyle = dark ? "#0f172a" : "#ffffff";
-      ctx.fill();
-      ctx.lineWidth = 3;
-      ctx.strokeStyle = node.special === "terminal" ? "#f59e0b"
-        : node.special === "initial" ? "#10b981"
-          : node.special === "derived" ? "#8b5cf6" : "#3b82f6";
-      ctx.stroke();
-      ctx.fillStyle = dark ? "#f8fafc" : "#0f172a";
-      ctx.font = (node.label.length > 5 ? "700 14px" : "700 18px") + " monospace";
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.fillText(node.label, node.x, node.y);
-      ctx.restore();
-    }
+    if (catMode === "commute" && step?.diagram) drawCommuteDiagram(ctx, step, pal);
+    else drawContextDiagram(ctx, step, pal);
     ctx.restore();
   }
 

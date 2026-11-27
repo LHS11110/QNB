@@ -857,6 +857,133 @@ def _build_diagram(env):
     return {"mode": "quiver", "nodes": nodes, "edges": edges, "stringWires": string_wires, "categories": cats}
 
 
+# --------------------------------------------------------------------------- Commutative (path) diagrams
+#
+# An equation lhs = rhs between morphisms dom → cod is drawn the way it is on paper: each side is a
+# path of arrows (the factors of the composite, first-applied first) from dom to cod, and the
+# equation says the diagram commutes.  Factors shared at the start or end of both paths are drawn
+# once (pasted), so e.g. G(g ∘ f) ∘ α_A = α_X ∘ F(g) ∘ F(f) becomes a square/pentagon.
+#
+# Labels carry light TeX-like markup the client renders: `_{…}` subscript, `^{…}` superscript.
+
+_GREEK = {
+    "alpha": "α", "beta": "β", "gamma": "γ", "delta": "δ", "eps": "ε", "epsilon": "ε", "zeta": "ζ",
+    "eta": "η", "theta": "θ", "iota": "ι", "kappa": "κ", "lambda": "λ", "mu": "μ", "nu": "ν",
+    "xi": "ξ", "rho": "ρ", "sigma": "σ", "tau": "τ", "phi": "φ", "chi": "χ", "psi": "ψ", "omega": "ω",
+}
+_SPECIAL_ARROWS = {"fst": "π_{1}", "snd": "π_{2}", "inl": "ι_{1}", "inr": "ι_{2}"}
+
+
+def math_name(name: str) -> str:
+    if name in _SPECIAL_ARROWS:
+        return _SPECIAL_ARROWS[name]
+    base, primes = name.rstrip("'"), name[len(name.rstrip("'")):]
+    return _GREEK.get(base, base) + "′" * len(primes)
+
+
+def math_obj(term: CatTerm, *, nested=False) -> str:
+    if isinstance(term, ObjName):
+        return math_name(term.name)
+    if isinstance(term, ObjApp):
+        return f"{math_name(term.func)}({math_obj(term.arg)})"
+    if isinstance(term, (ObjProd, ObjCoprod)):
+        op = " × " if isinstance(term, ObjProd) else " + "
+        body = math_obj(term.left, nested=True) + op + math_obj(term.right, nested=True)
+        return f"({body})" if nested else body
+    return str(term)
+
+
+def math_morph(term: CatTerm, *, nested=False) -> str:
+    if isinstance(term, MorphId):
+        return f"1_{{{math_obj(term.obj)}}}"
+    if isinstance(term, MorphVar):
+        if term.arg is not None:
+            return f"{math_name(term.name)}_{{{math_obj(term.arg)}}}"
+        return math_name(term.name)
+    if isinstance(term, MorphComp):
+        body = f"{math_morph(term.left, nested=True)} ∘ {math_morph(term.right, nested=True)}"
+        return f"({body})" if nested else body
+    if isinstance(term, MorphFMap):
+        return f"{math_name(term.functor)}({math_morph(term.inner)})"
+    if isinstance(term, MorphInv):
+        inner = math_morph(term.inner, nested=True)
+        return f"{inner}^{{-1}}"
+    if isinstance(term, MorphPair):
+        return f"⟨{math_morph(term.left)}, {math_morph(term.right)}⟩"
+    if isinstance(term, MorphCopair):
+        return f"[{math_morph(term.left)}, {math_morph(term.right)}]"
+    if isinstance(term, MorphBang):
+        return f"{'!' if term.kind == 'terminal' else '¡'}_{{{math_obj(term.obj)}}}"
+    return str(term)
+
+
+def _arrow_kind(term: CatTerm, env) -> str:
+    if isinstance(term, MorphId):
+        return "identity"
+    if isinstance(term, (MorphPair, MorphCopair, MorphBang)):
+        return "universal"     # the unique arrow a universal property provides (drawn dashed)
+    if isinstance(term, MorphInv) or (isinstance(term, MorphVar) and term.name in env["isos"]):
+        return "iso"
+    if isinstance(term, MorphVar) and term.arg is not None:
+        return "component"     # a component α_A of a natural transformation / unit / counit
+    if isinstance(term, MorphFMap):
+        return "functor"
+    return "morphism"
+
+
+def _arrow(term: CatTerm, env) -> dict:
+    dom, cod, _cat = infer_morphism(term, env)
+    return {
+        "label": format_morph(term),
+        "math": math_morph(term),
+        "src": format_obj(dom),
+        "dst": format_obj(cod),
+        "srcMath": math_obj(dom),
+        "dstMath": math_obj(cod),
+        "kind": _arrow_kind(term, env),
+        "refs": _collect_morph_refs(term),
+    }
+
+
+def path_diagram(lhs: CatTerm, rhs: CatTerm, env, *, commutes=False) -> dict | None:
+    """Two paths dom → cod (one per side of the equation), with shared ends pasted."""
+    try:
+        left = [_arrow(f, env) for f in reversed(_reassoc_flat(lhs))]
+        right = [_arrow(f, env) for f in reversed(_reassoc_flat(rhs))]
+        dom, cod, cat = infer_morphism(lhs, env)
+    except (CatTypeError, RecursionError):
+        return None
+    shared = min(len(left), len(right))
+    p = 0
+    while p < shared and left[p]["label"] == right[p]["label"]:
+        p += 1
+    s = 0
+    while s < shared - p and left[-1 - s]["label"] == right[-1 - s]["label"]:
+        s += 1
+    return {
+        "dom": format_obj(dom), "cod": format_obj(cod),
+        "domMath": math_obj(dom), "codMath": math_obj(cod),
+        "category": cat,
+        "lhs": format_morph(lhs), "rhs": format_morph(rhs),
+        "lhsMath": math_morph(lhs), "rhsMath": math_morph(rhs),
+        "prefix": left[:p],
+        "top": left[p:len(left) - s],
+        "bottom": right[p:len(right) - s],
+        "suffix": left[len(left) - s:],
+        "commutes": bool(commutes),
+    }
+
+
+def context_math(env) -> dict:
+    """Math labels for the declaration (2-category) view."""
+    return {
+        "objects": {name: math_name(name) for name in env["objects"]},
+        "functors": {name: math_name(name) for name in env["functors"]},
+        "nats": {name: math_name(name) for name in env["nats"]},
+        "morphisms": {name: math_name(name) for name in env["morphisms"]},
+    }
+
+
 # --------------------------------------------------------------------------- Main Checker
 
 _HINT_MAP = {
@@ -1154,6 +1281,10 @@ def verify_and_visualize(file_path: str, source: str):
                         "summary": summary,
                     },
                     "highlightEdges": refs,
+                    "diagram": (
+                        path_diagram(cur_thm["orig_lhs"], cur_thm["orig_rhs"], env, commutes=True)
+                        if solved_here else path_diagram(new_lhs, new_rhs, env)
+                    ),
                 })
                 if solved_here:
                     cur_thm = None
@@ -1362,6 +1493,7 @@ def verify_and_visualize(file_path: str, source: str):
                     "tactic": "axiom", "hint": f"가환 등식 공리 `{aname}` 등록",
                     "goal": {"lhs": format_morph(lhs), "rhs": format_morph(rhs), "dom": format_obj(ld), "cod": format_obj(lc), "cat": lcat},
                     "status": "decl", "highlightEdges": list(dict.fromkeys(_collect_morph_refs(lhs) + _collect_morph_refs(rhs))),
+                    "diagram": path_diagram(lhs, rhs, env, commutes=True),
                 })
             elif code_line.startswith(("theorem ", "lemma ", "example ")):
                 body = code_line.split(None, 1)[1].strip()
@@ -1418,6 +1550,7 @@ def verify_and_visualize(file_path: str, source: str):
                         "summary": f"`{format_obj(ld)} → {format_obj(lc)}` 사상 등식을 증명합니다.",
                     },
                     "highlightEdges": refs,
+                    "diagram": path_diagram(lhs, rhs, env),
                 })
             else:
                 raise ParseError(f"알 수 없는 범주론 문장: `{code_line}`")
@@ -1447,7 +1580,7 @@ def verify_and_visualize(file_path: str, source: str):
          "detail": f"사상 {len(env['morphisms'])}개 · 함자 {len(env['functors'])}개"},
         {"id": "proof", "label": "도식 가환 증명", "status": "ok" if ok else "error",
          "detail": f"정리 {verified_count}/{len(theorems)}개 완료" if theorems else "선언 전용"},
-        {"id": "diagram", "label": "Quiver/String 생성", "status": "ok",
+        {"id": "diagram", "label": "가환 도식 생성", "status": "ok",
          "detail": f"노드 {len(diagram['nodes'])}개 · 화살 {len(diagram['edges'])}개"},
     ]
 
@@ -1476,10 +1609,12 @@ def verify_and_visualize(file_path: str, source: str):
                     "cat": t["cat"],
                     "statement": f"{format_morph(t['orig_lhs'])} = {format_morph(t['orig_rhs'])}",
                     "verified": t["verified"],
+                    "diagram": path_diagram(t["orig_lhs"], t["orig_rhs"], env, commutes=t["verified"]),
                 }
                 for t in theorems
             ],
             "diagram": diagram,
+            "math": context_math(env),
             "steps": steps,
             "pipeline": pipeline,
             "error": first_error,

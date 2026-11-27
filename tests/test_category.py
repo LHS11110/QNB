@@ -91,6 +91,45 @@ class CategoryProverTests(unittest.TestCase):
         self.assertEqual(res["exitCode"], 1)
         self.assertFalse(res["visualization"]["ok"])
 
+    def test_steps_carry_commutative_path_diagrams(self):
+        src = "\n".join([
+            "category C, D",
+            "object A, B, X : C",
+            "morphism f : A -> B",
+            "morphism g : B -> X",
+            "functor F : C -> D",
+            "functor G : C -> D",
+            "nat alpha : F => G",
+            "theorem naturality_comp : G(g ∘ f) ∘ alpha(A) = alpha(X) ∘ F(g) ∘ F(f) by",
+            "  functor_comp",
+            "  naturality alpha",
+            "  assoc",
+            "  naturality alpha",
+            "  rfl",
+        ])
+        steps = category.verify_and_visualize("/n.cat", src)["visualization"]["steps"]
+        labels = lambda arrows: [a["math"] for a in arrows]
+        start = next(s for s in steps if s["tactic"] == "theorem")["diagram"]
+        self.assertEqual((start["domMath"], start["codMath"]), ("F(A)", "G(X)"))
+        self.assertEqual(labels(start["top"]), ["α_{A}", "G(g ∘ f)"])
+        self.assertEqual(labels(start["bottom"]), ["F(f)", "F(g)", "α_{X}"])
+        self.assertFalse(start["commutes"])
+        # After the first naturality rewrite the shared F(f) is pasted and the rest is the naturality square of g.
+        square = [s for s in steps if s["tactic"] == "naturality"][0]["diagram"]
+        self.assertEqual(labels(square["prefix"]), ["F(f)"])
+        self.assertEqual(labels(square["top"]), ["α_{B}", "G(g)"])
+        self.assertEqual(labels(square["bottom"]), ["F(g)", "α_{X}"])
+        self.assertEqual(square["top"][0]["kind"], "component")
+        solved = steps[-1]["diagram"]
+        self.assertTrue(solved["commutes"])
+        self.assertEqual(labels(solved["top"]), ["α_{A}", "G(g ∘ f)"])
+
+    def test_math_labels(self):
+        self.assertEqual(category.math_morph(category.MorphInv(category.MorphVar("u"))), "u^{-1}")
+        self.assertEqual(category.math_morph(category.MorphId(category.ObjName("A"))), "1_{A}")
+        self.assertEqual(category.math_morph(category.MorphVar("fst")), "π_{1}")
+        self.assertEqual(category.math_name("eps"), "ε")
+
     def test_notebook_cell_language_detection_for_category(self):
         doc = {"nbformat": 4, "metadata": {"kernelspec": {"name": "python3"}}, "cells": []}
         self.assertEqual(runtime.language(doc, {"cell_type": "code", "metadata": {}, "source": "%%category\ncategory C"}), "category")

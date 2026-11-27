@@ -294,5 +294,15 @@ class VisualizeEndpointTests(unittest.TestCase):
         self.assertEqual(solved_comp["contractum"], "True (Q.E.D. ✓)")
 
 
+class LeanProbeScriptTests(unittest.TestCase):
+    def test_probe_avoids_single_thread_deadlock_and_reaps_workers(self):
+        from qnb import visualize
+        script = visualize._build_lsp_probe_script("theorem t : True := trivial", [], "/workspace")
+        self.assertIn('"--server", "-j2"', script)          # 1 vCPU: the default task pool deadlocks
+        self.assertIn("prctl(36, 1", script)                   # child subreaper for the lean worker
+        self.assertIn("os.killpg(proc.pid, signal.SIGKILL)", script)
+        compile(script, "probe", "exec")
+
+
 if __name__ == "__main__":
     unittest.main()

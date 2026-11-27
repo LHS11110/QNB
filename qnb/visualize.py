@@ -360,16 +360,25 @@ def compute_lean_proposition_trace(raw_line, before_goals, after_goals, *, added
 def _build_lsp_probe_script(lsp_doc, line_queries, working_dir):
     payload = json.dumps({"doc": lsp_doc, "queries": line_queries, "cwd": working_dir}, ensure_ascii=True)
     return f"""
-import json, os, selectors, subprocess, time
+import ctypes, json, os, selectors, signal, subprocess, time
 
 cfg = json.loads({payload!r})
+# Become a child subreaper: the `lean --worker` the server spawns is re-parented to us (not the
+# VM's PID 1, which never reaps it), so killing the server cannot leave zombies that eat the
+# VM's small pids budget.
+try:
+    ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0)  # PR_SET_CHILD_SUBREAPER
+except Exception:
+    pass
 cwd = cfg["cwd"] if os.path.isdir(cfg["cwd"]) else "/workspace"
 env = dict(os.environ)
 env["LEAN_PATH"] = cwd + ":/workspace"
+# `-j2`: with the default single task thread on a 1-vCPU VM the Lean 4.10 file worker deadlocks
+# mid-elaboration and never answers $/lean/plainGoal (every probe then waited out the deadline).
 proc = subprocess.Popen(
-    ["/opt/agora/proof/lean/bin/lean", "--server"],
+    ["/opt/agora/proof/lean/bin/lean", "--server", "-j2"],
     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-    cwd=cwd, env=env,
+    cwd=cwd, env=env, start_new_session=True,
 )
 buf = b""
 deadline = time.monotonic() + 24.0
@@ -454,8 +463,18 @@ try:
             "hovers": [{{"name": name, "hover": responses.get(hid)}} for name, hid in hover_ids if responses.get(hid)],
         }})
 finally:
-    proc.kill()
-    proc.wait()
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except OSError:
+        proc.kill()
+    reap_until = time.monotonic() + 2.0
+    while time.monotonic() < reap_until:
+        try:
+            pid, _ = os.waitpid(-1, os.WNOHANG)
+        except ChildProcessError:
+            break
+        if pid == 0:
+            time.sleep(0.02)
 print(json.dumps(out, ensure_ascii=True))
 """
 
