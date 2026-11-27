@@ -107,11 +107,24 @@ function vmSocketURL(stream) {
   return url;
 }
 
-function connectVM() {
-  if (vmSocket?.readyState === WebSocket.OPEN) return Promise.resolve(vmSocket);
+// A fresh wss handshake (TCP + TLS) can take several seconds on mobile networks, and the
+// server closes idle VM sockets after 12 s, so most requests reconnect: allow time and retry once.
+const VM_CONNECT_TIMEOUT = 10000;
+
+async function connectVM() {
+  if (vmSocket?.readyState === WebSocket.OPEN) return vmSocket;
+  try {
+    return await openVMSocket();
+  } catch {
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    return openVMSocket();
+  }
+}
+
+function openVMSocket() {
   return new Promise((resolve, reject) => {
     const socket = new WebSocket(vmSocketURL());
-    const timeout = setTimeout(unavailable, 3000);
+    const timeout = setTimeout(unavailable, VM_CONNECT_TIMEOUT);
     function unavailable() {
       clearTimeout(timeout);
       socket.close();
