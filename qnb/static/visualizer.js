@@ -843,6 +843,7 @@ window.QNBVisualizer = (() => {
     if (!host) return;
     $("examples-dialog")?.close();
     setStudioVisible(true);
+    let ready = false;
     await host.runTask(async () => {
       await host.ensureDir("/examples");
       if (example.projectPath) await host.ensureDir(example.projectPath);
@@ -851,16 +852,18 @@ window.QNBVisualizer = (() => {
       }
       await host.refreshExplorer();
       await host.openFile(example.entryPath);
-      if (example.runMode === "notebook-first-code") {
-        await host.runFirstCodeCell(example.entryPath);
-      } else {
-        await host.runPlainFile(example.entryPath);
-        if (example.runMode === "plain-and-project") {
-          $("viz-proj-path").value = example.projectPath;
-          analyzeProject(example.projectPath);
-        }
-      }
+      ready = true;
     });
+    if (!ready) return;
+    if (example.runMode === "notebook-first-code") {
+      await host.runFirstCodeCell(example.entryPath);
+    } else {
+      await host.runPlainFile(example.entryPath);
+      if (example.runMode === "plain-and-project") {
+        $("viz-proj-path").value = example.projectPath;
+        await analyzeProject(example.projectPath);
+      }
+    }
   }
 
   function renderExamplesGallery() {
@@ -892,8 +895,16 @@ window.QNBVisualizer = (() => {
     const studio = $("viz-studio");
     if (!resizer || !split || !studio) return;
 
+    const STORAGE_KEY = "qnb:panel:vizWidth";
+    try {
+      const saved = Number(localStorage.getItem(STORAGE_KEY));
+      if (saved >= 240) studio.style.flexBasis = `${saved}px`;
+    } catch { /* ignore storage errors */ }
+
     let dragging = false;
+    let latestWidth = null;
     resizer.addEventListener("pointerdown", (event) => {
+      event.preventDefault();
       dragging = true;
       resizer.setPointerCapture(event.pointerId);
       document.body.classList.add("resizing-split");
@@ -901,17 +912,26 @@ window.QNBVisualizer = (() => {
     resizer.addEventListener("pointermove", (event) => {
       if (!dragging) return;
       const rect = split.getBoundingClientRect();
-      const rightWidth = Math.max(300, Math.min(rect.width - 300, rect.right - event.clientX));
-      studio.style.flexBasis = `${rightWidth}px`;
+      latestWidth = Math.round(Math.max(240, Math.min(rect.width - 240, rect.right - event.clientX)));
+      studio.style.flexBasis = `${latestWidth}px`;
     });
     const finish = () => {
       if (!dragging) return;
       dragging = false;
       document.body.classList.remove("resizing-split");
+      if (latestWidth) {
+        try { localStorage.setItem(STORAGE_KEY, String(latestWidth)); } catch { /* ignore */ }
+      }
       if (activePane === "project") projectGraph?.fit();
     };
     resizer.addEventListener("pointerup", finish);
     resizer.addEventListener("pointercancel", finish);
+    resizer.addEventListener("dblclick", () => {
+      studio.style.flexBasis = "";
+      latestWidth = null;
+      try { localStorage.removeItem(STORAGE_KEY); } catch { /* ignore */ }
+      if (activePane === "project") projectGraph?.fit();
+    });
   }
 
   function init(callbacks) {

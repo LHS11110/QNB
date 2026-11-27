@@ -1,6 +1,7 @@
 import importlib.util
 import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -59,6 +60,9 @@ class WorkspaceCollaborationTests(unittest.TestCase):
 
     @unittest.skipUnless(HAS_FLASK, "Flask is required to test collaboration endpoints and terminal isolation")
     def test_collaboration_http_routes_and_per_user_terminal_home(self):
+        import pty
+        import select as _select
+        import subprocess
         from qnb.app import app, terminal_init_command
 
         cmd_owner = terminal_init_command(1, "OwnerNick", "owner@example.test", "m1")
@@ -70,12 +74,55 @@ class WorkspaceCollaborationTests(unittest.TestCase):
         self.assertIn("cd /workspace", cmd_guest)
         self.assertIn("XDG_CONFIG_HOME=/var/tmp/qnb-home-u2/.config", cmd_guest)
 
+        # Verify bash PTY emits ready sentinel AND prompt on both 1st and 2nd fresh shells
+        with tempfile.TemporaryDirectory() as tmp_home_parent:
+            fake_cmd = (
+                cmd_owner.replace("/var/tmp/qnb-home-u1", f"{tmp_home_parent}/u1")
+                .replace("cd /workspace", f"cd {tmp_home_parent}")
+            )
+            for run_idx in range(2):
+                master, slave = pty.openpty()
+                try:
+                    proc = subprocess.Popen(
+                        ["/bin/bash", "--noprofile", "--norc", "-i"],
+                        stdin=slave, stdout=slave, stderr=slave,
+                        start_new_session=True,
+                    )
+                    os.close(slave)
+                    os.write(master, fake_cmd.encode())
+                    out = bytearray()
+                    deadline = time.monotonic() + 3.0
+                    while time.monotonic() < deadline:
+                        if _select.select([master], [], [], 0.05)[0]:
+                            chunk = os.read(master, 4096)
+                            if not chunk:
+                                break
+                            out.extend(chunk)
+                            if b"__QNB_READY_m1__" in out and b"OwnerNick@qnb:" in out:
+                                break
+                    proc.kill()
+                    proc.wait(timeout=3)
+                    self.assertIn(b"__QNB_READY_m1__", out, f"run {run_idx} missing ready sentinel: {out!r}")
+                    self.assertIn(b"OwnerNick@qnb:", out, f"run {run_idx} missing prompt: {out!r}")
+                finally:
+                    os.close(master)
+
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
             "QNB_DATABASE": str(Path(directory) / "qnb.sqlite3"),
         }):
             store.initialize()
             owner_client = app.test_client()
             guest_client = app.test_client()
+
+            fav = owner_client.get("/favicon.ico")
+            self.assertEqual(fav.status_code, 200)
+            self.assertIn("svg", fav.mimetype)
+            self.assertIn(b"<circle", fav.data)
+            fav.close()
+
+            fav_svg = owner_client.get("/static/favicon.svg")
+            self.assertEqual(fav_svg.status_code, 200)
+            fav_svg.close()
 
             self.assertEqual(owner_client.post("/api/signup", json={
                 "email": "owner@example.test", "password": "password123",

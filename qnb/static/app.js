@@ -1767,6 +1767,7 @@ function renderPlainFile(tab, minimalDiff = false) {
   previewButton.hidden = !markdownFile;
   previewButton.setAttribute("aria-pressed", markdownFile && tab.markdownPreview !== false);
   preview.hidden = !markdownFile || tab.markdownPreview === false;
+  if ($("preview-resizer")) $("preview-resizer").hidden = preview.hidden;
   preview.dataset.kind = language;
   previewButton.textContent = markdownFile ? `${RENDERABLE[language]} 미리 보기` : "미리 보기";
   if (!preview.hidden) renderFilePreview(tab, preview, tab.text);
@@ -2822,4 +2823,256 @@ window.QNBVisualizer?.init({
   },
 });
 
+function initPanelResizers() {
+  const readSize = (key) => {
+    try {
+      const value = Number(localStorage.getItem(key));
+      return Number.isFinite(value) && value > 0 ? value : null;
+    } catch { return null; }
+  };
+  const writeSize = (key, value) => {
+    try {
+      if (value == null) localStorage.removeItem(key);
+      else localStorage.setItem(key, String(Math.round(value)));
+    } catch { /* ignore storage errors */ }
+  };
+
+  function bindSplit({ handle, targetEl, cssVar, storageKey, bodyClass, compute, keyStep, onResize, invertKey }) {
+    if (!handle || !targetEl) return;
+    const saved = readSize(storageKey);
+    if (saved != null) targetEl.style.setProperty(cssVar, `${saved}px`);
+
+    let dragging = false;
+    let latest = null;
+    handle.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      dragging = true;
+      handle.setPointerCapture(event.pointerId);
+      handle.classList.add("active");
+      document.body.classList.add(bodyClass);
+    });
+    handle.addEventListener("pointermove", (event) => {
+      if (!dragging) return;
+      latest = Math.round(compute(event));
+      targetEl.style.setProperty(cssVar, `${latest}px`);
+    });
+    const finish = () => {
+      if (!dragging) return;
+      dragging = false;
+      handle.classList.remove("active");
+      document.body.classList.remove(bodyClass);
+      if (latest != null) writeSize(storageKey, latest);
+      onResize?.();
+    };
+    handle.addEventListener("pointerup", finish);
+    handle.addEventListener("pointercancel", finish);
+    handle.addEventListener("dblclick", () => {
+      latest = null;
+      targetEl.style.removeProperty(cssVar);
+      writeSize(storageKey, null);
+      onResize?.();
+    });
+    if (keyStep) {
+      handle.addEventListener("keydown", (event) => {
+        const isVert = bodyClass === "resizing-col";
+        const dec = isVert ? (invertKey ? "ArrowRight" : "ArrowLeft") : (invertKey ? "ArrowDown" : "ArrowUp");
+        const inc = isVert ? (invertKey ? "ArrowLeft" : "ArrowRight") : (invertKey ? "ArrowUp" : "ArrowDown");
+        if (event.key !== dec && event.key !== inc) return;
+        event.preventDefault();
+        const rect = targetEl.getBoundingClientRect();
+        const cur = readSize(storageKey) || keyStep.fallback(rect);
+        const delta = (event.key === inc ? 1 : -1) * 24;
+        const next = Math.round(keyStep.clamp(cur + delta));
+        targetEl.style.setProperty(cssVar, `${next}px`);
+        writeSize(storageKey, next);
+        onResize?.();
+      });
+    }
+  }
+
+  // 1) Left Explorer Sidebar
+  const ideEl = $("ide");
+  bindSplit({
+    handle: $("sidebar-resizer"),
+    targetEl: ideEl,
+    cssVar: "--sidebar-width",
+    storageKey: "qnb:panel:sidebarWidth",
+    bodyClass: "resizing-col",
+    compute: (e) => {
+      const left = ideEl.getBoundingClientRect().left;
+      return Math.max(150, Math.min(Math.min(640, window.innerWidth * 0.58), e.clientX - left));
+    },
+    keyStep: {
+      fallback: () => $("sidebar")?.getBoundingClientRect().width || 260,
+      clamp: (v) => Math.max(150, Math.min(Math.min(640, window.innerWidth * 0.58), v)),
+    },
+    onResize: () => { if (graphVisible) setTimeout(() => (graphMode === "code" ? codeGraph : proofGraph).fit(), 40); },
+  });
+
+  // 2) Plain Editor <-> Markdown/HTML/LaTeX Preview
+  const plainEditor = $("plain-editor");
+  bindSplit({
+    handle: $("preview-resizer"),
+    targetEl: plainEditor,
+    cssVar: "--preview-width",
+    storageKey: "qnb:panel:previewWidth",
+    bodyClass: "resizing-col",
+    invertKey: true,
+    compute: (e) => {
+      const rect = plainEditor.getBoundingClientRect();
+      return Math.max(200, Math.min(rect.width - 200, rect.right - e.clientX));
+    },
+    keyStep: {
+      fallback: (r) => $("file-markdown")?.getBoundingClientRect().width || r.width * 0.5,
+      clamp: (v) => Math.max(200, Math.min((plainEditor?.getBoundingClientRect().width || 800) - 200, v)),
+    },
+  });
+
+  // 3) Plain Execution Output Panel
+  const plainOutput = $("plain-output");
+  bindSplit({
+    handle: $("plain-output-resizer"),
+    targetEl: plainOutput,
+    cssVar: "--plain-output-height",
+    storageKey: "qnb:panel:plainOutputHeight",
+    bodyClass: "resizing-row",
+    invertKey: false,
+    compute: (e) => {
+      const parentRect = $("editor")?.getBoundingClientRect();
+      const maxH = parentRect ? parentRect.height * 0.75 : window.innerHeight * 0.6;
+      const outRect = plainOutput.getBoundingClientRect();
+      return Math.max(72, Math.min(maxH, outRect.bottom - e.clientY));
+    },
+    keyStep: {
+      fallback: (r) => r.height || 192,
+      clamp: (v) => Math.max(72, Math.min(($("editor")?.getBoundingClientRect().height || 600) * 0.75, v)),
+    },
+  });
+
+  // 4) Code Graph & Proof Tree Inspector Split + Overall Height
+  document.querySelectorAll(".graph-inspector-resizer").forEach((handle) => {
+    const layout = handle.closest(".graph-layout");
+    const section = handle.closest("#codegraph, #graph");
+    if (!layout || !section) return;
+    bindSplit({
+      handle,
+      targetEl: layout,
+      cssVar: "--inspector-width",
+      storageKey: `qnb:panel:inspector:${section.id}`,
+      bodyClass: "resizing-col",
+      invertKey: true,
+      compute: (e) => {
+        const rect = layout.getBoundingClientRect();
+        return Math.max(190, Math.min(rect.width - 240, rect.right - e.clientX));
+      },
+      keyStep: {
+        fallback: () => layout.querySelector(".graph-inspector")?.getBoundingClientRect().width || 320,
+        clamp: (v) => Math.max(190, Math.min(layout.getBoundingClientRect().width - 240, v)),
+      },
+      onResize: () => (section.id === "codegraph" ? codeGraph : proofGraph).fit(),
+    });
+  });
+
+  document.querySelectorAll(".graph-height-resizer").forEach((handle) => {
+    const section = handle.closest("#codegraph, #graph");
+    const layout = section?.querySelector(".graph-layout");
+    if (!layout || !section) return;
+    bindSplit({
+      handle,
+      targetEl: layout,
+      cssVar: "--graph-height",
+      storageKey: `qnb:panel:graphHeight:${section.id}`,
+      bodyClass: "resizing-row",
+      compute: (e) => {
+        const top = layout.getBoundingClientRect().top;
+        return Math.max(240, Math.min(window.innerHeight * 0.85, e.clientY - top));
+      },
+      keyStep: {
+        fallback: (r) => r.height || 480,
+        clamp: (v) => Math.max(240, Math.min(window.innerHeight * 0.85, v)),
+      },
+      onResize: () => (section.id === "codegraph" ? codeGraph : proofGraph).fit(),
+    });
+  });
+
+  // 5) Channels Panel (left edge, bottom edge, bottom-left corner & inner list split)
+  const channelsPanel = $("channels-panel");
+  const channelsBody = channelsPanel?.querySelector(".channels-body");
+  bindSplit({
+    handle: $("channels-split-resizer"),
+    targetEl: channelsBody,
+    cssVar: "--channels-list-width",
+    storageKey: "qnb:panel:channelsListWidth",
+    bodyClass: "resizing-col",
+    compute: (e) => {
+      const rect = channelsBody.getBoundingClientRect();
+      return Math.max(136, Math.min(rect.width - 200, e.clientX - rect.left));
+    },
+    keyStep: {
+      fallback: () => channelsBody?.querySelector(".channels-list")?.getBoundingClientRect().width || 200,
+      clamp: (v) => Math.max(136, Math.min((channelsBody?.getBoundingClientRect().width || 600) - 200, v)),
+    },
+  });
+  bindSplit({
+    handle: $("channels-resizer-w"),
+    targetEl: channelsPanel,
+    cssVar: "--channels-width",
+    storageKey: "qnb:panel:channelsWidth",
+    bodyClass: "resizing-col",
+    compute: (e) => {
+      const rect = channelsPanel.getBoundingClientRect();
+      return Math.max(336, Math.min(window.innerWidth - 24, rect.right - e.clientX));
+    },
+  });
+  bindSplit({
+    handle: $("channels-resizer-s"),
+    targetEl: channelsPanel,
+    cssVar: "--channels-height",
+    storageKey: "qnb:panel:channelsHeight",
+    bodyClass: "resizing-row",
+    compute: (e) => {
+      const rect = channelsPanel.getBoundingClientRect();
+      return Math.max(256, Math.min(window.innerHeight - rect.top - 16, e.clientY - rect.top));
+    },
+  });
+  const corner = $("channels-resizer-sw");
+  if (corner && channelsPanel) {
+    let dragging = false;
+    let lastW = null;
+    let lastH = null;
+    corner.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      dragging = true;
+      corner.setPointerCapture(event.pointerId);
+      document.body.classList.add("resizing-nwse");
+    });
+    corner.addEventListener("pointermove", (event) => {
+      if (!dragging) return;
+      const rect = channelsPanel.getBoundingClientRect();
+      lastW = Math.round(Math.max(336, Math.min(window.innerWidth - 24, rect.right - event.clientX)));
+      lastH = Math.round(Math.max(256, Math.min(window.innerHeight - rect.top - 16, event.clientY - rect.top)));
+      channelsPanel.style.setProperty("--channels-width", `${lastW}px`);
+      channelsPanel.style.setProperty("--channels-height", `${lastH}px`);
+    });
+    const finishCorner = () => {
+      if (!dragging) return;
+      dragging = false;
+      document.body.classList.remove("resizing-nwse");
+      if (lastW != null) writeSize("qnb:panel:channelsWidth", lastW);
+      if (lastH != null) writeSize("qnb:panel:channelsHeight", lastH);
+    };
+    corner.addEventListener("pointerup", finishCorner);
+    corner.addEventListener("pointercancel", finishCorner);
+    corner.addEventListener("dblclick", () => {
+      channelsPanel.style.removeProperty("--channels-width");
+      channelsPanel.style.removeProperty("--channels-height");
+      writeSize("qnb:panel:channelsWidth", null);
+      writeSize("qnb:panel:channelsHeight", null);
+    });
+  }
+}
+
+initPanelResizers();
 boot();

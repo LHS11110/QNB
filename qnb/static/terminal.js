@@ -142,16 +142,23 @@
     const session = {
       id: crypto.randomUUID(), title: `셸 ${++sequence}`, term, fit: fitAddon, socket, host,
       ready: false, exited: false, status: "VM 터미널 연결 중…",
+      openedCols: term.cols, openedRows: term.rows,
     };
     sessions.push(session);
     term.loadAddon(fitAddon);
     term.open(host);
     activate(session);
     fit(session);
+    session.openedCols = term.cols;
+    session.openedRows = term.rows;
 
-    socket.onopen = () => socket.send(JSON.stringify({
-      operation: "open", terminal: session.id, offset: 0, cols: term.cols, rows: term.rows,
-    }));
+    socket.onopen = () => {
+      session.openedCols = term.cols;
+      session.openedRows = term.rows;
+      socket.send(JSON.stringify({
+        operation: "open", terminal: session.id, offset: 0, cols: term.cols, rows: term.rows,
+      }));
+    };
     socket.onmessage = ({ data }) => {
       if (session.exited) return;
       try {
@@ -165,7 +172,9 @@
           session.ready = true;
           term.options.disableStdin = false;
           setStatus(session, "");
-          send(session, "resize");
+          if (session.openedCols !== term.cols || session.openedRows !== term.rows) {
+            send(session, "resize");
+          }
         }
         if (frame.truncated) term.writeln("\r\n[일부 출력이 생략되었습니다.]");
         if (frame.data) {
@@ -206,24 +215,40 @@
     else if (activeSession) activate(activeSession);
   }
 
-  /* Drag the top edge of the panel to resize it. */
+  /* Drag the top edge of the panel to resize it, with persisted height and dblclick reset. */
   const resizer = $("terminal-resizer");
+  const TERM_HEIGHT_KEY = "qnb:panel:terminalHeight";
+  try {
+    const savedHeight = Number(localStorage.getItem(TERM_HEIGHT_KEY));
+    if (savedHeight >= 120) panel.style.flexBasis = savedHeight + "px";
+  } catch { /* ignore storage errors */ }
   resizer.addEventListener("pointerdown", (event) => {
     event.preventDefault();
     const startY = event.clientY;
     const startHeight = panel.getBoundingClientRect().height;
+    let latestHeight = startHeight;
     resizer.setPointerCapture(event.pointerId);
+    document.body.classList.add("resizing-row");
     const move = (e) => {
-      const height = Math.max(120, Math.min(window.innerHeight * 0.8, startHeight + startY - e.clientY));
-      panel.style.flexBasis = height + "px";
+      latestHeight = Math.round(Math.max(120, Math.min(window.innerHeight * 0.8, startHeight + startY - e.clientY)));
+      panel.style.flexBasis = latestHeight + "px";
     };
     const up = () => {
       resizer.removeEventListener("pointermove", move);
       resizer.removeEventListener("pointerup", up);
+      resizer.removeEventListener("pointercancel", up);
+      document.body.classList.remove("resizing-row");
+      try { localStorage.setItem(TERM_HEIGHT_KEY, String(latestHeight)); } catch { /* ignore */ }
       fit(activeSession);
     };
     resizer.addEventListener("pointermove", move);
     resizer.addEventListener("pointerup", up);
+    resizer.addEventListener("pointercancel", up);
+  });
+  resizer.addEventListener("dblclick", () => {
+    panel.style.flexBasis = "";
+    try { localStorage.removeItem(TERM_HEIGHT_KEY); } catch { /* ignore */ }
+    fit(activeSession);
   });
 
   openButton.onclick = toggle;

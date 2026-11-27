@@ -255,6 +255,12 @@ def start_session(account):
     return response
 
 
+@app.get("/favicon.ico")
+@app.get("/favicon.svg")
+def favicon():
+    return send_from_directory(app.static_folder, "favicon.svg", mimetype="image/svg+xml")
+
+
 @app.get("/")
 @app.get("/login")
 @app.get("/signup")
@@ -1252,16 +1258,18 @@ def terminal_init_command(actor_id, account_name, actor_email, marker):
     return (
         f" mkdir -p {home}/.config {home}/.cache {home}/.local/bin {home}/.local/share {home}/.local/state {home}/.npm-global"
         f" && chmod 700 {home}"
+        f" && touch {home}/.bash_history && chmod 600 {home}/.bash_history"
         f" && export HOME={home} USER={user} LOGNAME={user} QNB_ACCOUNT_ID={int(actor_id)}"
         f" XDG_CONFIG_HOME={home}/.config XDG_CACHE_HOME={home}/.cache"
         f" XDG_DATA_HOME={home}/.local/share XDG_STATE_HOME={home}/.local/state"
         f" NPM_CONFIG_PREFIX={home}/.npm-global HISTFILE={home}/.bash_history"
+        f" PROMPT_COMMAND='history -a'"
         f' PATH="{home}/.local/bin:{home}/.npm-global/bin:$PATH"'
         f" PS1={ps1}"
         f" && printf '%s\\n' {whoami_lines} > {home}/.local/bin/whoami && chmod 755 {home}/.local/bin/whoami"
         f" && {{ git config --global user.name >/dev/null 2>&1 || git config --global user.name {git_name}; }}"
         f" && {{ git config --global user.email >/dev/null 2>&1 || git config --global user.email {git_email}; }}"
-        f" ; cd /workspace && history -c && history -r && clear && printf '__QNB_%s_%s__\\n' 'READY' '{marker}'\n"
+        f" ; cd /workspace 2>/dev/null || true; history -c; history -r 2>/dev/null || true; printf '\\033[2J\\033[3J\\033[H__QNB_%s_%s__\\n' 'READY' '{marker}'\n"
     )
 
 
@@ -1327,7 +1335,7 @@ def serve_terminal(ws, token):
                         if isinstance(parsed, dict) and parsed.get("type") == "ready" and ready_frame is None:
                             initializing = True
                             ready_frame = parsed
-                            init_deadline = time.monotonic() + 2.5
+                            init_deadline = time.monotonic() + 6.0
                             init_cmd = {
                                 "operation": "input",
                                 "data": terminal_init_command(

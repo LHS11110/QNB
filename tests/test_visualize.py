@@ -110,6 +110,86 @@ class PythonTracerTests(unittest.TestCase):
         self.assertTrue(viz["truncatedSteps"])
         self.assertEqual(viz["totalSteps"], visualize.MAX_PY_STEPS)
 
+    def test_orbit_sim_fourth_example_compresses_under_64k_and_succeeds(self):
+        import subprocess
+
+        vector2d = (
+            "class Vec2:\n"
+            "    def __init__(self, x, y):\n"
+            "        self.x = x\n"
+            "        self.y = y\n"
+            "    def add(self, other):\n"
+            "        return Vec2(self.x + other.x, self.y + other.y)\n"
+            "    def scale(self, factor):\n"
+            "        return Vec2(self.x * factor, self.y * factor)\n"
+        )
+        body = (
+            "from vector2d import Vec2\n"
+            "class Body:\n"
+            "    def __init__(self, name, pos, vel):\n"
+            "        self.name = name\n"
+            "        self.pos = pos\n"
+            "        self.vel = vel\n"
+            "    def step(self, accel, dt):\n"
+            "        self.vel = self.vel.add(accel.scale(dt))\n"
+            "        self.pos = self.pos.add(self.vel.scale(dt))\n"
+        )
+        simulate = (
+            "from vector2d import Vec2\n"
+            "from body import Body\n"
+            "\n"
+            "def gravity_accel(pos):\n"
+            "    r2 = pos.x * pos.x + pos.y * pos.y + 0.5\n"
+            "    inv = -4.0 / r2\n"
+            "    return Vec2(pos.x * inv, pos.y * inv)\n"
+            "\n"
+            "def run_simulation(steps):\n"
+            "    probe = Body('Probe', Vec2(2.0, 0.0), Vec2(0.0, 1.4))\n"
+            "    history = []\n"
+            "    for tick in range(steps):\n"
+            "        acc = gravity_accel(probe.pos)\n"
+            "        probe.step(acc, 0.25)\n"
+            "        history.append((round(probe.pos.x, 3), round(probe.pos.y, 3)))\n"
+            "    return history\n"
+            "\n"
+            "trajectory = run_simulation(4)\n"
+            "for step_no, coord in enumerate(trajectory, 1):\n"
+            "    print(f'step {step_no}: pos={coord}')\n"
+        )
+        captured = {}
+
+        def fake_vm(vm_id, payload):
+            with tempfile.TemporaryDirectory() as ws:
+                sim_dir = Path(ws) / "examples" / "orbit_sim"
+                sim_dir.mkdir(parents=True)
+                (sim_dir / "vector2d.py").write_text(vector2d)
+                (sim_dir / "body.py").write_text(body)
+                (sim_dir / "simulate.py").write_text(simulate)
+                script = (
+                    payload["code"]
+                    .replace("/workspace", ws)
+                    .replace("fn[10:]", f"fn[{len(ws)}:]")
+                )
+                proc = subprocess.run([sys.executable, "-u", "-c", script], capture_output=True, text=True)
+                captured["stdout"] = proc.stdout
+                captured["stderr"] = proc.stderr
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertLess(len(proc.stdout.encode("utf-8")), 65536)
+                self.assertTrue(proc.stdout.strip().startswith("QNBZ:"))
+                return {"exitCode": proc.returncode, "output": proc.stdout}
+
+        with patch("qnb.runtime.vm", side_effect=fake_vm):
+            result = visualize.trace_python_script(1900000000, "/examples/orbit_sim/simulate.py", simulate)
+        self.assertEqual(result["exitCode"], 0)
+        viz = result["visualization"]
+        self.assertTrue(viz["ok"])
+        self.assertFalse(viz["truncatedSteps"])
+        self.assertIn("step 1:", result["outputs"][0]["text"])
+        self.assertIn("step 4:", result["outputs"][0]["text"])
+        edges = {(e["fromFunc"], e["toFunc"]) for e in viz["callEdges"]}
+        self.assertIn(("run_simulation", "step"), edges)
+        self.assertIn(("step", "add"), edges)
+
 
 @unittest.skipUnless(HAS_FLASK, "Flask is required to test visualize endpoint")
 class VisualizeEndpointTests(unittest.TestCase):

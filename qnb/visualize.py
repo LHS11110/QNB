@@ -1,13 +1,15 @@
 """Educational execution & proof visualization helpers for Lean 4 and Python."""
 
+import base64
 import json
 import posixpath
 import re
 import secrets
+import zlib
 
 from . import runtime
 
-MAX_PY_STEPS = 220
+MAX_PY_STEPS = 300
 MAX_PY_STACK = 16
 MAX_PY_ITEMS = 12
 MAX_PY_HEAP = 40
@@ -390,7 +392,7 @@ import os as _qnb_os
 import sys as _qnb_sys
 import types as _qnb_types
 
-_QNB_MAX_STEPS = 220
+_QNB_MAX_STEPS = 300
 _QNB_MAX_STACK = 16
 _QNB_MAX_ITEMS = 12
 _QNB_MAX_HEAP = 40
@@ -597,16 +599,27 @@ def _qnb_make_tracer(primary_path, stdout_buf, source_lines_map):
 """
 
 
+def _decode_trace_line(line):
+    text = (line or "").strip()
+    if text.startswith("QNBZ:"):
+        raw = zlib.decompress(base64.b64decode(text[5:])).decode("utf-8")
+        return json.loads(raw)
+    return json.loads(text)
+
+
 def trace_python_script(vm_id, file_path, code):
     """Execute a .py file inside the VM under sys.settrace and capture execution steps."""
     working = "/workspace" + (posixpath.dirname(file_path) if posixpath.dirname(file_path) != "/" else "")
     runner = f"""{PYTHON_TRACER_CORE}
+import base64 as _qnb_b64
 import contextlib as _qnb_ctx
 import pathlib as _qnb_path
 import traceback as _qnb_tb
+import zlib as _qnb_zlib
 
 _qnb_code = {code!r}
 _qnb_path_str = {file_path!r}
+_qnb_prev_cwd = _qnb_os.getcwd()
 _qnb_cwd = {working!r}
 if _qnb_os.path.isdir(_qnb_cwd):
     _qnb_os.chdir(_qnb_cwd)
@@ -634,6 +647,10 @@ _qnb_tracer, _qnb_fin = _qnb_make_tracer(_qnb_path_str, _qnb_buf, _qnb_src_map)
 _qnb_ns = {{"__name__": "__main__", "__file__": "/workspace" + _qnb_path_str}}
 _qnb_rc = 0
 try:
+    for _qnb_mname, _qnb_mod in list(_qnb_sys.modules.items()):
+        _qnb_mfile = getattr(_qnb_mod, '__file__', None) or ''
+        if isinstance(_qnb_mfile, str) and _qnb_mfile.startswith('/workspace/'):
+            _qnb_sys.modules.pop(_qnb_mname, None)
     _qnb_compiled = compile(_qnb_code, "/workspace" + _qnb_path_str, "exec")
     with _qnb_ctx.redirect_stdout(_qnb_buf), _qnb_ctx.redirect_stderr(_qnb_err_buf):
         _qnb_sys.settrace(_qnb_tracer)
@@ -644,17 +661,23 @@ try:
 except BaseException:
     _qnb_rc = 1
     _qnb_tb.print_exc(file=_qnb_err_buf)
+finally:
+    try:
+        _qnb_os.chdir(_qnb_prev_cwd)
+    except OSError:
+        pass
 
 _qnb_viz = _qnb_fin()
 _qnb_viz["ok"] = (_qnb_rc == 0)
 _qnb_out = _qnb_buf.getvalue()
 _qnb_err = _qnb_err_buf.getvalue()
-print(_qnb_json.dumps({{
+_qnb_payload = _qnb_json.dumps({{
     "exitCode": _qnb_rc,
     "stdout": _qnb_out,
     "stderr": _qnb_err,
     "visualization": _qnb_viz,
-}}, ensure_ascii=True))
+}}, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+print("QNBZ:" + _qnb_b64.b64encode(_qnb_zlib.compress(_qnb_payload, 6)).decode("ascii"))
 """
     res = runtime.vm(vm_id, {"language": "python", "code": runner})
     if "exitCode" not in res:
@@ -675,7 +698,7 @@ print(_qnb_json.dumps({{
                 "totalSteps": 0,
             },
         }
-    data = json.loads(raw.splitlines()[-1])
+    data = _decode_trace_line(raw.splitlines()[-1])
     outputs = []
     if data.get("stdout"):
         outputs.append({"output_type": "stream", "name": "stdout", "text": data["stdout"]})
@@ -788,14 +811,15 @@ if _qnb_has_tail and _qnb_ns.get("_qnb_cell_value") is not None:
 
     result = runtime.jupyter(vm_id, "execute", file_path, wrapped)
     reader = (
-        f"import pathlib; p=pathlib.Path({trace_file!r}); "
-        "print(p.read_text() if p.exists() else ''); p.unlink(missing_ok=True)"
+        f"import base64, pathlib, zlib; p=pathlib.Path({trace_file!r}); "
+        "raw=p.read_bytes() if p.exists() else b''; p.unlink(missing_ok=True); "
+        "print('QNBZ:' + base64.b64encode(zlib.compress(raw, 6)).decode('ascii') if raw else '')"
     )
     try:
         trace_res = runtime.vm(vm_id, {"language": "python", "code": reader})
         raw_trace = (trace_res.get("output") or "").strip()
         if trace_res.get("exitCode") == 0 and raw_trace:
-            result["visualization"] = json.loads(raw_trace.splitlines()[-1])
-    except (runtime.RequestError, ValueError, KeyError):
+            result["visualization"] = _decode_trace_line(raw_trace.splitlines()[-1])
+    except (runtime.RequestError, ValueError, KeyError, zlib.error):
         pass
     return result

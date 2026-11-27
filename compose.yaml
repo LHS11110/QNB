@@ -7,7 +7,7 @@ services:
       - "127.0.0.1:${QNB_PORT:-8765}:8080"
     environment:
       QNB_VM_ID_BASE: "${QNB_VM_ID_BASE:-1900000000}"
-      QNB_VM_DISK_GIB: "${QNB_VM_DISK_GIB:-12}"
+      QNB_VM_DISK_GIB: "${QNB_VM_DISK_GIB:-6}"
       QNB_VM_ID_COUNT: "${QNB_VM_ID_COUNT:-32}"
       QNB_SECURE_COOKIE: "${QNB_SECURE_COOKIE:-0}"
       # Email verification (SMTP). Without QNB_SMTP_HOST codes are written to the web container log.
