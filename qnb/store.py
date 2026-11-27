@@ -78,6 +78,30 @@ CREATE TABLE IF NOT EXISTS workspace_axioms (
     PRIMARY KEY (account_id, name),
     UNIQUE (account_id, node_id)
 );
+CREATE TABLE IF NOT EXISTS staged_files (
+    owner_id INTEGER NOT NULL REFERENCES accounts(id),
+    path TEXT NOT NULL,
+    vm_id INTEGER NOT NULL,
+    file_id TEXT NOT NULL,
+    disk_etag TEXT NOT NULL,
+    disk_resource_id TEXT NOT NULL DEFAULT '',
+    disk_text TEXT NOT NULL,
+    staged_text TEXT NOT NULL,
+    automerge_b64 TEXT NOT NULL,
+    dirty INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+    PRIMARY KEY (owner_id, path)
+);
+CREATE TABLE IF NOT EXISTS mcp_tokens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_id INTEGER NOT NULL REFERENCES accounts(id),
+    label TEXT NOT NULL,
+    token_hash TEXT UNIQUE NOT NULL,
+    token_prefix TEXT NOT NULL,
+    created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+    last_used_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS mcp_tokens_account ON mcp_tokens (account_id);
 """
 
 PROOF_SCHEMA = """
@@ -645,6 +669,61 @@ def delete_axiom(owner_id, name):
             raise RequestError("등록된 공리를 찾을 수 없습니다.", 404)
         db.execute("DELETE FROM lean_symbols WHERE account_id = ? AND name = ?", (owner_id, name))
     return {"deleted": name}
+
+
+def create_mcp_token(account_id, label):
+    clean_label = (label or "CLI Agent").strip()[:48] or "CLI Agent"
+    raw_token = "qnb_mcp_" + secrets.token_urlsafe(24)
+    token_hash = digest(raw_token)
+    prefix = raw_token[:16]
+    with database() as db:
+        db.execute("BEGIN IMMEDIATE")
+        cur = db.execute(
+            "INSERT INTO mcp_tokens (account_id, label, token_hash, token_prefix) VALUES (?, ?, ?, ?)",
+            (account_id, clean_label, token_hash, prefix),
+        )
+        token_id = cur.lastrowid
+    return {"id": token_id, "label": clean_label, "prefix": prefix, "token": raw_token}
+
+
+def list_mcp_tokens(account_id):
+    with database() as db:
+        rows = db.execute("""
+            SELECT id, label, token_prefix AS prefix, created_at AS createdAt, last_used_at AS lastUsedAt
+            FROM mcp_tokens WHERE account_id = ? ORDER BY created_at DESC, id DESC
+        """, (account_id,)).fetchall()
+    return [dict(row) for row in rows]
+
+
+def delete_mcp_token(account_id, token_id):
+    with database() as db:
+        db.execute("BEGIN IMMEDIATE")
+        deleted = db.execute("DELETE FROM mcp_tokens WHERE id = ? AND account_id = ?", (token_id, account_id)).rowcount
+    if not deleted:
+        raise RequestError("MCP 토큰을 찾을 수 없습니다.", 404)
+    return {"deleted": token_id}
+
+
+def authenticate_mcp_token(raw_token, workspace_owner_id=None):
+    if not isinstance(raw_token, str) or not raw_token.startswith("qnb_mcp_"):
+        return None, None
+    token_hash = digest(raw_token.strip())
+    with database() as db:
+        row = db.execute("""
+            SELECT a.*, COALESCE(ap.nickname, '') AS nickname, t.id AS token_id
+            FROM mcp_tokens t
+            JOIN accounts a ON a.id = t.account_id
+            LEFT JOIN account_profiles ap ON ap.account_id = a.id
+            WHERE t.token_hash = ?
+        """, (token_hash,)).fetchone()
+        if not row:
+            return None, None
+        db.execute("UPDATE mcp_tokens SET last_used_at = unixepoch() WHERE id = ?", (row["token_id"],))
+        account_dict = dict(row)
+        target_owner = account_dict["id"] if workspace_owner_id is None else int(workspace_owner_id)
+        account_dict["workspace_owner_id"] = target_owner
+        workspace_info = resolve_workspace(db, account_dict, None, strict=True)
+        return row, workspace_info
 
 
 def statement_fingerprint(statement):

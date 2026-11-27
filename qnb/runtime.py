@@ -150,6 +150,147 @@ def read_text(vm_id, file_path):
     return {key: result[key] for key in ("fileId", "etag", "resourceId") if key in result} | {"text": content}
 
 
+def read_text_any(vm_id, file_path, *, max_bytes=LARGE_FILE_LIMIT):
+    try:
+        return read_text(vm_id, file_path)
+    except RequestError as error:
+        if error.status != 413:
+            raise
+    info = workspace(vm_id, "stat", file_path)
+    if info.get("type") != "file":
+        raise RequestError("파일만 읽을 수 있습니다.", 400)
+    if info.get("size", 0) > max_bytes:
+        raise RequestError(f"편집 가능한 최대 크기({max_bytes // 1024} KiB)를 초과했습니다.", 413)
+    raw = bytearray()
+    version = ""
+    for chunk in file_chunks(vm_id, file_path):
+        version = chunk["version"]
+        raw.extend(base64.b64decode(chunk["content"], validate=True))
+    try:
+        text = bytes(raw).decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise RequestError("UTF-8 텍스트 파일만 편집할 수 있습니다.", 415) from error
+    return {"text": text, "etag": digest(text), "fileId": "", "resourceId": version, "chunked": True}
+
+
+def ensure_parent_directory(vm_id, file_path):
+    """Refuse to create a file whose folder no longer exists.
+
+    The guest file agent journals a write before touching the disk; if the parent folder is
+    gone it keeps replaying that write and every later workspace request fails. Checking
+    first keeps a deleted folder (e.g. removed in the terminal) from wedging the VM.
+    """
+    parent = posixpath.dirname(file_path) or "/"
+    if parent == "/":
+        return
+    info = workspace(vm_id, "stat", parent)
+    if info.get("type") != "directory":
+        raise RequestError("상위 폴더가 없어 파일을 만들 수 없습니다.", 404)
+
+
+def write_text_force(vm_id, file_path, text, *, file_id=None, etag=None, resource_id=None):
+    import uuid
+
+    content = text.encode("utf-8")
+    if len(content) <= FILE_LIMIT:
+        encoded = b64(content)
+        if file_id and etag:
+            try:
+                saved = workspace(
+                    vm_id, "write", file_path,
+                    requestId=uuid.uuid4().hex, content=encoded, fileId=file_id, etag=etag,
+                )
+                return {
+                    "fileId": saved.get("fileId", file_id),
+                    "etag": saved.get("etag", digest(text)),
+                    "resourceId": saved.get("resourceId", ""),
+                    "chunked": False,
+                }
+            except RequestError as error:
+                if error.status not in (404, 409):
+                    raise
+        try:
+            current = workspace(vm_id, "read", file_path)
+            saved = workspace(
+                vm_id, "write", file_path,
+                requestId=uuid.uuid4().hex, content=encoded,
+                fileId=current["fileId"], etag=current["etag"],
+            )
+            return {
+                "fileId": saved.get("fileId", current["fileId"]),
+                "etag": saved.get("etag", digest(text)),
+                "resourceId": saved.get("resourceId", ""),
+                "chunked": False,
+            }
+        except RequestError as error:
+            if error.status != 404:
+                raise
+            ensure_parent_directory(vm_id, file_path)
+            saved = workspace(
+                vm_id, "write", file_path,
+                requestId=uuid.uuid4().hex, content=encoded, create=True, overwrite=False,
+            )
+            return {
+                "fileId": saved.get("fileId", ""),
+                "etag": saved.get("etag", digest(text)),
+                "resourceId": saved.get("resourceId", ""),
+                "chunked": False,
+            }
+
+    if len(content) > LARGE_FILE_LIMIT:
+        raise RequestError("파일 크기는 8 MiB까지 지원합니다.", 413)
+    try:
+        stat_info = workspace(vm_id, "stat", file_path)
+        version = resource_id or stat_info["resourceId"]
+    except RequestError as error:
+        if error.status != 404:
+            raise
+        ensure_parent_directory(vm_id, file_path)
+        created = workspace(
+            vm_id, "write", file_path,
+            requestId=uuid.uuid4().hex, content="", create=True, overwrite=False,
+        )
+        version = created.get("resourceId") or workspace(vm_id, "stat", file_path)["resourceId"]
+
+    for attempt in range(2):
+        transfer = uuid.uuid4().hex
+        offset = 0
+        staged = False
+        try:
+            while offset < len(content):
+                piece = content[offset:offset + FILE_CHUNK_SIZE]
+                staged = True
+                ack = workspace(
+                    vm_id, "stage_chunk", file_path,
+                    transferId=transfer, offset=offset, content=b64(piece),
+                )
+                offset += len(piece)
+                if ack.get("offset") != offset:
+                    raise RequestError("VM 파일 조각 응답이 올바르지 않습니다.", 502)
+            saved = workspace(
+                vm_id, "commit_chunks", file_path,
+                transferId=transfer, size=len(content), version=version,
+            )
+            staged = False
+            return {
+                "fileId": file_id or "",
+                "etag": saved["resourceId"],
+                "resourceId": saved["resourceId"],
+                "chunked": True,
+            }
+        except RequestError as error:
+            if attempt == 0 and error.status == 409:
+                version = workspace(vm_id, "stat", file_path)["resourceId"]
+                continue
+            raise
+        finally:
+            if staged:
+                try:
+                    workspace(vm_id, "abort_chunks", file_path, transferId=transfer)
+                except RequestError:
+                    pass
+
+
 def file_chunks(vm_id, file_path):
     offset = 0
     fields = {}

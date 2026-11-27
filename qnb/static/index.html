@@ -3,42 +3,66 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="병렬 Lean 4 셀, 마크다운 해설, 증명 트리, 검증된 정리 데이터베이스를 결합한 차세대 형식 연구 워크스페이스 QNB">
-  <title>QNB · Proof Workspace</title>
+  <meta name="description" content="실시간 Automerge 협업 · Lean 4 증명 시각화 · 검증 정리 DB · CLI MCP 에이전트 연동을 통합한 차세대 형식 연구·학습 워크스페이스 QNB">
+  <title>QNB · Proof &amp; Visual Learning Workspace</title>
   <link rel="stylesheet" href="/static/styles.css">
   <link rel="stylesheet" href="/static/vendor/xterm.css">
+  <link rel="stylesheet" href="/static/vendor/katex/katex.min.css">
   <script src="/static/vendor/xterm.js" defer></script>
   <script src="/static/vendor/addon-fit.js" defer></script>
   <script src="/static/vendor/editor.js" defer></script>
   <script src="/static/vendor/graph.js" defer></script>
   <script src="/static/particles.js" defer></script>
+  <script src="/static/visualizer.js" defer></script>
+  <script src="/static/fileicons.js" defer></script>
   <script src="/static/app.js" defer></script>
   <script src="/static/terminal.js" defer></script>
+  <script src="/static/ide-extras.js" defer></script>
+  <script src="/static/channels.js" defer></script>
+  <script src="/static/planner.js" defer></script>
+  <script src="/static/weather.js" defer></script>
 </head>
 <body data-view="home">
+  <!-- Header used for Auth, QR Approve, IDE and Proofs views (hidden on Home landing) -->
   <header class="topbar">
     <a id="brand-link" class="brand" href="/" aria-label="QNB 홈">
-      <span class="brand-icon" aria-hidden="true">Q</span>
+      <svg class="brand-svg" width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <rect x="2" y="2" width="20" height="20" rx="6" stroke="currentColor" stroke-width="1.6" />
+        <circle cx="8" cy="8.4" r="2" fill="currentColor" />
+        <circle cx="16" cy="8.4" r="2" stroke="currentColor" stroke-width="1.4" />
+        <circle cx="12" cy="16" r="2" fill="currentColor" />
+        <path d="M10 8.4H14M8.9 10.1L11.1 14.2M15.1 10.1L12.9 14.2" stroke="currentColor" stroke-width="1.25" />
+      </svg>
       <span class="brand-text">
         <strong>QNB</strong>
         <span class="product">Proof Workspace</span>
       </span>
     </a>
 
-    <nav id="home-nav" class="top-nav" aria-label="홈 내비게이션">
-      <a href="#philosophy">핵심 배경</a>
-      <a href="#workflow">병렬 증명 · 마크다운</a>
-      <a href="#database-arch">검증 DB 재사용</a>
+    <nav id="home-nav" class="top-nav" aria-label="홈 내비게이션" hidden>
+      <a href="#scroll-track">작동 원리</a>
+      <a href="#efficiency-compare">학습 비교</a>
+      <a href="#interactive-lab">실전 랩</a>
     </nav>
 
     <div id="ide-header-controls" class="ide-header-controls" hidden>
       <button id="sidebar-toggle" type="button" class="icon-btn" title="탐색기 접기/펴기" aria-label="탐색기 접기/펴기" aria-expanded="true">
-        <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M2 3a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3Zm4 0v10h7V3H6Z"/></svg>
+        <svg viewBox="0 0 16 16" width="15" height="15" fill="none" aria-hidden="true">
+          <rect x="2" y="2.5" width="12" height="11" rx="2" stroke="currentColor" stroke-width="1.35"/>
+          <path d="M6 2.5v11" stroke="currentColor" stroke-width="1.35"/>
+        </svg>
       </button>
       <div class="view-switch" role="group" aria-label="작업 뷰 전환">
-        <button id="view-editor" type="button" class="view-pill active">노트북 · 편집기</button>
+        <button id="view-editor" type="button" class="view-pill active">편집 · 시각화</button>
         <button id="view-graph" type="button" class="view-pill">증명 트리</button>
         <button id="view-code" type="button" class="view-pill">코드 의존성</button>
+        <button id="view-planner" type="button" class="view-pill">일정 · 프로젝트</button>
+      </div>
+      <button id="examples-open" type="button" class="quiet icon-btn examples-btn" title="대화형 학습 예제 열기" aria-label="학습 예제">✦<span class="btn-text"> 학습 예제</span></button>
+      <button id="viz-toggle" type="button" class="quiet icon-btn" title="우측 시각화 패널 열기/닫기" aria-pressed="true" aria-label="시각화 패널">◫<span class="btn-text"> 시각화 패널</span></button>
+      <div id="collab-presence" class="collab-presence" title="백엔드 Automerge 실시간 스테이징 연결 상태">
+        <span id="collab-dot" class="collab-dot"></span>
+        <span id="collab-label">동기화 대기</span>
       </div>
       <button id="workspace-open" type="button" class="workspace-pill" title="워크스페이스 전환 및 사용자 초대">
         <span class="workspace-dot" aria-hidden="true"></span>
@@ -46,6 +70,15 @@
         <span id="invite-badge" class="invite-badge" hidden>0</span>
       </button>
       <button id="axioms-open" type="button" class="quiet icon-btn" title="워크스페이스 공리 관리">공리 관리</button>
+      <button id="weather-open" type="button" class="quiet icon-btn weather-btn" title="날씨 테마 설정" aria-haspopup="dialog">
+        <span id="weather-icon" aria-hidden="true">☀</span>
+        <span id="weather-label"></span>
+      </button>
+      <button id="channels-open" type="button" class="quiet icon-btn channels-btn" title="워크스페이스 채팅 · 음성 채널" aria-expanded="false" aria-controls="channels-panel">
+        <svg viewBox="0 0 16 16" width="14" height="14" fill="none" aria-hidden="true"><path d="M2.5 3.5h11v7h-6l-3 2.5v-2.5h-2Z" stroke="currentColor" stroke-width="1.35" stroke-linejoin="round"/></svg>
+        <span class="btn-text">채널</span>
+        <span id="channels-unread" class="invite-badge" hidden>0</span>
+      </button>
     </div>
 
     <div class="spacer"></div>
@@ -57,7 +90,7 @@
       </button>
       <a id="proofs-link" class="quiet button-link" href="/proofs" target="_blank" rel="noopener" hidden>증명 트리 새 창 ↗</a>
       <a id="proofs-editor-link" class="quiet button-link" href="/ide" hidden>IDE로 돌아가기</a>
-      <button id="account-open" type="button" class="quiet account-pill" title="프로필 닉네임 및 MFA·패스키 설정" hidden>
+      <button id="account-open" type="button" class="quiet account-pill" title="프로필 · 보안 · MCP CLI 토큰 설정" hidden>
         <span id="account-label" class="account-label"></span>
       </button>
       <a id="header-login" class="quiet button-link" href="/login" hidden>로그인</a>
@@ -67,197 +100,807 @@
     </div>
   </header>
 
+  <!-- ==================== HOME LANDING (GRAPHSPEC PAPER & INK DESIGN SYSTEM) ==================== -->
   <main id="home" hidden>
-    <canvas id="particle-canvas" aria-hidden="true"></canvas>
-    <div class="home-ambient" aria-hidden="true"></div>
+    <div class="paper-backdrop" aria-hidden="true"></div>
+    <canvas id="sand-canvas" aria-hidden="true"></canvas>
+    <div id="stage-wash" aria-hidden="true"></div>
+    <button id="focus-exit-pill" type="button">✕ 입자 집중 해제 (ESC)</button>
 
-    <section class="hero">
-      <div class="intro">
-        <div class="eyebrow"><span class="dot"></span> 에이전트 시대의 인간 중심 형식 증명 워크스페이스</div>
-        <h1>빠르게 쌓이는 증명,<br><span class="accent-gradient">인간이 읽고 이어갈 수 있게.</span></h1>
-        <p class="hero-copy">
-          AI 에이전트가 수학과 공학의 업적을 폭발적으로 생산하는 동안, 인간은 수천 줄의 Lean 코드를 따라가기 어렵고 일반 PC에서 전체 증명을 다시 실행하기도 버겁습니다.
-          QNB는 <strong>병렬 Lean 4 셀 · 마크다운 서사 · 증명 트리 · 검증된 정리 데이터베이스</strong>를 결합해 누구나 가볍게 최신 연구를 이해하고 재사용하게 만듭니다.
+    <!-- 1. Top Chrome: 34px Deep-Ink Announce Bar + Frosted Ivory Nav -->
+    <div id="top-chrome">
+      <div class="announce-bar">
+        <span class="announce-text">QNB v2.0 — 실시간 Automerge 스테이징 협업 · Lean 4 / Python 실행 시각화 · CLI MCP 지원</span>
+        <a href="#interactive-lab" class="announce-link">스튜디오 랩 체험 →</a>
+      </div>
+
+      <nav class="main-nav" aria-label="주 내비게이션">
+        <div class="nav-inner">
+          <div class="nav-left">
+            <a href="#scroll-track" id="brand-top-link" class="brand-link">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <rect x="2" y="2" width="20" height="20" rx="6" stroke="#141413" stroke-width="1.5" />
+                <circle cx="8" cy="8.2" r="2.1" fill="#141413" />
+                <circle cx="16" cy="8.2" r="2.1" stroke="#141413" stroke-width="1.4" />
+                <circle cx="12" cy="16" r="2.1" fill="#141413" />
+                <path d="M10.2 8.2H13.8M9 10L11 14.1M15 10L13 14.1" stroke="#141413" stroke-width="1.25" />
+              </svg>
+              <span class="brand-wordmark">QNB</span>
+            </a>
+            <span class="nav-divider"></span>
+            <div class="nav-mode-tags">
+              <span class="nav-mode-tag">Automerge CRDT</span>
+              <span class="nav-mode-tag">Lean 4 · Python Viz</span>
+            </div>
+          </div>
+
+          <div class="nav-links">
+            <a href="#scroll-track" id="nav-how-link">작동 원리</a>
+            <a href="#efficiency-compare">학습 비교</a>
+            <a href="#interactive-lab">스튜디오 랩</a>
+          </div>
+
+          <div class="nav-right">
+            <span id="nav-morph-pill">01 / 06 · LOCKED</span>
+            <a id="home-nav-login" href="/login" class="btn-hair-pill" style="padding: 7px 14px; font-size: 12.5px;">로그인</a>
+            <a id="home-nav-signup" href="/signup" class="btn-ink-pill" style="padding: 8px 17px; font-size: 12.5px;">무료 시작</a>
+            <a id="home-nav-ide" href="/ide" class="btn-ink-pill" style="padding: 8px 17px; font-size: 12.5px;" hidden>IDE 열기 →</a>
+          </div>
+        </div>
+        <div class="nav-progress-line">
+          <div id="nav-progress-fill"></div>
+        </div>
+      </nav>
+    </div>
+
+    <!-- 2. Fixed Alternating Editorial Stage (6 Chapters) -->
+    <div id="fixed-stage">
+      <!-- CHAPTER 01: Text LEFT / Particle RIGHT ("QNB" + Orbital Ring) -->
+      <article class="chapter-panel chapter-left" data-panel="0">
+        <div class="eyebrow">
+          <span>01 · VISUAL PROOF &amp; CODE WORKSPACE</span>
+          <span class="eyebrow-rule"></span>
+          <span>FOR LEARNERS &amp; TEAMS</span>
+        </div>
+        <h1 class="ch-heading">코드와 증명의 원리를,<br><em>눈앞에서 바로 읽어내다.</em></h1>
+        <p class="ch-body">
+          <strong>"배움은 블랙박스 안이 아니라, 눈으로 따라갈 수 있을 때 깊어집니다."</strong><br>
+          좌측에서 <strong>Lean 4 · Python</strong>을 편집하고 실행하면 우측 스튜디오에서 전술 목표(<code>⊢ Goal</code>)와
+          호출 스택·객체 힙 변화를 단계별로 탐험할 수 있습니다.
         </p>
-        <div class="home-actions">
-          <a id="signup-open" class="primary button cta-lg" href="/signup">무료 워크스페이스 시작</a>
-          <a id="login-open" class="button cta-lg ghost-btn" href="/login">로그인</a>
-          <a id="ide-link" class="primary button cta-lg" href="/ide" hidden>IDE 워크스페이스 열기</a>
+        <div class="ch-cta-row">
+          <a id="signup-open" class="btn-ink-pill" href="/signup">무료 워크스페이스 시작 →</a>
+          <a id="ide-link" class="btn-ink-pill" href="/ide" hidden>IDE 워크스페이스 열기 →</a>
+          <a id="login-open" class="btn-hair-pill" href="/login">로그인</a>
+          <button type="button" data-jump="1" class="btn-hair-pill">다음 챕터 ↓</button>
         </div>
-        <dl class="hero-metrics">
-          <div>
-            <dt>셀 단위 병렬 검증</dt>
-            <dd>독립 실행 · 즉시 피드백</dd>
-          </div>
-          <div>
-            <dt>검증 선언만 DB 보존</dt>
-            <dd>SHA-256 · 무결성 아카이브</dd>
-          </div>
-          <div>
-            <dt>일반 PC 웹 IDE</dt>
-            <dd>전체 재컴파일 없이 재사용</dd>
-          </div>
-        </dl>
-      </div>
-
-      <div class="preview" aria-label="병렬 Lean 셀과 마크다운, 증명 트리 미리보기">
-        <div class="preview-bar">
-          <span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span>
-          <span class="preview-filename">harmonic_bounds.ipynb</span>
-          <span class="preview-badge">병렬 Lean 4 · Markdown</span>
+        <div class="ch-meta-line">
+          <span>✓ Lean 4 · Python 좌우 분할 시각화</span>
+          <span>·</span>
+          <span>Automerge 실시간 협업</span>
+          <span>·</span>
+          <span>스크롤로 챕터 탐색</span>
         </div>
+      </article>
 
-        <div class="preview-body">
-          <div class="preview-md-cell">
-            <span class="cell-tag tag-md">Markdown 해설</span>
-            <p><strong>보조정리 분할 전략:</strong> 에이전트가 도출한 긴 증명을 두 개의 독립 Lean 셀로 분리하고, 검증된 정리만 DB에 저장해 다음 단계에서 즉시 불러옵니다.</p>
+      <!-- CHAPTER 02: Text RIGHT / Particle LEFT ("LEAN4" + Concentric Wave Rings) -->
+      <article class="chapter-panel chapter-right" data-panel="1">
+        <div class="eyebrow">
+          <span>02 · INTERACTIVE LEARNING STUDIO</span>
+          <span class="eyebrow-rule"></span>
+          <span>STEP-BY-STEP TRACE</span>
+        </div>
+        <h2 class="ch-heading">전술과 호출 스택을,<br><em>한 줄씩 되감아 확인합니다.</em></h2>
+        <p class="ch-body">
+          AI가 생성한 수백 줄의 증명과 알고리즘을 그냥 복사하지 마세요.
+          <code>⊢ Goal</code> 변화 타임라인, <strong>sys.settrace</strong> 호출 스택·힙 포인터 그래프,
+          그리고 프로젝트 멀티파일 실행 흐름을 나란히 띄워 원리를 스스로 깨우치게 설계했습니다.
+        </p>
+        <div class="ch-metrics-strip">
+          <div>
+            <div class="ch-metric-num">⊢ Goal</div>
+            <div class="ch-metric-lbl">전술 전후 상태 비교</div>
+          </div>
+          <div style="border-left: 1px solid var(--border-hair); padding-left: 14px;">
+            <div class="ch-metric-num">Heap</div>
+            <div class="ch-metric-lbl">객체 · 참조 실시간 추적</div>
+          </div>
+          <div style="border-left: 1px solid var(--border-hair); padding-left: 14px;">
+            <div class="ch-metric-num">DAG</div>
+            <div class="ch-metric-lbl">정리 의존성 트리</div>
+          </div>
+        </div>
+      </article>
+
+      <!-- CHAPTER 03: Text LEFT / Particle RIGHT (5-Node Staging Sync Loop) -->
+      <article class="chapter-panel chapter-left" data-panel="2">
+        <div class="eyebrow">
+          <span>03 · REALTIME STAGING &amp; AUTOMERGE</span>
+          <span class="eyebrow-rule"></span>
+          <span>CLIENTS ↔ BACKEND ↔ OS</span>
+        </div>
+        <h2 class="ch-heading">동시 편집은 실시간으로,<br><em>디스크 저장은 안전하게 분리.</em></h2>
+        <p class="ch-body">
+          파일을 열면 백엔드 서버가 파일시스템에서 실제 내용을 <strong>스테이징 영역</strong>으로 올립니다.
+          모든 협업자의 편집과 폴더·파일 변경은 <strong>Automerge CRDT</strong>로 즉시 브로드캐스팅되며,
+          저장 버튼을 누르거나 작업자가 <strong>0명</strong>이 될 때만 파일시스템에 기록됩니다.
+        </p>
+        <div class="ch-pills">
+          <span class="badge badge-pass">✓ Automerge CRDT 무손실 병합</span>
+          <span class="badge badge-neutral">○ 작업자 0명 시 자동 저장 &amp; 언스테이징</span>
+          <span class="badge badge-neutral">○ FS 변경 즉시 브로드캐스트</span>
+        </div>
+      </article>
+
+      <!-- CHAPTER 04: Text RIGHT / Particle LEFT (3D Verified Theorem RDB Cylinder) -->
+      <article class="chapter-panel chapter-right" data-panel="3">
+        <div class="eyebrow">
+          <span>04 · VERIFIED THEOREM DATABASE</span>
+          <span class="eyebrow-rule"></span>
+          <span>SHA-256 · REUSE</span>
+        </div>
+        <h2 class="ch-heading">검증된 정리만 보존하고,<br><em>일반 PC에서도 가볍게 복원.</em></h2>
+        <p class="ch-body">
+          <code>sorry</code>나 임의 공리 없이 Lean 4 커널을 통과한 선언만 내용 주소 <strong>SHA-256 해시</strong>와 함께 보존됩니다.
+          다음 셀이나 새 노트북에서 정리 이름만 참조하면 전체 프로젝트를 재빌드하지 않고도 즉시 복원해 이어갑니다.
+        </p>
+        <div class="ch-sql-box">
+          <strong style="color: var(--ink);">SELECT</strong> node_id, name, content_hash<br>
+          <strong style="color: var(--ink);">FROM</strong> theorems <strong style="color: var(--ink);">WHERE</strong> verified = <strong style="color: var(--ink);">TRUE</strong>;
+          <span style="color: var(--ash);">-- zero-recompilation lemma recovery</span>
+        </div>
+      </article>
+
+      <!-- CHAPTER 05: Text LEFT / Particle RIGHT ("DAG" Hexagonal Shield & Tree) -->
+      <article class="chapter-panel chapter-left" data-panel="4">
+        <div class="eyebrow">
+          <span>05 · HIERARCHICAL PROOF DAG</span>
+          <span class="eyebrow-rule"></span>
+          <span>AXIOM FOOTPRINT</span>
+        </div>
+        <h2 class="ch-heading">복잡한 증명 구조를,<br><em>계층형 정리 그래프로 조망합니다.</em></h2>
+        <p class="ch-body">
+          정리가 어떤 보조정리·정의·표준 공리(<code>propext</code>, <code>Classical.choice</code>, <code>Quot.sound</code>)에서 출발했는지
+          계층형 DAG 카드로 한눈에 파악하고, 상위·하위 논증 사슬 전체를 하이라이팅해 추적하세요.
+        </p>
+        <div class="ch-pills">
+          <span class="badge badge-pass">✓ 계층 DAG · Force 전환</span>
+          <span class="badge badge-neutral">○ 상위·하위 논증 경로 강조</span>
+          <span class="badge badge-neutral">○ 소스 위치 1클릭 점프</span>
+        </div>
+      </article>
+
+      <!-- CHAPTER 06: Text RIGHT / Particle LEFT ("MCP" Sweeping Radar Grid) -->
+      <article class="chapter-panel chapter-right" data-panel="5">
+        <div class="eyebrow">
+          <span>06 · CLI AGENT MCP BRIDGE</span>
+          <span class="eyebrow-rule"></span>
+          <span>HUMAN + AGENT CO-EDIT</span>
+        </div>
+        <h2 class="ch-heading">CLI 에이전트도 스테이징 위에서,<br><em>사람과 나란히 협업합니다.</em></h2>
+        <p class="ch-body">
+          내장 <strong>MCP (Model Context Protocol)</strong> 서버를 통해 Claude Code, Codex 등 CLI 에이전트가
+          백엔드 스테이징 영역의 열린 파일을 Automerge로 직접 편집해 브라우저 화면에 실시간으로 띄웁니다.
+          아무도 열어보지 않은 파일은 수정 후 자동 저장·언스테이징됩니다.
+        </p>
+        <div class="ch-cta-row">
+          <a href="#efficiency-compare" class="btn-ink-pill">학습 · 협업 비교 보기 ↓</a>
+        </div>
+      </article>
+    </div>
+
+    <!-- 3. 920vh Continuous Reversible Scroll Track -->
+    <div id="scroll-track" aria-hidden="true"></div>
+
+    <!-- 4. Below-the-Fold Editorial Sections -->
+    <div id="below-fold">
+      <!-- SECTION A: MONOCHROME TECH MARQUEE -->
+      <section class="marquee-section" aria-label="핵심 기술 스택">
+        <div class="marquee-kicker">BUILT ON VERIFIED PRIMITIVES</div>
+        <div class="marquee-viewport">
+          <div class="marquee-track">
+            <span class="marquee-pill"><span class="marquee-dot"></span>Lean 4.10 Kernel</span>
+            <span class="marquee-pill"><span class="marquee-dot"></span>Automerge 3.5 CRDT</span>
+            <span class="marquee-pill"><span class="marquee-dot"></span>Python 3.12 sys.settrace</span>
+            <span class="marquee-pill"><span class="marquee-dot"></span>Neo4j Proof Graph</span>
+            <span class="marquee-pill"><span class="marquee-dot"></span>PostgreSQL 16 + SQLite</span>
+            <span class="marquee-pill"><span class="marquee-dot"></span>Model Context Protocol (MCP)</span>
+            <span class="marquee-pill"><span class="marquee-dot"></span>WebSocket Staging Room</span>
+            <span class="marquee-pill"><span class="marquee-dot"></span>CodeMirror 6</span>
+            <span class="marquee-pill"><span class="marquee-dot"></span>WebAuthn Passkey · TOTP</span>
+            <span class="marquee-pill"><span class="marquee-dot"></span>Isolated VM Containers</span>
+            <!-- Clone -->
+            <span class="marquee-pill"><span class="marquee-dot"></span>Lean 4.10 Kernel</span>
+            <span class="marquee-pill"><span class="marquee-dot"></span>Automerge 3.5 CRDT</span>
+            <span class="marquee-pill"><span class="marquee-dot"></span>Python 3.12 sys.settrace</span>
+            <span class="marquee-pill"><span class="marquee-dot"></span>Neo4j Proof Graph</span>
+            <span class="marquee-pill"><span class="marquee-dot"></span>PostgreSQL 16 + SQLite</span>
+            <span class="marquee-pill"><span class="marquee-dot"></span>Model Context Protocol (MCP)</span>
+            <span class="marquee-pill"><span class="marquee-dot"></span>WebSocket Staging Room</span>
+            <span class="marquee-pill"><span class="marquee-dot"></span>CodeMirror 6</span>
+            <span class="marquee-pill"><span class="marquee-dot"></span>WebAuthn Passkey · TOTP</span>
+            <span class="marquee-pill"><span class="marquee-dot"></span>Isolated VM Containers</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- SECTION B: BEFORE VS AFTER SHOWCASE -->
+      <section id="efficiency-compare" class="compare-section">
+        <div class="section-wrap">
+          <div class="editorial-center-head">
+            <div class="eyebrow" style="justify-content: center;">
+              <span>LEARNING &amp; COLLABORATION REDESIGNED</span>
+            </div>
+            <h2 class="editorial-h2">어렵고 파편화된 개발 환경을,<br><em>직관적인 배움과 실시간 협업으로.</em></h2>
+            <p class="editorial-sub">
+              하단의 <strong>Cleaning up…</strong> 토글을 전환하며 QNB의 4가지 핵심 엔진이
+              학습 마찰과 동시 편집 충돌을 어떻게 제거하는지 확인해 보세요.
+            </p>
           </div>
 
-          <div class="preview-parallel-grid">
-            <div class="preview-cell-card">
-              <div class="preview-cell-head">
-                <span class="cell-tag tag-lean">셀 A · Lean 4</span>
-                <span class="cell-ok">✓ DB 저장됨</span>
+          <div class="compare-grid">
+            <div class="card-stone compare-card">
+              <div>
+                <div class="compare-head-row">
+                  <div>
+                    <div class="mono" style="font-size: 10.5px; color: var(--ash); margin-bottom: 3px;">BEFORE · LEGACY IDE</div>
+                    <div class="compare-card-title">기존 단일 파일 · 풀링 방식</div>
+                  </div>
+                  <span class="badge badge-warn">높은 진입장벽 · 충돌 위험</span>
+                </div>
+
+                <div class="compare-log-stream" style="margin-top: 16px;">
+                  <div class="noise-chunk cleaned" data-clean-group="file">
+                    <span class="noise-tag">[BLACK-BOX EXECUTION] 실행 중간 과정 불투명</span>
+                    <div>코드를 돌려도 최종 stdout 한 줄만 출력되어 재귀 호출·변수·가정 변화를 머릿속으로만 추측</div>
+                  </div>
+                  <div class="noise-chunk cleaned" data-clean-group="log">
+                    <span class="noise-tag">[4S POLLING &amp; OVERWRITE] 주기적 동기화로 인한 덮어쓰기</span>
+                    <div>두 사용자가 동시에 편집하면 마지막 저장이 이전 편집을 덮어쓰고 디스크 I/O 경합 발생</div>
+                  </div>
+                  <div class="noise-chunk cleaned" data-clean-group="symbol">
+                    <span class="noise-tag">[MONOLITH REBUILD] 앞부분 수정 시 수천 줄 재컴파일</span>
+                    <div>일반 PC에서 거대한 단일 .lean 파일을 매번 처음부터 빌드하느라 학습 흐름이 끊김</div>
+                  </div>
+                  <div class="noise-chunk cleaned" data-clean-group="clear">
+                    <span class="noise-tag">[BLIND AGENT EDITS] IDE 밖 에이전트 작업과 단절</span>
+                    <div>CLI 에이전트가 파일을 직접 수정하면 브라우저 편집기가 충돌 경고를 띄우며 멈춤</div>
+                  </div>
+                </div>
               </div>
-              <pre><span class="violet">theorem</span> norm_bound :
-  <span class="orange">0</span> ≤ norm x := <span class="violet">by</span>
-  <span class="blue">positivity</span></pre>
-            </div>
-            <div class="preview-cell-card">
-              <div class="preview-cell-head">
-                <span class="cell-tag tag-lean">셀 B · Lean 4</span>
-                <span class="cell-ok">✓ DB 저장됨</span>
+
+              <div class="meter-block">
+                <div class="meter-meta">
+                  <span style="color: var(--graphite);">학습·협업 마찰 지수</span>
+                  <strong style="color: var(--ink);">100% (수동 추적)</strong>
+                </div>
+                <div class="bar-track">
+                  <div class="bar-fill-hatch" style="width: 100%;"></div>
+                </div>
               </div>
-              <pre><span class="violet">def</span> energy (x : ℝ) :=
-  x ^ <span class="orange">2</span> + <span class="orange">1</span></pre>
+            </div>
+
+            <div class="card-white compare-card">
+              <div>
+                <div class="compare-head-row">
+                  <div>
+                    <div class="mono" style="font-size: 10.5px; color: var(--ash); margin-bottom: 3px;">AFTER · QNB STUDIO</div>
+                    <div class="compare-card-title">실시간 스테이징 · 시각적 학습 스튜디오</div>
+                  </div>
+                  <span id="compare-after-badge" class="badge badge-pass">✓ 마찰 -96.0% · 실시간 병합</span>
+                </div>
+
+                <pre id="compare-distilled-json" class="distilled-pre" style="margin-top: 16px;"></pre>
+              </div>
+
+              <div class="meter-block">
+                <div class="meter-meta">
+                  <span style="color: var(--ink); font-weight: 600;">현재 구조화 후 마찰 잔여치</span>
+                  <strong id="compare-meter-text" style="color: var(--ink);">4.0% (즉각 피드백)</strong>
+                </div>
+                <div class="bar-track">
+                  <div id="compare-meter-fill" class="bar-fill-ink" style="width: 4.0%;"></div>
+                </div>
+              </div>
             </div>
           </div>
 
-          <div class="preview-cell-card reuse-card">
-            <div class="preview-cell-head">
-              <span class="cell-tag tag-reuse">셀 C · DB 복원 &amp; 결합</span>
-              <span class="cell-hash">sha256:9f4a…c21e</span>
+          <div class="cleaning-strip">
+            <div class="cleaning-label">
+              <span style="width: 7px; height: 7px; border-radius: 50%; background: var(--ink); display: inline-block;" class="pulse-ink"></span>
+              <span>Cleaning up…</span>
             </div>
-            <pre><span class="violet">theorem</span> stability : <span class="orange">0</span> ≤ energy x :=
-  add_nonneg (sq_nonneg x) zero_le_one</pre>
+            <div class="cleaning-pills" role="group" aria-label="QNB 엔진 토글">
+              <button type="button" class="clean-toggle active" data-clean="file">✓ 좌우 분할 실행·증명 시각화</button>
+              <button type="button" class="clean-toggle active" data-clean="log">✓ Automerge 백엔드 스테이징</button>
+              <button type="button" class="clean-toggle active" data-clean="symbol">✓ 검증 정리 DB · DAG 복원</button>
+              <button type="button" class="clean-toggle active" data-clean="clear">✓ CLI 에이전트 MCP 실시간 동기화</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SECTION C: 4-TAB INTERACTIVE QNB SANDBOX LAB -->
+      <section id="interactive-lab" class="lab-section">
+        <div class="section-wrap">
+          <div class="editorial-center-head" style="margin-bottom: 36px;">
+            <div class="eyebrow" style="justify-content: center;">
+              <span>INTERACTIVE STUDIO LAB</span>
+            </div>
+            <h2 class="editorial-h2">가입 전 브라우저에서,<br><em>QNB 엔진을 미리 체험해 보세요.</em></h2>
+            <p class="editorial-sub">
+              Automerge 실시간 스테이징 수명주기, Lean 4 전술 목표 변환, 검증 정리 DB 의존성 검사,
+              Python 호출 스택 추적까지 직접 조작해 볼 수 있습니다.
+            </p>
+          </div>
+
+          <div class="lab-shell">
+            <div class="lab-switcher-wrap">
+              <div class="lab-segmented" role="tablist">
+                <button type="button" class="lab-tab-btn active" data-tab="tab-1">01. 스테이징 &amp; 0명 자동저장</button>
+                <button type="button" class="lab-tab-btn" data-tab="tab-2">02. Lean 4 전술 상태 시각화</button>
+                <button type="button" class="lab-tab-btn" data-tab="tab-3">03. 실시간 다중 편집 시뮬레이터</button>
+                <button type="button" class="lab-tab-btn" data-tab="tab-4">04. MCP CLI 연동 &amp; 학습 제어</button>
+              </div>
+            </div>
+
+            <!-- TAB 1: STAGING AREA & 0-USER AUTO-SAVE MATRIX -->
+            <div id="tab-1" class="lab-panel active">
+              <div class="toolbar-box">
+                <div>
+                  <div class="mono" style="font-size: 10.5px; color: var(--ash); letter-spacing: 0.08em;">CLIENTS ↔ BACKEND STAGING AREA (AUTOMERGE) ↔ VM FILESYSTEM</div>
+                  <h3 style="font-size: 16px; font-weight: 700; margin-top: 3px;">협업 세션 상태 전환 &amp; 0명 자동 저장 게이트</h3>
+                </div>
+                <div class="toolbar-btns">
+                  <button id="btn-sql-check" type="button" class="btn-hair-pill mono" style="font-size: 11.5px;">현재 상태 점검</button>
+                  <button id="btn-llm-check" type="button" class="btn-ink-pill mono" style="font-size: 11.5px; padding: 9px 16px;">0명 자동저장 규칙 시뮬레이션</button>
+                  <button id="btn-auto-resolve" type="button" class="btn-hair-pill mono" style="font-size: 11.5px;">✓ 모두 저장 &amp; 정리</button>
+                  <button id="btn-spec-reset" type="button" class="btn-hair-pill mono" style="font-size: 11.5px;">초기화</button>
+                </div>
+              </div>
+
+              <div id="spec-gate-banner" class="toolbar-box" style="padding: 13px 18px; font-family: var(--font-mono); font-size: 12px;">
+                <div id="spec-sql-live" style="color: var(--ink-soft);"></div>
+                <span id="spec-gate-badge" class="badge badge-neutral">○ STANDBY</span>
+              </div>
+
+              <div class="grid-2">
+                <div class="sub-surface">
+                  <div class="sub-header">
+                    <strong style="color: var(--ink);">staged_files (백엔드 스테이징)</strong>
+                    <span style="color: var(--ash);">클릭해 상태 전환</span>
+                  </div>
+                  <div class="table-wrap">
+                    <table class="spec-table">
+                      <thead>
+                        <tr>
+                          <th>파일</th>
+                          <th>역할</th>
+                          <th>활성 사용자</th>
+                          <th style="text-align: right;">스테이징 상태</th>
+                        </tr>
+                      </thead>
+                      <tbody id="tbody-srs"></tbody>
+                    </table>
+                  </div>
+                </div>
+
+                <div style="display: flex; flex-direction: column; gap: 16px;">
+                  <div class="sub-surface">
+                    <div class="sub-header">
+                      <strong style="color: var(--ink);">connected_clients (협업 룸)</strong>
+                      <span style="color: var(--ash);">브라우저 · MCP 세션</span>
+                    </div>
+                    <div class="table-wrap">
+                      <table class="spec-table">
+                        <thead>
+                          <tr>
+                            <th>세션</th>
+                            <th>작업 내용</th>
+                            <th style="text-align: right;">상태</th>
+                          </tr>
+                        </thead>
+                        <tbody id="tbody-arc"></tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  <div class="sub-surface">
+                    <div class="sub-header">
+                      <strong style="color: var(--ink);">vm_filesystem (/workspace)</strong>
+                      <span style="color: var(--ash);">명시적 저장 / 0명 언스테이징 대상</span>
+                    </div>
+                    <div class="table-wrap">
+                      <table class="spec-table">
+                        <thead>
+                          <tr>
+                            <th>대상</th>
+                            <th>디스크 동기화 상태</th>
+                            <th style="text-align: right;">상태</th>
+                          </tr>
+                        </thead>
+                        <tbody id="tbody-sch"></tbody>
+                    </table>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="grid-2">
+                <div id="report-stage1" class="sub-surface" style="padding: 18px;">
+                  <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 10px;">
+                    <span class="mono" style="font-size: 11px; color: var(--ash);">RULE 1 · STAGING BUFFER</span>
+                    <span id="badge-stage1" class="badge badge-neutral">○ STANDBY</span>
+                  </div>
+                  <div id="body-stage1" style="font-size: 13px; color: var(--graphite); line-height: 1.6;"></div>
+                </div>
+
+                <div id="report-stage2" class="sub-surface" style="padding: 18px;">
+                  <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 10px;">
+                    <span class="mono" style="font-size: 11px; color: var(--ash);">RULE 2 · ZERO-USER AUTO-SAVE &amp; UNSTAGE</span>
+                    <span id="badge-stage2" class="badge badge-neutral">○ STANDBY</span>
+                  </div>
+                  <div id="body-stage2" style="font-size: 13px; color: var(--graphite); line-height: 1.6;"></div>
+                </div>
+              </div>
+            </div>
+
+            <!-- TAB 2: LEAN 4 PROOF STATE & DAG LIFTING -->
+            <div id="tab-2" class="lab-panel">
+              <div class="toolbar-box">
+                <div>
+                  <div class="mono" style="font-size: 10.5px; color: var(--ash);">LEAN 4 INFOVIEW · $/lean/plainGoal STEP COLLECTOR</div>
+                  <h3 style="font-size: 16px; font-weight: 700; margin-top: 3px;"><code>zero_add_tour (n : Nat)</code> 증명 전술 단계 비교</h3>
+                </div>
+                <div class="toolbar-btns">
+                  <div class="seg-inline">
+                    <button id="sem-btn-ok" type="button" class="seg-inline-btn active">✓ 증명 완료 (rfl · rw)</button>
+                    <button id="sem-btn-bug" type="button" class="seg-inline-btn">▲ 미해결 목표 남음</button>
+                  </div>
+                  <button id="btn-run-ast" type="button" class="btn-ink-pill mono" style="font-size: 11.5px; padding: 9px 16px;">전술 상태 재검사</button>
+                </div>
+              </div>
+
+              <div class="grid-3 mono" style="font-size: 12px;">
+                <div class="sub-surface" style="padding: 15px;">
+                  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                    <strong style="color: var(--ink);">zero_add_tour</strong>
+                    <span class="badge badge-pass">LEAN 4.10</span>
+                  </div>
+                  <div id="ast-hash-line" style="font-size: 11px; color: var(--graphite);">sha256: 9f4a2c → b82e19</div>
+                  <div style="font-size: 11px; color: var(--ink); margin-top: 5px;">● 표준 공리 외 임의 axiom 0건</div>
+                </div>
+
+                <div class="sub-surface" style="padding: 15px;">
+                  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                    <strong style="color: var(--graphite);">검증 정리 DB 보존</strong>
+                    <span class="badge badge-neutral">✓ CACHED</span>
+                  </div>
+                  <div style="font-size: 11px; color: var(--ash);">의존성 DAG 자동 투영</div>
+                  <div style="font-size: 11px; color: var(--graphite); margin-top: 5px;">○ 후속 셀 1줄 참조 복원</div>
+                </div>
+
+                <div class="sub-surface" style="padding: 15px;">
+                  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                    <strong style="color: var(--ink);">커널 검증 판정</strong>
+                    <span id="ast-verdict-badge" class="badge badge-neutral">○ STANDBY</span>
+                  </div>
+                  <div id="ast-verdict-note" style="font-size: 11px; color: var(--graphite); margin-top: 5px;">전술 상태를 확인하세요.</div>
+                </div>
+              </div>
+
+              <div class="grid-2">
+                <div class="sub-surface" style="display: flex; flex-direction: column;">
+                  <div class="sub-header">
+                    <strong style="color: var(--ink);">examples/induction.lean (좌측 편집기)</strong>
+                    <span style="color: var(--ash);">LEAN 4 PROOF</span>
+                  </div>
+                  <div id="ast-code-view" class="code-paper" style="flex: 1;"></div>
+                </div>
+
+                <div class="sub-surface" style="display: flex; flex-direction: column;">
+                  <div class="sub-header">
+                    <strong style="color: var(--ink);">viz-studio.goals (우측 시각화)</strong>
+                    <span style="color: var(--ash);">BEFORE → AFTER GOAL</span>
+                  </div>
+                  <div id="ast-json-view" style="padding: 16px; background: var(--paper); flex: 1; display: flex; flex-direction: column; gap: 10px; font-family: var(--font-mono); font-size: 11.5px;"></div>
+                </div>
+              </div>
+
+              <div class="sub-surface" style="padding: 18px 20px;">
+                <div style="display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 14px;">
+                  <strong style="font-size: 14px;">학습 피드백 속도 — 전체 모놀리스 빌드 vs 셀 단위 검증 DB 복원</strong>
+                  <span class="badge badge-pass">✓ 즉시 시각 피드백</span>
+                </div>
+                <div style="display: flex; flex-direction: column; gap: 14px; font-family: var(--font-mono); font-size: 12px;">
+                  <div>
+                    <div style="display: flex; justify-content: space-between; color: var(--graphite); margin-bottom: 6px;">
+                      <span>단일 거대 파일 전체 빌드</span>
+                      <strong style="color: var(--ink);">매 수정 시 전체 재컴파일 (수십 초~수 분)</strong>
+                    </div>
+                    <div class="bar-track"><div class="bar-fill-hatch" style="width: 100%;"></div></div>
+                  </div>
+                  <div>
+                    <div style="display: flex; justify-content: space-between; color: var(--ink); margin-bottom: 6px;">
+                      <span>QNB 병렬 셀 + DB 복원 + 전술 Goal 추적</span>
+                      <strong>선택 셀만 검증 (즉시 시각화)</strong>
+                    </div>
+                    <div class="bar-track"><div class="bar-fill-ink" style="width: 8%;"></div></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- TAB 3: REALTIME COLLABORATION & STAGING FLOW SIMULATOR -->
+            <div id="tab-3" class="lab-panel">
+              <div class="toolbar-box">
+                <div class="seg-inline">
+                  <button id="sim-mode-fast" type="button" class="seg-inline-btn">단일 사용자 자동언스테이징</button>
+                  <button id="sim-mode-full" type="button" class="seg-inline-btn active">다중 협업자 + CLI MCP 공동 편집</button>
+                </div>
+                <div class="toolbar-btns">
+                  <button id="btn-sim-run" type="button" class="btn-ink-pill mono" style="font-size: 11.5px; padding: 9px 16px;">동기화 흐름 재생</button>
+                  <button id="btn-sim-reset" type="button" class="btn-hair-pill mono" style="font-size: 11.5px;">초기화</button>
+                </div>
+              </div>
+
+              <div class="sim-nodes-grid">
+                <div class="sim-node" data-snode="0">CLIENT_OPEN</div>
+                <div class="sim-node" data-snode="1">LOAD_STAGING</div>
+                <div class="sim-node" data-snode="2">AUTOMERGE_SYNC</div>
+                <div class="sim-node" data-snode="3">MCP_COEDIT</div>
+                <div class="sim-node" data-snode="4">EXPLICIT_SAVE</div>
+                <div class="sim-node" data-snode="5">0_USER_UNSTAGE</div>
+              </div>
+
+              <div class="sub-surface" style="padding: 16px 20px;">
+                <div style="display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px; font-family: var(--font-mono); font-size: 12px; margin-bottom: 10px;">
+                  <div>
+                    <span style="color: var(--ash);">STAGING PIPELINE PROGRESS · </span>
+                    <strong id="sim-budget-text" style="color: var(--ink);">0 / 5 단계</strong>
+                  </div>
+                  <div style="display: flex; gap: 10px; align-items: center;">
+                    <span id="sim-reset-count" style="color: var(--graphite);">활성 세션: 0명</span>
+                    <span id="sim-fallback-badge" class="badge badge-neutral">○ 스테이징 대기</span>
+                  </div>
+                </div>
+                <div class="bar-track" style="height: 10px; overflow: visible;">
+                  <div id="sim-budget-fill" class="bar-fill-ink" style="width: 0%;"></div>
+                  <div class="budget-marker" title="명시적 저장 체크포인트"></div>
+                </div>
+              </div>
+
+              <div id="sim-hitl-card" class="alert-striped hidden" style="padding: 18px 20px; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px;">
+                <div style="max-width: 720px;">
+                  <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+                    <span class="badge badge-warn">▲ ACTIVE EDITORS: 0 · AUTO-FLUSH GATE</span>
+                    <span class="mono" style="font-size: 11px; color: var(--graphite);">마지막 작업자 퇴장 감지</span>
+                  </div>
+                  <div style="font-size: 13px; color: var(--ink); line-height: 1.65;">
+                    <div><strong>1) 상태:</strong> 미저장(dirty) 변경분이 백엔드 Automerge 스테이징 버퍼에 남아 있습니다.</div>
+                    <div><strong>2) 동작:</strong> 작업 중인 사용자가 0명이 되었으므로 자동으로 VM 파일시스템에 저장한 뒤 스테이징에서 내립니다.</div>
+                  </div>
+                </div>
+                <button id="btn-sim-approve" type="button" class="btn-ink-pill mono" style="font-size: 12px;">✓ 자동 저장 &amp; 언스테이징 확인</button>
+              </div>
+
+              <div class="sub-surface">
+                <div class="sub-header">
+                  <strong style="color: var(--ink);">qnb-collab-server · event stream</strong>
+                  <span id="sim-status-label" style="color: var(--ash);">READY</span>
+                </div>
+                <div id="sim-log" class="trace-box">
+                  <div style="color: var(--ash);">$ 시뮬레이션 모드를 선택하고 "동기화 흐름 재생" 버튼을 눌러 주세요.</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- TAB 4: MCP CLI AGENT INSPECTOR & VISUALIZATION CUSTOMIZER -->
+            <div id="tab-4" class="lab-panel">
+              <div class="grid-2">
+                <div class="sub-surface" style="padding: 20px; display: flex; flex-direction: column; gap: 14px;">
+                  <div style="display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px; padding-bottom: 14px; border-bottom: 1px solid var(--border-hair);">
+                    <div>
+                      <div class="mono" style="font-size: 10.5px; color: var(--ash);">MCP STAGING TOOLS SIMULATION</div>
+                      <h3 style="font-size: 16px; font-weight: 700; margin-top: 2px;">CLI 에이전트 → 스테이징 편집 시퀀스</h3>
+                    </div>
+                    <button id="btn-run-research" type="button" class="btn-ink-pill mono" style="font-size: 11px; padding: 8px 14px;">MCP 호출 실행</button>
+                  </div>
+
+                  <div class="alert-striped" style="padding: 12px 14px; font-family: var(--font-mono); font-size: 11.5px;">
+                    <div style="color: var(--ink); font-weight: 700;">⌘ python3 -m qnb.mcp_server</div>
+                    <div style="color: var(--graphite); margin-top: 4px;"><code>tools/call → qnb_edit_staged_file(path="/examples/induction.lean", old_text="sorry", new_text="rfl")</code></div>
+                  </div>
+
+                  <div id="res-step-1" class="res-step">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; font-family: var(--font-mono); font-size: 11px;">
+                      <strong style="color: var(--ink);">1. 토큰 인증 &amp; 스테이징 조회</strong>
+                      <span id="res-b1" class="badge badge-neutral">○ 대기</span>
+                    </div>
+                    <div id="res-t1" class="mono" style="font-size: 11.5px; color: var(--graphite);">
+                      <code>Authorization: Bearer qnb_mcp_...</code> 로 대상 워크스페이스 스테이징 룸에 접속합니다.
+                    </div>
+                  </div>
+
+                  <div id="res-step-2" class="res-step">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; font-family: var(--font-mono); font-size: 11px;">
+                      <strong style="color: var(--ink);">2. Automerge CRDT 병합 &amp; 실시간 브로드캐스트</strong>
+                      <span id="res-b2" class="badge badge-neutral">○ 대기</span>
+                    </div>
+                    <div id="res-t2" style="font-size: 12px; color: var(--graphite);">
+                      다른 브라우저 사용자가 파일을 보고 있으면 커서를 해치지 않고 변경분만 실시간 반영됩니다.
+                    </div>
+                  </div>
+
+                  <div id="res-step-3" class="res-step">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; font-family: var(--font-mono); font-size: 11px;">
+                      <strong style="color: var(--ink);">3. 활성 사용자 0명 자동 저장 처리</strong>
+                      <span id="res-b3" class="badge badge-neutral">○ 대기</span>
+                    </div>
+                    <div id="res-t3" style="font-size: 12.5px; color: var(--graphite); line-height: 1.65;">
+                      상단 버튼을 눌러 브라우저 동시 작업자가 1명일 때 vs 0명일 때의 스테이징 처리 결과를 확인하세요.
+                    </div>
+                  </div>
+                </div>
+
+                <div class="sub-surface" style="padding: 20px; display: flex; flex-direction: column; gap: 14px;">
+                  <div style="display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px; padding-bottom: 14px; border-bottom: 1px solid var(--border-hair);">
+                    <div>
+                      <div class="mono" style="font-size: 10.5px; color: var(--ash);">PROOF CARD STYLER</div>
+                      <h3 style="font-size: 16px; font-weight: 700; margin-top: 2px;">정리 그래프 카드 가독성 &amp; 잠금 조절</h3>
+                    </div>
+                    <button id="btn-ux-overwrite" type="button" class="btn-hair-pill mono" style="font-size: 11px; padding: 7px 13px;">임의 레이아웃 재설정 테스트</button>
+                  </div>
+
+                  <div class="ux-stage">
+                    <div style="display: flex; justify-content: space-between; font-family: var(--font-mono); font-size: 10.5px; color: var(--ash); margin-bottom: 10px;">
+                      <span>PROOF DAG NODE PREVIEW</span>
+                      <span id="ux-stage-lock-lbl" style="color: var(--ink); font-weight: 700;">✓ LOCKED_BY_USER</span>
+                    </div>
+
+                    <div id="ux-live-card" style="background: #FFFFFF; border: 1px solid rgba(20,20,19,0.22); border-radius: 16px; padding: 20px; transition: all 0.12s ease;">
+                      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                        <span class="badge badge-pass" style="font-size: 10px;">ROOT THEOREM</span>
+                        <span class="mono" style="font-size: 10px; color: var(--ash);">sha256:9f4a2c</span>
+                      </div>
+                      <div id="ux-live-title" class="serif" style="font-size: 19px; color: var(--ink); margin-bottom: 6px;">
+                        zero_add_double (n : Nat)
+                      </div>
+                      <div id="ux-live-desc" style="font-size: 12.5px; color: var(--graphite); line-height: 1.55; margin-bottom: 14px;">
+                        의존: zero_add_tour · 표준 공리: 0건 (완전 구성적 증명)
+                      </div>
+                      <div style="display: flex; gap: 8px;">
+                        <span id="ux-live-cta" style="padding: 7px 14px; background: var(--ink); color: var(--paper); font-family: var(--font-mono); font-size: 11px; font-weight: 600; border-radius: 999px;">✓ 상위·하위 경로 강조</span>
+                        <span style="padding: 7px 14px; border: 1px solid var(--border-mid); color: var(--graphite); font-family: var(--font-mono); font-size: 11px; border-radius: 999px;">소스 열기</span>
+                      </div>
+                    </div>
+
+                    <div id="ux-audit-msg" class="hidden" style="margin-top: 12px; padding: 10px 12px; font-family: var(--font-mono); font-size: 11.5px;"></div>
+                  </div>
+
+                  <div class="ux-sliders">
+                    <div>
+                      <div class="slider-meta"><label for="sl-padding">카드 여백</label><span id="val-padding" style="color: var(--ink);">20px</span></div>
+                      <input id="sl-padding" class="ink-slider" type="range" min="10" max="34" value="20" />
+                    </div>
+                    <div>
+                      <div class="slider-meta"><label for="sl-radius">모서리 반경</label><span id="val-radius" style="color: var(--ink);">16px</span></div>
+                      <input id="sl-radius" class="ink-slider" type="range" min="0" max="28" value="16" />
+                    </div>
+                    <div>
+                      <div class="slider-meta"><label for="sl-type">폰트 스케일</label><span id="val-type" style="color: var(--ink);">1.00x</span></div>
+                      <input id="sl-type" class="ink-slider" type="range" min="85" max="125" value="100" />
+                    </div>
+                    <div>
+                      <div class="slider-meta"><label for="sl-contrast">테두리 대비</label><span id="val-contrast" style="color: var(--ink);">22%</span></div>
+                      <input id="sl-contrast" class="ink-slider" type="range" min="6" max="42" value="22" />
+                    </div>
+                  </div>
+
+                  <label style="display: flex; align-items: center; justify-content: space-between; padding: 11px 14px; border-radius: var(--radius-sm); background: var(--surface); border: 1px solid var(--border-hair); font-family: var(--font-mono); font-size: 12px; cursor: pointer;">
+                    <span>
+                      <strong style="color: var(--ink);">locked_by_user</strong>
+                      <span style="color: var(--ash); margin-left: 6px;">사용자 스타일 고정</span>
+                    </span>
+                    <span style="display: inline-flex; align-items: center; gap: 8px;">
+                      <input id="chk-ux-lock" type="checkbox" checked style="width: 15px; height: 15px; accent-color: #141413; cursor: pointer;" />
+                      <span id="chk-ux-lock-text" class="badge badge-pass">✓ 보호됨</span>
+                    </span>
+                  </label>
+
+                  <div class="sub-surface" style="background: var(--surface);">
+                    <div class="sub-header" style="padding: 8px 12px; font-size: 10.5px;">
+                      <span style="color: var(--graphite);">proof_card_theme.json (LIVE)</span>
+                      <span style="color: var(--ash);">DECLARATIVE</span>
+                    </div>
+                    <pre id="ux-json-preview" class="code-paper" style="padding: 12px; font-size: 11px; background: var(--surface);"></pre>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SECTION D: CLOSING CTA & MINIMAL FOOTER -->
+      <section class="closing-section">
+        <div class="section-wrap">
+          <div class="closing-card">
+            <div class="eyebrow" style="justify-content: center;">
+              <span>FORMAL · VISUAL · COLLABORATIVE</span>
+            </div>
+            <h2 class="closing-heading">배움에서 실시간 협업까지,<br><em>가장 명료한 증명 스튜디오.</em></h2>
+            <p class="editorial-sub" style="max-width: 560px; margin: 0 auto;">
+              개인 학습자부터 연구 팀, CLI 에이전트까지 하나의 스테이징 워크스페이스에서 만납니다.<br>
+              지금 바로 첫 노트북이나 Lean 4 예제를 열어 원리를 눈으로 확인해 보세요.
+            </p>
+            <div class="closing-actions">
+              <a id="bottom-signup" class="btn-ink-pill" href="/signup">무료 워크스페이스 만들기 →</a>
+              <a id="bottom-ide" class="btn-ink-pill" href="/ide" hidden>IDE 워크스페이스 열기 →</a>
+              <button id="btn-back-top" type="button" class="btn-hair-pill">맨 위로 올라가 파티클 보기 ↑</button>
+            </div>
+          </div>
+
+          <footer class="site-footer">
+            <span>QNB — Visual Proof Studio &amp; Real-Time Automerge Workspace</span>
+            <span>Warm Monochrome Paper &amp; Ink Edition · qnb.p-e.kr</span>
+          </footer>
+        </div>
+      </section>
+    </div>
+
+    <!-- 5. Floating Bottom Pill HUD -->
+    <div id="bottom-hud">
+      <div class="hud-pill">
+        <div class="hud-ch-wrap">
+          <div class="hud-ch-row" role="group" aria-label="챕터 이동">
+            <button type="button" class="hud-ch-btn active" data-jump="0" title="01 · QNB 스튜디오">01</button>
+            <button type="button" class="hud-ch-btn" data-jump="1" title="02 · 시각화 학습">02</button>
+            <button type="button" class="hud-ch-btn" data-jump="2" title="03 · Automerge 스테이징">03</button>
+            <button type="button" class="hud-ch-btn" data-jump="3" title="04 · 검증 정리 DB">04</button>
+            <button type="button" class="hud-ch-btn" data-jump="4" title="05 · 계층 증명 DAG">05</button>
+            <button type="button" class="hud-ch-btn" data-jump="5" title="06 · CLI MCP 브리지">06</button>
+          </div>
+          <div class="hud-ch-progress" aria-hidden="true">
+            <div id="hud-ch-fill"></div>
           </div>
         </div>
 
-        <div class="preview-graph">
-          <span class="node-example">stability</span>
-          <span class="edge-example"></span>
-          <span class="node-example secondary">norm_bound</span>
-          <span class="edge-example"></span>
-          <span class="node-example secondary">energy</span>
-          <span class="preview-ok">✓ 증명 트리 연결 완료</span>
-        </div>
-      </div>
-    </section>
+        <span class="hud-sep"></span>
 
-    <section id="philosophy" class="home-section">
-      <div class="section-head">
-        <span class="section-kicker">왜 QNB인가</span>
-        <h2>에이전트의 속도와 인간의 이해력 사이의 간극을 메우다</h2>
-        <p>형식 증명의 생산 속도는 이미 사람의 독해 속도를 넘어섰습니다. QNB는 증명을 읽고, 검증하고, 이어 쓰는 방식을 근본적으로 가볍게 재설계했습니다.</p>
-      </div>
-      <div class="capabilities">
-        <article class="cap-card">
-          <div class="feature-icon" aria-hidden="true">⫘</div>
-          <h3>병렬 Lean 4 셀 &amp; 마크다운 서사</h3>
-          <p>거대한 증명 스크립트를 의미 단위의 Lean 셀로 쪼개 서로 다른 셀에서 병렬로 작업하고, 마크다운 문서와 수식 설명을 나란히 배치해 인간의 직관적 이해를 돕습니다.</p>
-        </article>
-        <article class="cap-card">
-          <div class="feature-icon" aria-hidden="true">◎</div>
-          <h3>인터랙티브 증명 트리</h3>
-          <p>정리와 정의가 어떤 보조정리와 Lean 표준 공리에 의존하는지 그래프(Neo4j)로 시각화합니다. 복잡한 논증 구조를 깊이·노드별로 한눈에 탐색하세요.</p>
-        </article>
-        <article class="cap-card">
-          <div class="feature-icon" aria-hidden="true">◈</div>
-          <h3>검증된 정리 DB 저장 · 경량 재사용</h3>
-          <p><code>sorry</code>나 임의 공리가 없는 검증 완료 선언만 SHA-256 해시와 함께 DB에 영속화합니다. 일반 PC 브라우저에서도 무거운 전체 컴파일 없이 최신 정리를 불러와 재사용할 수 있습니다.</p>
-        </article>
-      </div>
-    </section>
+        <form id="hud-morph-form" class="hud-form">
+          <input id="hud-morph-input" class="hud-input" type="text" maxlength="8" placeholder="글자 입력 (최대 8자)" aria-label="파티클 글자 입력" />
+          <button type="submit" class="hud-btn">변형</button>
+          <button id="hud-restore-btn" type="button" class="hud-btn active hidden">스크롤 복귀</button>
+        </form>
 
-    <section id="workflow" class="home-section">
-      <div class="section-head">
-        <span class="section-kicker">작업 방식 비교</span>
-        <h2>수천 줄을 한 번에 실행하는 대신, 검증된 단위만 연결합니다</h2>
-      </div>
-      <div class="comparison-grid">
-        <article class="compare-card legacy">
-          <div class="compare-label">기존 단일 파일 Lean 워크플로우</div>
-          <ul>
-            <li>수천~수만 줄 전체를 로컬 PC에서 매번 빌드해야 해서 일반 PC로 따라가기 버거움</li>
-            <li>코드와 자연어 설명이 분리되어 에이전트가 작성한 증명의 핵심 아이디어를 파악하기 어려움</li>
-            <li>앞부분 수정 시 전체 파일이 재검증되어 병렬 실험이 느림</li>
-          </ul>
-        </article>
-        <article class="compare-card qnb">
-          <div class="compare-label">QNB 노트북 + 증명 DB 워크플로우</div>
-          <ul>
-            <li>노트북의 서로 다른 Lean 4 셀에서 독립·병렬로 정리와 정의를 검증</li>
-            <li>코드 셀 사이에 마크다운 해설과 Python 수치·시각화 셀을 자유롭게 배치</li>
-            <li>검증 통과 정리·정의만 DB에 저장해 다른 노트북·셀에서 즉시 복원 및 증명 트리 탐색</li>
-          </ul>
-        </article>
-      </div>
-    </section>
+        <span class="hud-sep"></span>
 
-    <section id="database-arch" class="home-section">
-      <div class="section-head">
-        <span class="section-kicker">검증 파이프라인</span>
-        <h2>가벼운 브라우저 IDE 뒤에서 동작하는 3단계 무결성 아키텍처</h2>
+        <button id="hud-scatter-btn" type="button" class="hud-btn">흩뿌리기</button>
+        <button id="hud-focus-btn" type="button" class="hud-btn">입자 집중</button>
       </div>
-      <div class="pipeline-steps">
-        <article class="pipe-step">
-          <span class="pipe-num">01</span>
-          <h3>격리된 VM 셀 실행</h3>
-          <p>계정별 경량 VM에서 선택한 Lean 4 셀만 빠르게 타입 검사합니다. Python Jupyter 셀과 VM 터미널도 동일한 WebSocket으로 연결됩니다.</p>
-        </article>
-        <article class="pipe-step">
-          <span class="pipe-num">02</span>
-          <h3>검증 정리·정의 정규화 저장</h3>
-          <p>통과한 <code>theorem</code>, <code>def</code>, <code>abbrev</code>와 의존성 및 정규화된 명제를 SQLite·PostgreSQL에 저장해 중복을 제거하고 재사용 가능하게 만듭니다.</p>
-        </article>
-        <article class="pipe-step">
-          <span class="pipe-num">03</span>
-          <h3>증명 트리 탐색 및 즉시 복원</h3>
-          <p>Neo4j 그래프에 반영된 의존 관계를 증명 트리에서 탐색하고, 새 셀에서 이름만 참조하면 DB에서 검증된 선언을 자동 복원해 이어서 증명합니다.</p>
-        </article>
-      </div>
-    </section>
-
-    <section class="home-cta-banner">
-      <div>
-        <h2>지금 바로 브라우저에서 가벼운 증명 연구를 시작하세요</h2>
-        <p>고성능 워크스테이션 없이도 에이전트와 인간의 연구 결과를 따라가고 확장할 수 있습니다.</p>
-      </div>
-      <div class="home-actions">
-        <a id="bottom-signup" class="primary button cta-lg" href="/signup">워크스페이스 만들기</a>
-        <a id="bottom-ide" class="primary button cta-lg" href="/ide" hidden>IDE 열기</a>
-      </div>
-    </section>
+    </div>
   </main>
 
+  <!-- ==================== DEDICATED AUTH PAGE (PAPER & INK EDITORIAL) ==================== -->
   <main id="auth-page" hidden>
     <div class="auth-shell">
       <aside class="auth-aside">
         <a id="auth-home-link" class="auth-back" href="/">← 홈으로 돌아가기</a>
-        <div class="auth-aside-badge">QNB Proof Workspace</div>
-        <h2>증명 트리와 마크다운으로<br>복잡한 형식을 명확하게.</h2>
-        <p>계정마다 독립된 VM 워크스페이스와 검증 정리 데이터베이스가 즉시 배정됩니다.</p>
+        <div class="auth-aside-badge">QNB PROOF WORKSPACE</div>
+        <h2>눈으로 보는 원리,<br><em>함께 쓰는 실시간 증명.</em></h2>
+        <p>가입 즉시 격리된 개인 VM 워크스페이스, Automerge 협업 룸, 검증 정리 데이터베이스와 MCP 브리지가 생성됩니다.</p>
         <ul class="auth-highlights">
-          <li><strong>병렬 Lean 4 셀</strong> — 셀 단위로 나눠 독립 검증 및 실행</li>
-          <li><strong>마크다운 + Python 통합</strong> — 수학적 서사와 수치 실험을 한 노트북에</li>
-          <li><strong>검증 DB 재사용</strong> — <code>sorry</code> 없는 정리만 저장해 가볍게 복원</li>
+          <li><strong>좌우 분할 시각화 스튜디오</strong> — Lean 4 전술 목표와 Python 호출 스택 실시간 추적</li>
+          <li><strong>백엔드 스테이징 실시간 협업</strong> — 다중 편집 즉시 동기화 · 0명 자동 저장</li>
+          <li><strong>검증 DB · MCP 연동</strong> — 정리 계층 그래프와 CLI 에이전트 공동 편집 지원</li>
         </ul>
         <div class="auth-mini-tree" aria-hidden="true">
-          <span class="mini-node root">MainTheorem</span>
+          <span class="mini-node root">zero_add_double</span>
           <span class="mini-branch"></span>
           <div class="mini-row">
-            <span class="mini-node">Lemma A (DB)</span>
-            <span class="mini-node">Def B (DB)</span>
+            <span class="mini-node">zero_add_tour</span>
+            <span class="mini-node">Nat.add_succ</span>
           </div>
         </div>
       </aside>
@@ -274,7 +917,7 @@
         </div>
         <form id="auth-form">
           <label id="nickname-field" class="field" hidden>
-            <span>닉네임 (터미널 프롬프트 표시)</span>
+            <span>닉네임 (협업자 및 터미널 표시)</span>
             <input id="nickname" name="nickname" type="text" maxlength="32" placeholder="예: euler (미입력 시 이메일 앞부분)">
           </label>
           <label class="field">
@@ -338,37 +981,54 @@
     </div>
   </main>
 
+  <!-- ==================== COLLABORATIVE IDE & VISUAL STUDIO ==================== -->
   <main id="ide" hidden>
     <aside id="sidebar" class="sidebar">
       <div class="side-head">
         <h2>탐색기</h2>
         <div class="icon-actions">
-          <button id="sidebar-new-notebook" type="button" title="새 노트북" aria-label="새 노트북">∴</button>
-          <button id="create-file" type="button" title="새 파일" aria-label="새 파일">＋</button>
-          <button id="create-folder" type="button" title="새 폴더" aria-label="새 폴더">▱</button>
-          <button id="refresh-files" type="button" title="새로 고침" aria-label="새로 고침">↻</button>
+          <button id="sidebar-new-notebook" type="button" title="새 노트북 (.ipynb)" aria-label="새 노트북">
+            <svg viewBox="0 0 16 16" width="14" height="14" fill="none" aria-hidden="true"><rect x="3" y="2" width="10" height="12" rx="1.8" stroke="currentColor" stroke-width="1.35"/><path d="M5.5 5.5h5M5.5 8.2h3.2M5.5 11h5" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/></svg>
+          </button>
+          <button id="create-file" type="button" title="새 파일" aria-label="새 파일">
+            <svg viewBox="0 0 16 16" width="14" height="14" fill="none" aria-hidden="true"><path d="M9.5 2H4.2A1.2 1.2 0 0 0 3 3.2v9.6A1.2 1.2 0 0 0 4.2 14h7.6a1.2 1.2 0 0 0 1.2-1.2V5.5L9.5 2Z" stroke="currentColor" stroke-width="1.35"/><path d="M8 7v4M6 9h4" stroke="currentColor" stroke-width="1.35" stroke-linecap="round"/></svg>
+          </button>
+          <button id="create-folder" type="button" title="새 폴더" aria-label="새 폴더">
+            <svg viewBox="0 0 16 16" width="14" height="14" fill="none" aria-hidden="true"><path d="M2.2 4.2A1.2 1.2 0 0 1 3.4 3h3l1.3 1.4h4.9a1.2 1.2 0 0 1 1.2 1.2v6.2a1.2 1.2 0 0 1-1.2 1.2H3.4a1.2 1.2 0 0 1-1.2-1.2V4.2Z" stroke="currentColor" stroke-width="1.35"/><path d="M8 7.2v3.6M6.2 9h3.6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+          </button>
+          <button id="upload-files" type="button" title="파일 업로드 (붙여넣기 · 드래그 앤 드롭도 지원)" aria-label="파일 업로드">
+            <svg viewBox="0 0 16 16" width="14" height="14" fill="none" aria-hidden="true"><path d="M8 10.5V3M5.2 5.6 8 2.8l2.8 2.8M3 10.5v1.8A1.2 1.2 0 0 0 4.2 13.5h7.6a1.2 1.2 0 0 0 1.2-1.2v-1.8" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <button id="refresh-files" type="button" title="새로 고침" aria-label="새로 고침">
+            <svg viewBox="0 0 16 16" width="14" height="14" fill="none" aria-hidden="true"><path d="M13 8a5 5 0 1 1-1.35-3.42M13 2.5v2.6h-2.6" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
         </div>
       </div>
       <div class="directory">
         <button id="parent" type="button" title="상위 폴더" aria-label="상위 폴더">↑</button>
         <span id="folder-path">/workspace</span>
-        <button id="folder-menu" type="button" title="현재 폴더 관리" aria-label="현재 폴더 관리">⋯</button>
+        <button id="folder-menu" type="button" title="현재 폴더 이름 변경/삭제" aria-label="현재 폴더 관리">⋯</button>
       </div>
+      <div id="git-bar" class="git-bar" hidden></div>
       <div id="file-list"></div>
       <button id="more-files" type="button" class="quiet" hidden>더 보기</button>
       <div class="side-footer">
         <button id="graph-open" type="button" class="graph-shortcut">
-          <span class="graph-shortcut-icon" aria-hidden="true">◎</span>
+          <span class="graph-shortcut-icon" aria-hidden="true">
+            <svg viewBox="0 0 16 16" width="16" height="16" fill="none"><circle cx="8" cy="3" r="1.8" stroke="currentColor" stroke-width="1.4"/><circle cx="4" cy="12" r="1.8" stroke="currentColor" stroke-width="1.4"/><circle cx="12" cy="12" r="1.8" stroke="currentColor" stroke-width="1.4"/><path d="M7.2 4.6 4.8 10.4M8.8 4.6l2.4 5.8" stroke="currentColor" stroke-width="1.25"/></svg>
+          </span>
           <span class="graph-shortcut-copy">
             <strong>증명 트리 탐색</strong>
-            <small>DB에 저장된 정리 · 공리 구조</small>
+            <small>Lean 4 정리 의존성 DAG · 공리</small>
           </span>
         </button>
         <button id="code-graph-open" type="button" class="graph-shortcut">
-          <span class="graph-shortcut-icon" aria-hidden="true">⇄</span>
+          <span class="graph-shortcut-icon" aria-hidden="true">
+            <svg viewBox="0 0 16 16" width="16" height="16" fill="none"><rect x="2" y="2.5" width="4.5" height="4" rx="1" stroke="currentColor" stroke-width="1.3"/><rect x="9.5" y="2.5" width="4.5" height="4" rx="1" stroke="currentColor" stroke-width="1.3"/><rect x="5.8" y="9.5" width="4.5" height="4" rx="1" stroke="currentColor" stroke-width="1.3"/><path d="M4.2 6.5v2h2.2M11.8 6.5v2H9.6" stroke="currentColor" stroke-width="1.2"/></svg>
+          </span>
           <span class="graph-shortcut-copy">
             <strong>코드 의존성 그래프</strong>
-            <small>Python · C++ · Java 파일 · 함수 · 변수</small>
+            <small>Python · Lean · C++ · Java 구조</small>
           </span>
         </button>
       </div>
@@ -382,64 +1042,218 @@
         </div>
       </div>
 
-      <div id="workspace-welcome" class="workspace-welcome">
-        <div class="welcome-card">
-          <span class="welcome-symbol" aria-hidden="true">∴</span>
-          <h1>가벼운 증명 워크스페이스</h1>
-          <p>마크다운 해설과 병렬 Lean 4 셀로 증명을 분할하고, 검증된 정리를 DB에 축적해 어디서든 이어 쓰세요.</p>
-          <div class="welcome-actions">
-            <button id="new-notebook" type="button" class="primary">새 연구 노트북 만들기</button>
-            <button id="welcome-new-file" type="button">새 Lean / Markdown 파일</button>
+      <div id="workbench-split" class="workbench-split">
+        <div class="workbench-left">
+          <div id="workspace-welcome" class="workspace-welcome">
+            <div class="welcome-card">
+              <span class="welcome-symbol" aria-hidden="true">∴</span>
+              <h1>코드가 살아 움직이는 증명 · 실행 스튜디오</h1>
+              <p>왼쪽에서 Lean 4와 Python 코드를 편집하면 실시간 Automerge 스테이징으로 협업하고, 오른쪽 시각화 패널에서 증명 목표 변화·호출 스택·자료구조·프로젝트 흐름을 단계별로 볼 수 있습니다.</p>
+              <div class="welcome-actions">
+                <button id="new-notebook" type="button" class="primary">새 연구 노트북 만들기</button>
+                <button id="welcome-new-file" type="button">새 Lean / Python 파일</button>
+              </div>
+              <div class="welcome-examples-head">
+                <strong>✦ 바로 실행해 보는 학습 예제</strong>
+                <span>클릭 한 번으로 워크스페이스에 생성하고 시각화를 실행합니다</span>
+              </div>
+              <div id="welcome-examples-grid" class="welcome-examples-grid"></div>
+              <div class="welcome-shortcuts">
+                <button id="welcome-graph" type="button" class="welcome-mini-card">
+                  <strong>◎ 증명 트리 보기</strong>
+                  <span>계층형 정리 DAG와 공리 의존성 탐색</span>
+                </button>
+                <button id="welcome-terminal" type="button" class="welcome-mini-card">
+                  <strong>⌘ VM 터미널 열기</strong>
+                  <span>계정 전용 셸에서 직접 명령 실행</span>
+                </button>
+              </div>
+            </div>
           </div>
-          <div class="welcome-shortcuts">
-            <button id="welcome-graph" type="button" class="welcome-mini-card">
-              <strong>◎ 증명 트리 보기</strong>
-              <span>저장된 정리와 의존 그래프 탐색</span>
-            </button>
-            <button id="welcome-terminal" type="button" class="welcome-mini-card">
-              <strong>⌘ VM 터미널 열기</strong>
-              <span>계정 전용 셸에서 직접 명령 실행</span>
-            </button>
-          </div>
+
+          <section id="editor" hidden>
+            <div class="editor-toolbar">
+              <div id="file-path"></div>
+              <div id="file-collab-meta" class="file-collab-meta" hidden></div>
+              <div class="spacer"></div>
+              <button id="run-file-viz" type="button" class="primary" title="실행하고 오른쪽 패널에서 단계별로 시각화 (Shift+Enter)" hidden>▶ 실행 · 시각화 <kbd>Shift+Enter</kbd></button>
+              <button id="markdown-file-preview" type="button" aria-pressed="false" hidden>미리 보기</button>
+              <button id="file-menu" type="button" class="quiet">파일 관리</button>
+              <button id="save" type="button" class="primary" title="백엔드 스테이징 버퍼를 VM 파일시스템에 저장">저장 <kbd>Ctrl S</kbd></button>
+            </div>
+            <div id="file-sync-notice" class="notice" hidden>
+              <span id="file-sync-message" role="status"></span>
+              <button id="reload-file" type="button">VM 파일 다시 열기</button>
+            </div>
+            <div id="plain-editor" class="plain-editor" hidden>
+              <div id="file-content"></div>
+              <article id="file-markdown" class="markdown-body" aria-label="Markdown 미리 보기" hidden></article>
+            </div>
+            <div id="file-preview" class="file-preview" hidden>
+              <div class="file-preview-bar">
+                <span id="file-preview-info"></span>
+                <div class="spacer"></div>
+                <button id="file-preview-zoom" type="button" class="quiet" hidden>실제 크기</button>
+                <button id="file-preview-reload" type="button" class="quiet">새로 고침</button>
+                <a id="file-preview-download" class="button quiet" download>다운로드</a>
+              </div>
+              <div id="file-preview-body" class="file-preview-body"></div>
+            </div>
+            <div id="plain-output" class="plain-output" hidden>
+              <div class="plain-output-head">
+                <strong id="plain-output-status">실행 결과</strong>
+                <button id="plain-output-close" type="button" class="quiet" aria-label="출력 닫기">×</button>
+              </div>
+              <pre id="plain-output-body"></pre>
+            </div>
+            <div id="notebook" hidden>
+              <div id="invalid-notebook" class="notice" hidden></div>
+              <div class="notebook-tools">
+                <button id="add-code" type="button">＋ 코드 셀</button>
+                <button id="add-markdown" type="button">＋ Markdown 셀</button>
+                <span class="notebook-hint">병렬 Lean · Python 셀 · <code>Shift+Enter</code> 실행 &amp; 시각화 · 저장은 <code>Ctrl+S</code> 또는 전체 종료 시 자동</span>
+                <div class="spacer"></div>
+                <button id="prepare-python" type="button" class="quiet">Python 준비</button>
+                <button id="reset-python" type="button" class="quiet">Python 재시작</button>
+                <button id="edit-json" type="button" class="quiet">JSON 편집</button>
+              </div>
+              <div id="cells"></div>
+            </div>
+          </section>
         </div>
+
+        <div id="split-resizer" class="split-resizer" role="separator" aria-orientation="vertical" tabindex="0" title="좌우 패널 너비 조절"></div>
+
+        <aside id="viz-studio" class="viz-studio" aria-label="실행 및 증명 시각화 스튜디오">
+          <div class="viz-head">
+            <div class="viz-tabs" role="tablist" aria-label="시각화 모드">
+              <button id="viz-tab-lean" type="button" role="tab" aria-selected="true" class="viz-tab active">⊢ Lean 4 증명</button>
+              <button id="viz-tab-python" type="button" role="tab" aria-selected="false" class="viz-tab">⚡ 코드 실행</button>
+              <button id="viz-tab-project" type="button" role="tab" aria-selected="false" class="viz-tab">⇄ 프로젝트 흐름</button>
+            </div>
+            <button id="viz-examples-shortcut" type="button" class="quiet viz-head-btn" title="학습 예제">✦ 예제</button>
+            <button id="viz-close" type="button" class="quiet viz-head-btn" aria-label="시각화 패널 닫기" title="시각화 패널 접기">×</button>
+          </div>
+
+          <section id="viz-pane-lean" class="viz-pane">
+            <div id="viz-lean-empty" class="viz-empty">
+              <div class="viz-empty-icon">⊢</div>
+              <h3>증명 상태가 눈앞에서 변화합니다</h3>
+              <p>왼쪽에서 Lean 4 셀 또는 <code>.lean</code> 파일을 실행(<code>Shift+Enter</code>)하면, 각 전술(tactic)마다 <strong>가정(Context)</strong>과 <strong>증명 목표(⊢ Goal)</strong>가 어떻게 변환되고 커널이 검증하는지 단계별로 확인할 수 있습니다.</p>
+              <button type="button" class="primary viz-open-examples">✦ Lean 4 학습 예제로 체험하기</button>
+            </div>
+            <div id="viz-lean-content" class="viz-scroll" hidden>
+              <div id="viz-lean-pipeline" class="viz-pipeline"></div>
+              <div class="viz-scrubber">
+                <div class="viz-controls">
+                  <button id="viz-lean-first" type="button" title="처음">⏮</button>
+                  <button id="viz-lean-prev" type="button" title="이전 단계">◀</button>
+                  <button id="viz-lean-play" type="button" class="primary">▶ 자동재생</button>
+                  <button id="viz-lean-next" type="button" title="다음 단계">▶</button>
+                  <button id="viz-lean-last" type="button" title="마지막">⏭</button>
+                  <span id="viz-lean-counter" class="viz-counter">0 / 0</span>
+                </div>
+                <input id="viz-lean-slider" type="range" min="0" max="0" value="0" aria-label="Lean 증명 단계 이동">
+              </div>
+              <div id="viz-lean-step-box" class="viz-explain-card"></div>
+              <div id="viz-lean-goals" class="viz-lean-goals"></div>
+              <div id="viz-lean-decls" class="viz-decls"></div>
+            </div>
+          </section>
+
+          <section id="viz-pane-python" class="viz-pane" hidden>
+            <div id="viz-py-empty" class="viz-empty">
+              <div class="viz-empty-icon">⚡</div>
+              <h3>코드의 한 줄 한 줄을 시간 여행으로</h3>
+              <p>왼쪽에서 Python 셀 또는 <code>.py</code> 파일을 실행하면, 호출 스택·변수 값 변화·배열/객체 참조 구조·출력 흐름을 단계별로 되감아 보며 동작 원리를 이해할 수 있습니다.</p>
+              <button type="button" class="primary viz-open-examples">✦ Python 알고리즘 예제로 체험하기</button>
+            </div>
+            <div id="viz-py-content" class="viz-scroll" hidden>
+              <div class="viz-scrubber">
+                <div class="viz-controls">
+                  <button id="viz-py-first" type="button" title="처음">⏮</button>
+                  <button id="viz-py-prev" type="button" title="이전 단계">◀</button>
+                  <button id="viz-py-play" type="button" class="primary">▶ 자동재생</button>
+                  <button id="viz-py-next" type="button" title="다음 단계">▶</button>
+                  <button id="viz-py-last" type="button" title="마지막">⏭</button>
+                  <select id="viz-py-speed" aria-label="재생 속도">
+                    <option value="950">0.6× 느리게</option>
+                    <option value="520" selected>1× 보통</option>
+                    <option value="220">2× 빠르게</option>
+                  </select>
+                  <span id="viz-py-counter" class="viz-counter">0 / 0</span>
+                </div>
+                <input id="viz-py-slider" type="range" min="0" max="0" value="0" aria-label="Python 실행 단계 이동">
+              </div>
+              <div id="viz-py-explain" class="viz-explain-card"></div>
+              <div class="viz-section">
+                <h4>호출 스택 &amp; 지역 변수</h4>
+                <div id="viz-py-stack" class="viz-stack"></div>
+              </div>
+              <div class="viz-section">
+                <h4>자료구조 · 객체 참조 (Heap)</h4>
+                <div id="viz-py-heap" class="viz-heap"></div>
+              </div>
+              <div class="viz-section">
+                <h4>누적 출력 (stdout)</h4>
+                <pre id="viz-py-stdout" class="viz-stdout"></pre>
+              </div>
+            </div>
+          </section>
+
+          <section id="viz-pane-project" class="viz-pane" hidden>
+            <div class="viz-proj-toolbar">
+              <input id="viz-proj-path" type="text" value="/" spellcheck="false" autocomplete="off" aria-label="프로젝트 분석 경로">
+              <button id="viz-proj-analyze" type="button" class="primary">↻ 분석</button>
+              <span id="viz-proj-status" class="viz-proj-status"></span>
+            </div>
+            <div class="viz-flow-bar">
+              <select id="viz-proj-entry" aria-label="실행 흐름 시작 지점">
+                <option value="">시작 파일/함수 선택…</option>
+              </select>
+              <button id="viz-proj-prev" type="button" title="이전 흐름">◀</button>
+              <button id="viz-proj-play" type="button" class="primary">▶ 흐름 재생</button>
+              <button id="viz-proj-next" type="button" title="다음 흐름">▶</button>
+              <button id="viz-proj-reset" type="button" class="quiet">초기화</button>
+            </div>
+            <div id="viz-proj-flow-note" class="viz-flow-note">노드를 클릭하면 왼쪽 편집기에서 해당 코드 위치로 바로 이동합니다.</div>
+            <div class="viz-graph-wrap">
+              <canvas id="viz-project-canvas" aria-label="프로젝트 구조 및 실행 흐름 그래프"></canvas>
+              <div class="graph-navigation" aria-label="프로젝트 그래프 조작">
+                <button id="viz-proj-zoom-out" type="button" aria-label="축소">−</button>
+                <button id="viz-proj-zoom-in" type="button" aria-label="확대">＋</button>
+                <button id="viz-proj-fit" type="button">전체 보기</button>
+              </div>
+            </div>
+            <div id="viz-proj-detail" class="viz-proj-detail"></div>
+          </section>
+        </aside>
       </div>
 
-      <section id="editor" hidden>
-        <div class="editor-toolbar">
-          <div id="file-path"></div>
-          <div class="spacer"></div>
-          <button id="markdown-file-preview" type="button" aria-pressed="false" hidden>미리 보기</button>
-          <button id="file-menu" type="button" class="quiet">파일 관리</button>
-          <button id="save" type="button" class="primary">저장 <kbd>Ctrl S</kbd></button>
-        </div>
-        <div id="file-sync-notice" class="notice" hidden>
-          <span id="file-sync-message" role="status"></span>
-          <button id="reload-file" type="button">VM 파일 다시 열기</button>
-        </div>
-        <div id="plain-editor" class="plain-editor" hidden>
-          <div id="file-content"></div>
-          <article id="file-markdown" class="markdown-body" aria-label="Markdown 미리 보기" hidden></article>
-        </div>
-        <div id="notebook" hidden>
-          <div id="invalid-notebook" class="notice" hidden></div>
-          <div class="notebook-tools">
-            <button id="add-code" type="button">＋ 코드 셀</button>
-            <button id="add-markdown" type="button">＋ Markdown 셀</button>
-            <span class="notebook-hint">병렬 Lean 셀 · <code>Shift+Enter</code> 실행</span>
-            <div class="spacer"></div>
-            <button id="prepare-python" type="button" class="quiet">Python 준비</button>
-            <button id="reset-python" type="button" class="quiet">Python 재시작</button>
-            <button id="edit-json" type="button" class="quiet">JSON 편집</button>
+      <section id="planner" class="planner" aria-label="일정 · 프로젝트 관리" hidden>
+        <div class="planner-head">
+          <div class="planner-tabs" role="tablist" aria-label="플래너 보기">
+            <button type="button" role="tab" data-planner-tab="dashboard" class="planner-tab active">대시보드</button>
+            <button type="button" role="tab" data-planner-tab="calendar" class="planner-tab">캘린더</button>
+            <button type="button" role="tab" data-planner-tab="kanban" class="planner-tab">칸반</button>
+            <button type="button" role="tab" data-planner-tab="projects" class="planner-tab">프로젝트</button>
           </div>
-          <div id="cells"></div>
+          <label class="planner-filter">프로젝트
+            <select id="planner-project-filter"><option value="">전체</option></select>
+          </label>
+          <div class="spacer"></div>
+          <span id="planner-status" class="planner-status" role="status"></span>
+          <button id="planner-new-event" type="button">＋ 일정</button>
+          <button id="planner-new-task" type="button" class="primary">＋ 작업</button>
         </div>
+        <div id="planner-body" class="planner-body"></div>
       </section>
 
       <section id="codegraph" class="graph-panel" hidden>
         <div class="graph-header">
           <div>
             <h1>코드 의존성 그래프</h1>
-            <p>VM 워크스페이스의 Python, C++, Java 소스를 분석해 파일 · 클래스 · 함수 · 변수 사이의 import, 호출, 읽기/쓰기 관계를 추적합니다.</p>
+            <p>VM 워크스페이스(스테이징 편집 포함)의 Python, Lean 4, C++, Java 소스를 분석해 파일 · 클래스 · 함수 · 변수 간 의존 관계를 추적합니다.</p>
           </div>
           <div class="graph-header-actions">
             <div class="graph-legend" aria-label="노드 범례">
@@ -459,6 +1273,7 @@
           <fieldset>
             <legend>언어</legend>
             <label><input type="checkbox" name="language" value="python" checked> Python</label>
+            <label><input type="checkbox" name="language" value="lean4" checked> Lean 4</label>
             <label><input type="checkbox" name="language" value="cpp" checked> C++</label>
             <label><input type="checkbox" name="language" value="java" checked> Java</label>
           </fieldset>
@@ -486,7 +1301,7 @@
         </div>
         <div class="graph-layout">
           <div class="graph-view">
-            <canvas id="code-graph-canvas" class="graph-canvas" aria-label="코드 의존성 그래프. 옆의 검색 목록에서 노드를 선택할 수 있습니다."></canvas>
+            <canvas id="code-graph-canvas" class="graph-canvas" aria-label="코드 의존성 그래프"></canvas>
             <div class="graph-navigation" aria-label="그래프 보기 조작">
               <button id="code-graph-zoom-out" aria-label="그래프 축소" type="button">−</button>
               <button id="code-graph-zoom-in" aria-label="그래프 확대" type="button">＋</button>
@@ -504,14 +1319,18 @@
       <section id="graph" hidden>
         <div class="graph-header">
           <div>
-            <h1>증명 트리 · 정리 데이터베이스</h1>
-            <p>검증 완료되어 DB에 저장된 정리와 정의의 의존 관계 및 Lean 표준 공리를 탐색합니다.</p>
+            <h1>증명 트리 · 정리 의존성 DAG</h1>
+            <p>검증 완료된 정리·보조정리·공리의 계층적 의존 사슬을 시각화합니다. 노드를 클릭하면 상위 피참조 및 하위 공리 발자국을 함께 강조합니다.</p>
           </div>
           <div class="graph-header-actions">
+            <div class="view-switch graph-layout-switch" role="group" aria-label="그래프 배치 방식">
+              <button id="graph-layout-dag" type="button" class="view-pill active">계층 트리 DAG</button>
+              <button id="graph-layout-force" type="button" class="view-pill">물리 배치</button>
+            </div>
             <div class="graph-legend" aria-label="노드 범례">
               <span class="legend-item"><i class="legend-dot root"></i>기준 정리</span>
-              <span class="legend-item"><i class="legend-dot theorem"></i>저장된 정리</span>
-              <span class="legend-item"><i class="legend-dot axiom"></i>표준 공리</span>
+              <span class="legend-item"><i class="legend-dot theorem"></i>보조정리</span>
+              <span class="legend-item"><i class="legend-dot axiom"></i>공리</span>
             </div>
             <button id="refresh-graph" type="button">↻ 새로 고침</button>
           </div>
@@ -519,12 +1338,17 @@
         <form id="graph-limits">
           <label>최대 노드 <input id="graph-limit" type="number" min="1" max="100" value="30" required></label>
           <label>최대 깊이 <input id="graph-depth" type="number" min="0" max="12" value="3" required></label>
-          <button type="submit">적용</button>
+          <button type="submit" class="primary">적용</button>
+          <select id="theorem-kind-filter" aria-label="정리 종류 필터">
+            <option value="all">전체 목록</option>
+            <option value="theorem">저장된 정리만</option>
+            <option value="axiom">공리 포함 노드</option>
+          </select>
           <span id="graph-status" class="graph-status-pill" role="status"></span>
         </form>
         <div class="graph-layout">
           <div class="graph-view">
-            <canvas id="graph-canvas" aria-label="정리 그래프. 옆의 정리 목록에서 정리를 선택할 수 있습니다."></canvas>
+            <canvas id="graph-canvas" aria-label="정리 의존성 그래프"></canvas>
             <div class="graph-navigation" aria-label="그래프 보기 조작">
               <button id="graph-zoom-out" aria-label="그래프 축소" type="button">−</button>
               <button id="graph-zoom-in" aria-label="그래프 확대" type="button">＋</button>
@@ -532,6 +1356,7 @@
             </div>
           </div>
           <div class="graph-inspector">
+            <input id="theorem-search" type="search" placeholder="정리 · 공리 이름 검색" aria-label="정리 검색" autocomplete="off">
             <div class="graph-page">
               <button id="previous-graph" type="button">이전</button>
               <span id="graph-page"></span>
@@ -544,10 +1369,14 @@
       </section>
 
       <section id="terminal-panel" aria-label="VM 터미널" hidden>
+        <div id="terminal-resizer" class="terminal-resizer" role="separator" aria-orientation="horizontal" title="드래그해서 터미널 높이 조절"></div>
         <div class="terminal-header">
-          <strong>VM 터미널</strong>
+          <strong>터미널</strong>
+          <div id="terminal-tabs" class="terminal-tabs" role="tablist" aria-label="열린 터미널"></div>
+          <button id="terminal-new" type="button" title="새 터미널 (Ctrl+Shift+`)" aria-label="새 터미널">＋</button>
           <span id="terminal-status" role="status"></span>
-          <button id="terminal-close" type="button" aria-label="터미널 닫기">×</button>
+          <button id="terminal-hide" type="button" title="패널 숨기기 (세션 유지 · Ctrl+`)" aria-label="터미널 패널 숨기기">⌄</button>
+          <button id="terminal-close" type="button" title="모든 터미널 종료" aria-label="모든 터미널 종료">×</button>
         </div>
         <div id="terminal-screen"></div>
       </section>
@@ -560,6 +1389,91 @@
     </footer>
   </main>
 
+  <canvas id="weather-fx" class="weather-fx" aria-hidden="true"></canvas>
+  <div id="weather-glow" class="weather-glow" aria-hidden="true"></div>
+
+  <!-- Workspace chat & voice channels (server-relayed broadcast) -->
+  <aside id="channels-panel" class="channels-panel" aria-label="채팅 · 음성 채널" hidden>
+    <div class="channels-head">
+      <strong>채널</strong>
+      <span id="channels-online" class="channels-online"></span>
+      <span id="channels-status" class="channels-status" role="status"></span>
+      <div class="spacer"></div>
+      <button id="channels-close" type="button" class="quiet" aria-label="채널 패널 닫기">×</button>
+    </div>
+    <div class="channels-body">
+      <nav class="channels-list" aria-label="채널 목록">
+        <div class="channels-group-head"><span>텍스트 채널</span><button id="channels-add-text" type="button" title="텍스트 채널 추가" aria-label="텍스트 채널 추가">＋</button></div>
+        <div id="channels-text-list"></div>
+        <div class="channels-group-head"><span>음성 채널</span><button id="channels-add-voice" type="button" title="음성 채널 추가" aria-label="음성 채널 추가">＋</button></div>
+        <div id="channels-voice-list"></div>
+        <p class="channels-hint">음성은 서버가 중계합니다 (P2P 아님). 에코를 막으려면 헤드폰을 사용하세요.</p>
+      </nav>
+      <section class="channels-chat">
+        <div id="channels-title" class="channels-title">채팅</div>
+        <div id="channels-notice" class="channels-notice" role="alert" hidden></div>
+        <div id="channels-messages" class="channels-messages" aria-live="polite"></div>
+        <div class="channels-composer">
+          <textarea id="channels-input" rows="1" maxlength="2000" placeholder="메시지 보내기"></textarea>
+          <button id="channels-send" type="button" class="primary">전송</button>
+        </div>
+      </section>
+    </div>
+    <div id="voice-bar" class="voice-bar" hidden>
+      <span id="voice-level" class="voice-level" aria-hidden="true"></span>
+      <span class="voice-bar-copy"><strong>음성 연결됨</strong><small id="voice-bar-channel"></small></span>
+      <button id="voice-mute" type="button" aria-pressed="false">🎙 음소거</button>
+      <button id="voice-deafen" type="button" aria-pressed="false">🎧 듣기 끄기</button>
+      <button id="voice-leave" type="button" class="danger">나가기</button>
+    </div>
+  </aside>
+
+  <!-- Explorer Context Menu -->
+  <div id="explorer-context-menu" class="context-menu" role="menu" hidden></div>
+
+  <dialog id="weather-dialog" class="weather-dialog" aria-labelledby="weather-dialog-title">
+    <form method="dialog">
+      <h2 id="weather-dialog-title">날씨 테마</h2>
+      <label class="weather-switch"><input type="checkbox" id="weather-enabled"> 날씨에 따라 IDE 디자인 바꾸기</label>
+      <fieldset id="weather-options" class="weather-options">
+        <legend class="sr-only">날씨 선택 방식</legend>
+        <label><input type="radio" name="weather-mode" value="auto"> 현재 위치의 실제 날씨 (자동)</label>
+        <label><input type="radio" name="weather-mode" value="manual"> 원하는 날씨 직접 선택</label>
+        <div id="weather-choices" class="weather-choices" role="radiogroup" aria-label="날씨 선택"></div>
+        <label class="weather-range">효과 강도 <input type="range" id="weather-intensity" min="10" max="100" step="5"></label>
+        <label class="weather-switch"><input type="checkbox" id="weather-motion"> 움직이는 효과 (비 · 눈 · 구름 애니메이션)</label>
+        <p id="weather-auto-status" class="weather-note" role="status"></p>
+        <p class="weather-note">자동 모드는 브라우저 위치 권한을 사용하며, 약 10 km 단위로 반올림한 좌표만 날씨 서비스(Open-Meteo)에 보냅니다. 위치는 서버에 저장되지 않습니다.</p>
+      </fieldset>
+      <div class="dialog-actions"><button value="close" class="primary" type="submit">닫기</button></div>
+    </form>
+  </dialog>
+  <dialog id="planner-dialog" class="planner-dialog" aria-labelledby="planner-dialog-title">
+    <form method="dialog" id="planner-form">
+      <h2 id="planner-dialog-title">작업</h2>
+      <div id="planner-form-fields" class="planner-form-fields"></div>
+      <p id="planner-form-error" class="error" role="alert" hidden></p>
+      <div class="dialog-actions">
+        <button value="delete" type="submit" class="danger" id="planner-delete" formnovalidate>삭제</button>
+        <div class="spacer"></div>
+        <button value="cancel" type="submit" class="quiet" formnovalidate>취소</button>
+        <button value="save" type="submit" class="primary">저장</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="upload-dialog" class="upload-dialog" aria-labelledby="upload-dialog-title">
+    <form method="dialog">
+      <h2 id="upload-dialog-title">파일을 업로드할까요?</h2>
+      <p id="upload-dialog-target"></p>
+      <ul id="upload-dialog-list" class="upload-dialog-list"></ul>
+      <p id="upload-dialog-summary" class="upload-dialog-summary"></p>
+      <div class="dialog-actions">
+        <button value="cancel" type="submit" class="quiet">취소</button>
+        <button value="upload" type="submit" class="primary" id="upload-dialog-confirm">업로드</button>
+      </div>
+    </form>
+  </dialog>
+  <div id="upload-tray" class="upload-tray" aria-live="polite" hidden></div>
   <dialog id="file-dialog">
     <form id="file-form">
       <div class="dialog-head"><h2 id="dialog-title"></h2><button id="dialog-close" type="button" aria-label="닫기">×</button></div>
@@ -579,8 +1493,8 @@
       <button id="workspace-dialog-close" type="button" aria-label="닫기">×</button>
     </div>
     <p class="ws-note">
-      초대받은 사용자는 <strong>각자의 개별 QNB 계정</strong>으로 로그인하며, 소유자 VM의 동일한 <code>/workspace</code> 디렉터리와 정리 DB를 공유합니다.
-      터미널 실행 시에는 계정별 독립 홈(<code>$HOME</code>)이 자동 분리됩니다.
+      초대받은 사용자는 <strong>각자의 개별 QNB 계정</strong>으로 로그인하며, 소유자 VM의 동일한 <code>/workspace</code>와
+      <strong>백엔드 Automerge 스테이징 룸</strong>을 실시간으로 공유합니다.
     </p>
     <section id="incoming-invites-section" class="ws-section" hidden>
       <h3>받은 초대</h3>
@@ -603,16 +1517,39 @@
 
   <dialog id="account-dialog" class="workspace-dialog">
     <div class="dialog-head">
-      <h2>프로필 및 보안 설정</h2>
+      <h2>프로필 · 보안 · CLI MCP 설정</h2>
       <button id="account-dialog-close" type="button" aria-label="닫기">×</button>
     </div>
     <section class="ws-section">
-      <h3>프로필 닉네임 (터미널 표시 이름)</h3>
+      <h3>프로필 닉네임 (협업자 및 터미널 표시)</h3>
       <form id="profile-form" class="ws-invite-form">
         <input id="profile-nickname" type="text" maxlength="32" placeholder="닉네임 (1~32자)" required aria-label="프로필 닉네임">
         <button id="profile-save" class="primary" type="submit">저장</button>
       </form>
       <p id="profile-status" class="ws-meta" role="status"></p>
+    </section>
+
+    <section class="ws-section">
+      <div class="sec-head-row">
+        <h3>백엔드 상시 대기 MCP 서버 (CLI 에이전트 연동)</h3>
+        <span id="mcp-state-badge" class="ws-status active">상시 대기 중</span>
+      </div>
+      <p class="ws-meta">MCP 서버는 QNB 백엔드 내부에서 상시 실행·대기합니다. 로컬 실행 없이 원격 HTTP/SSE URL로 연결하거나, 필요 시 <code>python3 -m qnb.mcp_server</code> stdio 브리지를 사용할 수 있습니다.</p>
+      <p class="ws-meta">Streamable HTTP: <code id="mcp-live-url">https://qnb.p-e.kr/mcp</code> · SSE: <code id="mcp-sse-url">https://qnb.p-e.kr/mcp/sse</code></p>
+      <form id="mcp-token-form" class="ws-invite-form">
+        <input id="mcp-token-label" type="text" maxlength="48" placeholder="예: Claude Code Remote" aria-label="MCP 토큰 이름">
+        <button id="mcp-token-create" type="submit" class="primary">토큰 발급</button>
+      </form>
+      <div id="mcp-token-created" class="recovery-box" hidden>
+        <p class="ws-meta">새 MCP 토큰 (지금만 전체 값이 표시됩니다):</p>
+        <div class="ws-invite-form">
+          <code id="mcp-token-secret" style="flex:1;padding:.4rem .55rem;border:1px solid var(--line);border-radius:.4rem;font-size:.76rem;word-break:break-all;"></code>
+          <button id="mcp-token-copy" type="button" class="quiet">복사</button>
+        </div>
+        <pre id="mcp-config-snippet"></pre>
+      </div>
+      <p id="mcp-token-error" class="ws-error" role="alert" hidden></p>
+      <div id="mcp-tokens-list" class="ws-list"></div>
     </section>
 
     <section class="ws-section">
@@ -673,6 +1610,17 @@
       <h3>등록된 워크스페이스 공리 (모든 협업자 및 셀에서 조회·참조 가능)</h3>
       <div id="axioms-list" class="ws-list"></div>
     </section>
+  </dialog>
+
+  <dialog id="examples-dialog" class="workspace-dialog examples-dialog">
+    <div class="dialog-head">
+      <h2>✦ 인터랙티브 학습 예제 갤러리</h2>
+      <button id="examples-dialog-close" type="button" aria-label="닫기">×</button>
+    </div>
+    <p class="ws-note">
+      예제를 선택하면 워크스페이스(<code>/examples/</code>)에 파일이 생성되고, 왼쪽 편집기와 오른쪽 시각화 패널에서 동작 과정을 즉시 탐색할 수 있습니다.
+    </p>
+    <div id="examples-list" class="examples-list"></div>
   </dialog>
 </body>
 </html>

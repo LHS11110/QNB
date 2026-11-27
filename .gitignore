@@ -4,3 +4,7 @@ __pycache__/
 data/
 .env
 node_modules/
+
+# Build outputs (produced by frontend/build.mjs in the Docker build)
+qnb/static/vendor/
+qnb/crdt_daemon.cjs

@@ -1,29 +1,31 @@
 import json
 import os
+import queue as _queue
 import re
 import secrets
 import select
+import socket
 import sqlite3
 import time
 import uuid
 from threading import BoundedSemaphore
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 
-from flask import Flask, g, jsonify, request, send_from_directory
+from flask import Flask, Response, g, jsonify, request, send_from_directory, stream_with_context
 from flask_sock import Sock
 from simple_websocket import ConnectionClosed
 from werkzeug.security import check_password_hash, generate_password_hash
 
-from . import auth, codegraph, runtime, store
+from . import auth, channels, codegraph, collab, gitstatus, mcp_server, planner, runtime, stepper, store, visualize
 from .runtime import RequestError
 
 app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024
+app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024
 app.config["SOCK_SERVER_OPTIONS"] = {
     "max_message_size": app.config["MAX_CONTENT_LENGTH"], "ping_interval": 25,
 }
 sock = Sock(app)
-vm_connections = BoundedSemaphore(64)
+vm_connections = BoundedSemaphore(128)
 SESSION_AGE = 7 * 86400
 COOKIE = "qnb_session"
 EMAIL = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
@@ -32,6 +34,9 @@ VM_LIMIT = int(os.environ.get("QNB_VM_ID_COUNT", "32"))
 if VM_BASE < 1 or VM_LIMIT < 1 or VM_BASE + VM_LIMIT > 2147483648:
     raise RuntimeError("Invalid reserved VM ID range")
 store.initialize()
+channels.initialize()
+planner.initialize()
+collab.staging.recover_orphaned_staging()
 
 
 @app.errorhandler(RequestError)
@@ -59,20 +64,72 @@ WORKSPACE_SAFE_ENDPOINTS = PUBLIC_ENDPOINTS | {
     "logout", "profile_update", "security_status",
     "mfa_setup", "mfa_enable", "mfa_disable",
     "passkey_register_options", "passkey_register_verify", "passkey_delete",
+    "mcp_tokens_list", "mcp_tokens_create", "mcp_tokens_delete",
     "qr_login_approve",
     "workspaces_overview", "workspaces_invite", "workspaces_respond",
     "workspaces_select", "workspaces_remove",
 }
 
 
+def _is_mcp_route(path):
+    return path in ("/mcp", "/api/mcp") or path.startswith("/mcp/") or path.startswith("/api/mcp/")
+
+
+def _mcp_token_from_headers():
+    token = request.headers.get("X-QNB-MCP-Token", "").strip()
+    if token:
+        return token
+    auth_hdr = request.headers.get("Authorization", "")
+    if auth_hdr.lower().startswith("bearer "):
+        return auth_hdr[7:].strip()
+    return request.args.get("token", "").strip()
+
+
 @app.before_request
 def authenticate():
+    if _is_mcp_route(request.path):
+        if request.method == "OPTIONS" or request.path in ("/mcp/health", "/api/mcp/health"):
+            return
+        mcp_token = _mcp_token_from_headers()
+        if not mcp_token:
+            return (
+                jsonify({
+                    "jsonrpc": "2.0",
+                    "id": None,
+                    "error": {"code": -32001, "message": "MCP Bearer 토큰이 필요합니다."},
+                }),
+                401,
+                {"WWW-Authenticate": 'Bearer realm="qnb-mcp"'},
+            )
+        ws_owner = request.headers.get("X-QNB-Workspace-Owner") or request.args.get("workspaceOwnerId")
+        g.account, g.workspace = store.authenticate_mcp_token(mcp_token, ws_owner)
+        if not g.account:
+            return (
+                jsonify({
+                    "jsonrpc": "2.0",
+                    "id": None,
+                    "error": {"code": -32001, "message": "유효하지 않은 MCP 토큰입니다."},
+                }),
+                401,
+                {"WWW-Authenticate": 'Bearer realm="qnb-mcp"'},
+            )
+        g.auth_kind = "mcp"
+        return
     if not request.path.startswith("/api/"):
         return
     if request.method == "POST" and not request.is_json:
         raise RequestError("JSON 요청이 필요합니다.", 415)
+    mcp_token = _mcp_token_from_headers()
+    if mcp_token:
+        ws_owner = request.headers.get("X-QNB-Workspace-Owner") or request.args.get("workspaceOwnerId")
+        g.account, g.workspace = store.authenticate_mcp_token(mcp_token, ws_owner)
+        if not g.account:
+            raise RequestError("유효하지 않은 MCP 토큰입니다.", 401)
+        g.auth_kind = "mcp"
+        return
     strict = request.endpoint not in WORKSPACE_SAFE_ENDPOINTS
     g.account, g.workspace = session_context(request.cookies.get(COOKIE), strict=strict)
+    g.auth_kind = "browser"
     if not g.account and request.endpoint not in PUBLIC_ENDPOINTS:
         raise RequestError("로그인이 필요합니다.", 401)
 
@@ -101,13 +158,24 @@ def session_account(token):
 def headers(response):
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Referrer-Policy"] = "same-origin"
-    # xterm generates theme and sizing styles for the IDE terminal.
-    styles = "'self' 'unsafe-inline'" if request.path == "/ide" else "'self'"
+    # Automerge WASM uses wasm-unsafe-eval; home scroll stage and xterm use inline styles.
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; "
-        f"img-src 'self' data:; style-src {styles}; connect-src 'self'"
+        "script-src 'self' 'wasm-unsafe-eval'; "
+        "img-src 'self' data: blob:; media-src 'self' blob:; frame-src 'self' blob:; "
+        "worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; "
+        "connect-src 'self' https://api.open-meteo.com"
     )
-    if request.path.startswith("/api/"):
+    if _is_mcp_route(request.path):
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, DELETE, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = (
+            "Authorization, Content-Type, Accept, Mcp-Session-Id, MCP-Protocol-Version, "
+            "Last-Event-ID, X-QNB-MCP-Token, X-QNB-MCP-Session, X-QNB-Workspace-Owner"
+        )
+        response.headers["Access-Control-Expose-Headers"] = "Mcp-Session-Id, MCP-Protocol-Version"
+        response.headers.setdefault("Cache-Control", "no-cache, no-store")
+    elif request.path.startswith("/api/"):
         response.headers["Cache-Control"] = "no-store"
     return response
 
@@ -584,36 +652,259 @@ def mutate_file():
 
 
 def change_workspace(data):
-    vm_id = g.workspace["vm_id"]
     file_path = runtime.path(data.get("path"))
     operation = data.get("operation")
-    fields = {"requestId": uuid.uuid4().hex}
+    actor = collab.actor_from_account(g.account, kind=getattr(g, "auth_kind", "browser"))
     if operation == "write":
         text = data.get("text")
         if not isinstance(text, str):
             raise RequestError("저장할 텍스트가 필요합니다.")
-        content = text.encode()
-        if len(content) > runtime.FILE_LIMIT:
-            raise RequestError("파일 크기는 128 KiB까지 지원합니다.", 413)
-        fields["content"] = runtime.b64(content)
         if data.get("create") is True:
-            fields.update(create=True, overwrite=False)
-        else:
-            for field in ("etag", "fileId"):
-                value = data.get(field)
-                if not isinstance(value, str) or not 1 <= len(value) <= 128:
-                    raise RequestError("저장 전 파일을 열어주세요.", 409)
-                fields[field] = value
-    elif operation in ("rename", "delete"):
+            return collab.staging.mutate_fs(g.workspace, actor, "write", file_path, text=text, create=True)
+        for field in ("etag", "fileId"):
+            value = data.get(field)
+            if not isinstance(value, str) or not 1 <= len(value) <= 128:
+                raise RequestError("저장 전 파일을 열어주세요.", 409)
+        return collab.staging.mutate_fs(
+            g.workspace, actor, "write", file_path,
+            text=text, etag=data.get("etag"), fileId=data.get("fileId"), resourceId=data.get("resourceId"),
+        )
+    if operation == "rename":
         resource_id = data.get("resourceId")
-        if not isinstance(resource_id, str) or not 1 <= len(resource_id) <= 128:
+        if resource_id is not None and (not isinstance(resource_id, str) or not 1 <= len(resource_id) <= 128):
             raise RequestError("편집할 파일이나 폴더를 다시 선택하세요.", 409)
-        fields["resourceId"] = resource_id
-        if operation == "rename":
-            fields["target"] = runtime.path(data.get("target"))
-    elif operation != "mkdir":
-        raise RequestError("지원하지 않는 파일 작업입니다.")
-    return runtime.workspace(vm_id, operation, file_path, **fields)
+        return collab.staging.mutate_fs(
+            g.workspace, actor, "rename", file_path,
+            resourceId=resource_id, target=data.get("target"),
+        )
+    if operation == "delete":
+        resource_id = data.get("resourceId")
+        if resource_id is not None and (not isinstance(resource_id, str) or not 1 <= len(resource_id) <= 128):
+            raise RequestError("편집할 파일이나 폴더를 다시 선택하세요.", 409)
+        return collab.staging.mutate_fs(
+            g.workspace, actor, "delete", file_path,
+            resourceId=resource_id, recursive=bool(data.get("recursive", False)),
+        )
+    if operation == "mkdir":
+        return collab.staging.mutate_fs(g.workspace, actor, "mkdir", file_path)
+    raise RequestError("지원하지 않는 파일 작업입니다.")
+
+
+@app.get("/api/planner")
+def planner_snapshot():
+    return jsonify(planner.snapshot(g.workspace["owner_id"]) | {"me": g.account["id"]})
+
+
+@app.post("/api/planner")
+def planner_mutate():
+    owner_id = g.workspace["owner_id"]
+    item, event = planner.mutate(owner_id, g.account["id"], payload())
+    channels.manager._broadcast(owner_id, event | {"actorId": g.account["id"]})
+    return jsonify(item)
+
+
+@app.get("/api/mcp-tokens")
+def mcp_tokens_list():
+    return jsonify(tokens=store.list_mcp_tokens(g.account["id"]))
+
+
+@app.post("/api/mcp-tokens")
+def mcp_tokens_create():
+    label = payload().get("label")
+    return jsonify(store.create_mcp_token(g.account["id"], label))
+
+
+@app.post("/api/mcp-tokens/delete")
+def mcp_tokens_delete():
+    token_id = payload().get("id")
+    if type(token_id) is not int or token_id < 1:
+        raise RequestError("삭제할 토큰 ID가 필요합니다.")
+    return jsonify(store.delete_mcp_token(g.account["id"], token_id))
+
+
+def _mcp_session_id_from_request():
+    for candidate in (
+        request.headers.get("Mcp-Session-Id", ""),
+        request.headers.get("X-QNB-MCP-Session", ""),
+        request.args.get("sessionId", ""),
+        request.args.get("session_id", ""),
+    ):
+        if candidate and candidate.strip():
+            return candidate.strip()
+    return ""
+
+
+def _sse_client_disconnected(client_sock):
+    if client_sock is None:
+        return False
+    try:
+        readable, _, exceptional = select.select([client_sock], [], [client_sock], 0)
+        if exceptional:
+            return True
+        if readable:
+            data = client_sock.recv(1, socket.MSG_PEEK)
+            if not data:
+                return True
+    except OSError:
+        return True
+    return False
+
+
+def _mcp_sse_response(mcp_sid, q, *, initial_frames=()):
+    client_sock = request.environ.get("gunicorn.socket")
+
+    def generate():
+        last_ping = time.monotonic()
+        try:
+            for frame in initial_frames:
+                yield frame
+            while True:
+                if _sse_client_disconnected(client_sock):
+                    break
+                try:
+                    msg = q.get(timeout=0.4)
+                except _queue.Empty:
+                    now = time.monotonic()
+                    if now - last_ping >= 15.0:
+                        last_ping = now
+                        yield ": ping\n\n"
+                    continue
+                if msg is None:
+                    break
+                last_ping = time.monotonic()
+                yield f"event: message\ndata: {json.dumps(msg, ensure_ascii=False)}\n\n"
+        finally:
+            mcp_server.hub.detach_sse(mcp_sid, q)
+
+    return Response(
+        stream_with_context(generate()),
+        status=200,
+        mimetype="text/event-stream",
+        headers={
+            "Mcp-Session-Id": mcp_sid,
+            "Cache-Control": "no-cache, no-store",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+def _mcp_sse_stream():
+    actor = collab.actor_from_account(g.account, kind="mcp")
+    mcp_sid = f"mcp-sse-{uuid.uuid4().hex[:16]}"
+    q = mcp_server.hub.attach_sse(mcp_sid, g.workspace, actor, sse_owned=True)
+    msg_base = "/api/mcp/messages" if request.path.startswith("/api/") else "/mcp/messages"
+    params = {"sessionId": mcp_sid}
+    if tok := request.args.get("token", "").strip():
+        params["token"] = tok
+    if ws_owner := request.args.get("workspaceOwnerId", "").strip():
+        params["workspaceOwnerId"] = ws_owner
+    endpoint_uri = f"{msg_base}?{urlencode(params)}"
+    return _mcp_sse_response(mcp_sid, q, initial_frames=(f"event: endpoint\ndata: {endpoint_uri}\n\n",))
+
+
+@app.route("/mcp/health", methods=["GET", "OPTIONS"])
+@app.route("/api/mcp/health", methods=["GET", "OPTIONS"])
+def mcp_health():
+    if request.method == "OPTIONS":
+        return ("", 204)
+    origin = external_origin()
+    return jsonify(
+        ok=True,
+        service="qnb-mcp",
+        mode="always-on",
+        status="standing_by",
+        transports=["streamable-http", "sse"],
+        protocolVersions=list(mcp_server.SUPPORTED_PROTOCOL_VERSIONS),
+        activeSessions=mcp_server.hub.active_count(),
+        endpoints={
+            "streamableHttp": f"{origin}/mcp",
+            "sse": f"{origin}/mcp/sse",
+            "messages": f"{origin}/mcp/messages",
+        },
+    )
+
+
+@app.route("/mcp", methods=["GET", "POST", "DELETE", "OPTIONS"])
+@app.route("/api/mcp", methods=["GET", "POST", "DELETE", "OPTIONS"])
+def mcp_rpc():
+    if request.method == "OPTIONS":
+        return ("", 204)
+
+    provided_sid = _mcp_session_id_from_request()
+    if request.method == "DELETE":
+        if provided_sid:
+            mcp_server.hub.close_session(provided_sid)
+        return jsonify(ok=True, released=True, sessionId=provided_sid)
+
+    actor = collab.actor_from_account(g.account, kind="mcp")
+    if request.method == "GET":
+        accept = request.headers.get("Accept", "").lower()
+        if "text/event-stream" in accept:
+            if provided_sid:
+                q = mcp_server.hub.attach_sse(provided_sid, g.workspace, actor, sse_owned=False)
+                return _mcp_sse_response(provided_sid, q, initial_frames=(": connected\n\n",))
+            return _mcp_sse_stream()
+        return jsonify(
+            service="qnb-mcp",
+            mode="always-on",
+            status="standing_by",
+            workspaceOwner=g.workspace["owner_email"],
+            tools=len(mcp_server.TOOLS),
+        )
+
+    data = request.get_json(force=True, silent=True)
+    if data is None:
+        return jsonify({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}}), 400
+
+    mcp_sid = provided_sid or f"mcp-{uuid.uuid4().hex[:16]}"
+    mcp_server.hub.ensure_session(mcp_sid, g.workspace, actor)
+    resp, code = mcp_server.handle_jsonrpc_payload(data, g.workspace, actor, mcp_session_id=mcp_sid)
+    if resp is None:
+        return ("", 202, {"Mcp-Session-Id": mcp_sid})
+
+    accept = request.headers.get("Accept", "").lower()
+    if "text/event-stream" in accept and "application/json" not in accept:
+        return Response(
+            f"event: message\ndata: {json.dumps(resp, ensure_ascii=False)}\n\n",
+            status=200,
+            mimetype="text/event-stream",
+            headers={"Mcp-Session-Id": mcp_sid, "Cache-Control": "no-cache, no-store", "X-Accel-Buffering": "no"},
+        )
+    res = jsonify(resp)
+    res.status_code = code
+    res.headers["Mcp-Session-Id"] = mcp_sid
+    return res
+
+
+@app.route("/mcp/sse", methods=["GET", "OPTIONS"])
+@app.route("/api/mcp/sse", methods=["GET", "OPTIONS"])
+def mcp_sse():
+    if request.method == "OPTIONS":
+        return ("", 204)
+    return _mcp_sse_stream()
+
+
+@app.route("/mcp/messages", methods=["POST", "OPTIONS"])
+@app.route("/api/mcp/messages", methods=["POST", "OPTIONS"])
+def mcp_messages():
+    if request.method == "OPTIONS":
+        return ("", 204)
+    data = request.get_json(force=True, silent=True)
+    if data is None:
+        return jsonify({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}}), 400
+
+    actor = collab.actor_from_account(g.account, kind="mcp")
+    mcp_sid = _mcp_session_id_from_request() or f"mcp-msg-{uuid.uuid4().hex[:16]}"
+    mcp_server.hub.ensure_session(mcp_sid, g.workspace, actor)
+    resp, code = mcp_server.handle_jsonrpc_payload(data, g.workspace, actor, mcp_session_id=mcp_sid)
+    if resp is not None and mcp_server.hub.push_sse_message(mcp_sid, resp):
+        return ("", 202, {"Mcp-Session-Id": mcp_sid})
+    if resp is None:
+        return ("", 202, {"Mcp-Session-Id": mcp_sid})
+    res = jsonify(resp)
+    res.status_code = code
+    res.headers["Mcp-Session-Id"] = mcp_sid
+    return res
 
 
 @app.get("/api/file-info")
@@ -628,7 +919,7 @@ def kernel():
 
 @app.before_request
 def validate_vm_socket_origin():
-    if request.endpoint not in ("vm_socket", "kernel_socket"):
+    if request.endpoint not in ("vm_socket", "kernel_socket", "collab_socket", "channels_socket"):
         return
     try:
         origin = urlsplit(request.headers.get("Origin", ""))
@@ -642,6 +933,206 @@ def validate_vm_socket_origin():
 @sock.route("/api/kernel/ws")
 def kernel_socket(ws):
     serve_vm_request(ws, kernel_operation)
+
+
+@sock.route("/api/collab/ws")
+def collab_socket(ws):
+    if not vm_connections.acquire(blocking=False):
+        ws.close()
+        return
+    try:
+        serve_collab_connection(ws)
+    finally:
+        vm_connections.release()
+
+
+def serve_collab_connection(ws):
+    import queue as _queue
+
+    token = request.cookies.get(COOKIE)
+    account, workspace = session_context(token, strict=True)
+    if not account:
+        ws.send(json.dumps({"error": "로그인이 필요합니다.", "status": 401}, ensure_ascii=False))
+        return
+    owner_id = workspace["owner_id"]
+    session_id = "ws-" + uuid.uuid4().hex[:16]
+    actor = collab.actor_from_account(account, kind="browser")
+    out_queue, snapshot = collab.staging.register_client(owner_id, session_id, actor)
+    check_at = time.monotonic() + 10.0
+
+    try:
+        ws.send(json.dumps(snapshot | {"selfSessionId": session_id}, ensure_ascii=False))
+        while True:
+            while True:
+                try:
+                    ev = out_queue.get_nowait()
+                except _queue.Empty:
+                    break
+                ws.send(json.dumps(ev, ensure_ascii=False))
+
+            now = time.monotonic()
+            if now >= check_at:
+                acc, cur_ws = session_context(token, strict=True)
+                if not acc or cur_ws["owner_id"] != owner_id:
+                    ws.send(json.dumps({"type": "workspace_revoked", "status": 403}, ensure_ascii=False))
+                    return
+                check_at = now + 10.0
+
+            frame = ws.receive(timeout=0.05)
+            if frame is None:
+                continue
+            try:
+                data = json.loads(frame) if isinstance(frame, str) else None
+            except (ValueError, RecursionError):
+                data = None
+            if not isinstance(data, dict):
+                continue
+
+            req_id = data.get("reqId")
+            msg_type = data.get("type")
+            try:
+                if msg_type == "ping":
+                    res = {"pong": True}
+                elif msg_type == "stage_open":
+                    res = collab.staging.open_file(workspace, data.get("path"), session_id, actor, attach=True)
+                elif msg_type == "stage_edit":
+                    res = collab.staging.edit_file(
+                        workspace,
+                        data.get("path"),
+                        session_id,
+                        actor,
+                        changes_b64=data.get("changesBase64"),
+                        doc_b64=data.get("docBase64"),
+                        new_text=data.get("text"),
+                        cursor_line=data.get("cursorLine"),
+                        auto_unstage_if_zero=True,
+                    )
+                elif msg_type == "stage_save":
+                    res = collab.staging.save_file(workspace, data.get("path"), actor)
+                elif msg_type == "stage_close":
+                    res = collab.staging.close_file(workspace, data.get("path"), session_id, actor)
+                elif msg_type == "cursor":
+                    collab.staging.update_cursor(owner_id, data.get("path"), session_id, actor, data.get("cursorLine"))
+                    res = None
+                elif msg_type == "fs_mutate":
+                    res = collab.staging.mutate_fs(
+                        workspace,
+                        actor,
+                        data.get("operation"),
+                        data.get("path"),
+                        target=data.get("target"),
+                        resourceId=data.get("resourceId"),
+                        text=data.get("text"),
+                        create=data.get("create"),
+                        recursive=data.get("recursive"),
+                    )
+                else:
+                    raise RequestError("지원하지 않는 실시간 협업 명령입니다.")
+
+                if req_id is not None:
+                    ws.send(json.dumps({"replyTo": req_id, "result": res}, ensure_ascii=False))
+            except RequestError as err:
+                if req_id is not None:
+                    ws.send(json.dumps({"replyTo": req_id, "error": str(err), "status": err.status}, ensure_ascii=False))
+            except Exception:
+                app.logger.exception("Collab WebSocket error")
+                if req_id is not None:
+                    ws.send(json.dumps({"replyTo": req_id, "error": "실시간 협업 처리 중 오류가 발생했습니다.", "status": 500}, ensure_ascii=False))
+    except ConnectionClosed:
+        pass
+    finally:
+        collab.staging.unregister_client(owner_id, session_id)
+
+
+@sock.route("/api/channels/ws")
+def channels_socket(ws):
+    if not vm_connections.acquire(blocking=False):
+        ws.close()
+        return
+    try:
+        serve_channels_connection(ws)
+    finally:
+        vm_connections.release()
+
+
+def serve_channels_connection(ws):
+    """Chat + voice hub: every frame is relayed by the server, never peer-to-peer."""
+    import queue as _queue
+
+    token = request.cookies.get(COOKIE)
+    account, workspace = session_context(token, strict=True)
+    if not account:
+        ws.send(json.dumps({"error": "로그인이 필요합니다.", "status": 401}, ensure_ascii=False))
+        return
+    owner_id = workspace["owner_id"]
+    actor = collab.actor_from_account(account, kind="browser")
+    hub = channels.manager
+    client = hub.connect(owner_id, actor)
+    check_at = time.monotonic() + 10.0
+    try:
+        ws.send(json.dumps(hub.init_payload(owner_id, client), ensure_ascii=False))
+        while True:
+            while True:
+                try:
+                    item = client.out.get_nowait()
+                except _queue.Empty:
+                    break
+                ws.send(item if isinstance(item, bytes) else json.dumps(item, ensure_ascii=False))
+
+            now = time.monotonic()
+            if now >= check_at:
+                acc, cur_ws = session_context(token, strict=True)
+                if not acc or cur_ws["owner_id"] != owner_id:
+                    ws.send(json.dumps({"type": "workspace_revoked", "status": 403}, ensure_ascii=False))
+                    return
+                check_at = now + 10.0
+
+            frame = ws.receive(timeout=0.01)
+            if frame is None:
+                continue
+            if isinstance(frame, bytes):
+                hub.relay_voice(owner_id, client, frame)
+                continue
+            try:
+                data = json.loads(frame)
+            except (ValueError, RecursionError):
+                data = None
+            if not isinstance(data, dict):
+                continue
+            req_id = data.get("reqId")
+            kind = data.get("type")
+            try:
+                if kind == "ping":
+                    res = {"pong": True}
+                elif kind == "history":
+                    res = {"channel": data.get("channel"),
+                           "messages": hub.history(owner_id, data.get("channel"), data.get("before"))}
+                elif kind == "send":
+                    res = hub.send_message(owner_id, client, data.get("channel"), data.get("text"))
+                elif kind == "create_channel":
+                    res = hub.create_channel(owner_id, data.get("name"), data.get("kind"))
+                elif kind == "delete_channel":
+                    res = hub.delete_channel(owner_id, actor, data.get("channel"))
+                elif kind == "voice_join":
+                    res = hub.join_voice(owner_id, client, data.get("channel"))
+                elif kind == "voice_leave":
+                    res = hub.leave_voice(owner_id, client)
+                elif kind == "voice_mute":
+                    res = hub.set_muted(owner_id, client, data.get("muted"))
+                else:
+                    raise RequestError("지원하지 않는 채널 명령입니다.")
+                if req_id is not None:
+                    ws.send(json.dumps({"replyTo": req_id, "result": res}, ensure_ascii=False))
+            except RequestError as err:
+                if req_id is not None:
+                    ws.send(json.dumps({"replyTo": req_id, "error": str(err), "status": err.status},
+                                       ensure_ascii=False))
+    except ConnectionClosed:
+        pass
+    except Exception:
+        app.logger.exception("Channels WebSocket error")
+    finally:
+        hub.disconnect(owner_id, client)
 
 
 @sock.route("/api/vm/ws")
@@ -825,12 +1316,22 @@ def vm_operation(ws, data):
         return runtime.terminal(g.workspace["vm_id"], g.account["id"], data)
     if resource == "kernel":
         return kernel_operation(data)
+    if resource == "visualize":
+        return visualize_operation(data)
+    if resource == "git":
+        if data.get("operation") != "status":
+            raise RequestError("지원하지 않는 Git 작업입니다.")
+        return gitstatus.status(g.workspace["vm_id"], data.get("path", "/"))
     if resource == "workspace":
         operation = data.get("operation")
         if operation == "read":
             return stream_workspace_file(ws, runtime.path(data.get("path")))
+        if operation == "read_binary":
+            return stream_workspace_binary(ws, runtime.path(data.get("path")))
         if operation == "write_stream":
             return receive_workspace_file(ws, data)
+        if operation == "upload_stream":
+            return receive_workspace_upload(ws, data)
         if operation in ("list", "stat"):
             return read_workspace(operation, data.get("path"), data.get("cursor", 0))
         return change_workspace(data)
@@ -848,6 +1349,56 @@ def stream_workspace_file(ws, file_path):
         ws.send(json.dumps({"chunk": chunk["content"]}))
     version = chunk["version"]
     return {"resourceId": version, "etag": version, "chunked": True}
+
+
+def stream_workspace_binary(ws, file_path):
+    """Send any file (image, PDF, ...) as base64 chunks for in-browser preview."""
+    vm_id = g.workspace["vm_id"]
+    info = runtime.workspace(vm_id, "stat", file_path)
+    if info.get("type") != "file":
+        raise RequestError("파일만 미리 볼 수 있습니다.")
+    size = info.get("size", 0)
+    if type(size) is not int or size > runtime.LARGE_FILE_LIMIT:
+        raise RequestError("미리 보기는 8 MiB 이하 파일만 지원합니다.", 413)
+    if size <= runtime.FILE_LIMIT:
+        result = runtime.workspace(vm_id, "read", file_path)
+        return {"binary": True, "size": size, "content": result.get("content", "")}
+    for chunk in runtime.file_chunks(vm_id, file_path):
+        ws.send(json.dumps({"binaryChunk": chunk["content"]}))
+    return {"binary": True, "size": size, "chunked": True}
+
+
+def receive_workspace_upload(ws, data):
+    """Create a new file from raw bytes pasted or dropped into the IDE (images, PDFs, any file)."""
+    file_path = runtime.path(data.get("path"))
+    if file_path == "/":
+        raise RequestError("업로드할 파일 경로가 필요합니다.")
+    size = data.get("size")
+    if type(size) is not int or not 0 <= size <= runtime.LARGE_FILE_LIMIT:
+        raise RequestError("파일 크기는 8 MiB까지 지원합니다.", 413)
+    vm_id = g.workspace["vm_id"]
+    runtime.ensure_parent_directory(vm_id, file_path)
+    created = runtime.workspace(vm_id, "write", file_path, requestId=uuid.uuid4().hex,
+                                content="", create=True, overwrite=False)
+    actor = collab.actor_from_account(g.account, kind=getattr(g, "auth_kind", "browser"))
+    if size:
+        version = created.get("resourceId") or runtime.workspace(vm_id, "stat", file_path)["resourceId"]
+        try:
+            saved = receive_workspace_file(ws, {"path": file_path, "size": size, "resourceId": version})
+        except (RequestError, ConnectionClosed):
+            try:
+                stale = runtime.workspace(vm_id, "stat", file_path)["resourceId"]
+                runtime.workspace(vm_id, "delete", file_path, requestId=uuid.uuid4().hex,
+                                  resourceId=stale, recursive=False)
+            except (RequestError, KeyError):
+                app.logger.warning("Unable to remove incomplete upload")
+            raise
+    else:
+        saved = {"resourceId": created.get("resourceId", "")}
+    collab.staging._broadcast(g.workspace["owner_id"], {
+        "type": "fs_event", "action": "create", "path": file_path, "actor": actor,
+    })
+    return {"path": file_path, "size": size, "resourceId": saved.get("resourceId", "")}
 
 
 def receive_workspace_file(ws, data):
@@ -915,6 +1466,38 @@ def serve_vm_request(ws, operation):
     return response.get("status") != 401
 
 
+def _run_lean_document(vm_id, owner, file_path, document, *, want_viz=False):
+    status, output, rows, names, definitions, entries, imported = runtime.check_lean(
+        vm_id, file_path, document, 0, secrets.token_hex(24),
+        lambda name: store.lookup_declaration(owner, name),
+    )
+    projection_pending = False
+    if status == 0:
+        inserted = store.save_declarations(owner, file_path, rows, definitions, document, entries, imported)
+        saved = {row["name"] for row in inserted}
+        aliased = [name for name in names if name not in saved]
+        names = [name for name in names if name in saved]
+        if aliased:
+            note = "동일 명제가 이미 DB에 저장되어 기존 정리에 별칭으로 연결됨 · " + ", ".join(aliased)
+            output = "\n".join(filter(None, [output, note]))
+        # The durable proof queue publishes to Neo4j after the notebook response.
+        projection_pending = bool(inserted)
+    if status == 0 and not output:
+        output = "Lean 검사 통과"
+    result = {
+        "exitCode": status,
+        "saved": names,
+        "graphPending": projection_pending,
+        "outputs": [{"output_type": "stream", "name": "stdout" if status == 0 else "stderr", "text": output}],
+    }
+    if want_viz:
+        result["visualization"] = visualize.collect_lean_visualization(
+            vm_id, file_path, document,
+            status=status, rows=rows, definitions=definitions, entries=entries, output=output,
+        )
+    return result
+
+
 def kernel_operation(data):
     file_path = runtime.path(data.get("path"))
     if not file_path.endswith(".ipynb"):
@@ -926,6 +1509,7 @@ def kernel_operation(data):
         return runtime.jupyter(vm_id, operation, file_path)
     if operation != "run":
         raise RequestError("지원하지 않는 커널 작업입니다.")
+    want_viz = bool(data.get("visualize"))
     runtime.configure_disk(vm_id)
     if "code" in data or "language" in data:
         lang = data.get("language")
@@ -951,28 +1535,35 @@ def kernel_operation(data):
             raise RequestError("셀 코드가 64 KiB를 초과했습니다.", 413)
         if code.startswith(("%%lean4", "%%rocq")):
             raise RequestError("셀의 매직 명령과 선택한 커널을 확인하세요.")
+        if want_viz:
+            return visualize.jupyter_with_trace(vm_id, file_path, code)
         return runtime.jupyter(vm_id, "execute", file_path, code)
     document = runtime.lean_cell_source(cell)
-    owner = g.workspace["owner_id"]
-    status, output, rows, names, definitions, entries, imported = runtime.check_lean(
-        vm_id, file_path, document, 0, secrets.token_hex(24),
-        lambda name: store.lookup_declaration(owner, name),
-    )
-    projection_pending = False
-    if status == 0:
-        inserted = store.save_declarations(owner, file_path, rows, definitions, document, entries, imported)
-        saved = {row["name"] for row in inserted}
-        aliased = [name for name in names if name not in saved]
-        names = [name for name in names if name in saved]
-        if aliased:
-            note = "동일 명제가 이미 DB에 저장되어 기존 정리에 별칭으로 연결됨 · " + ", ".join(aliased)
-            output = "\n".join(filter(None, [output, note]))
-        # The durable proof queue publishes to Neo4j after the notebook response.
-        projection_pending = bool(inserted)
-    if status == 0 and not output:
-        output = "Lean 검사 통과"
-    return {"exitCode": status, "saved": names, "graphPending": projection_pending,
-            "outputs": [{"output_type": "stream", "name": "stdout" if status == 0 else "stderr", "text": output}]}
+    return _run_lean_document(vm_id, g.workspace["owner_id"], file_path, document, want_viz=want_viz)
+
+
+def visualize_operation(data):
+    file_path = runtime.path(data.get("path"))
+    lang = data.get("language")
+    if lang not in ("lean4", "python", "cpp", "java"):
+        raise RequestError("시각화 실행은 Lean 4 · Python · C++ · Java 파일만 지원합니다.")
+    code = data.get("code")
+    if not isinstance(code, str):
+        raise RequestError("실행할 코드 문자열이 필요합니다.")
+    if len(code.encode("utf-8")) > 65536:
+        raise RequestError("코드 크기가 64 KiB를 초과했습니다.", 413)
+    vm_id = g.workspace["vm_id"]
+    runtime.configure_disk(vm_id)
+    if lang == "python":
+        return visualize.trace_python_script(vm_id, file_path, code)
+    if lang in ("cpp", "java"):
+        return stepper.trace(vm_id, file_path, code, lang)
+    return _run_lean_document(vm_id, g.workspace["owner_id"], file_path, code, want_viz=True)
+
+
+@app.post("/api/visualize")
+def visualize_route():
+    return jsonify(visualize_operation(payload()))
 
 
 @app.get("/api/axioms")
@@ -1026,13 +1617,14 @@ def graph():
 def code_graph():
     """VM 워크스페이스의 Python, C++, Java 소스를 읽어 의존성 그래프를 만든다."""
     vm_id = g.workspace["vm_id"]
+    owner_id = g.workspace["owner_id"]
     root = runtime.path(request.args.get("path", "/"))
 
     def list_directory(path, cursor):
         return runtime.workspace(vm_id, "list", path, cursor=cursor)
 
     def read_file(path):
-        return runtime.read_text(vm_id, path)["text"]
+        return collab.staging.read_effective_text(owner_id, vm_id, path)
 
     started = time.monotonic()
     files, skipped, truncated = codegraph.collect(list_directory, read_file, root)

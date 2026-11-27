@@ -2,6 +2,7 @@ services:
   web:
     image: qnb-web
     build: .
+    restart: unless-stopped
     ports:
       - "127.0.0.1:${QNB_PORT:-8765}:8080"
     environment:
@@ -47,6 +48,7 @@ services:
     network_mode: none
   neo4j:
     image: neo4j:5.26-community
+    restart: unless-stopped
     environment:
       NEO4J_AUTH: none
       NEO4J_server_memory_heap_initial__size: 256m

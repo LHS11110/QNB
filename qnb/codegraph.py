@@ -13,6 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 LANGUAGES = {
     ".py": "python",
+    ".lean": "lean4",
     ".c": "cpp", ".cc": "cpp", ".cpp": "cpp", ".cxx": "cpp", ".c++": "cpp",
     ".h": "cpp", ".hh": "cpp", ".hpp": "cpp", ".hxx": "cpp", ".h++": "cpp", ".ipp": "cpp", ".tpp": "cpp",
     ".java": "java",
@@ -1280,6 +1281,187 @@ def is_local_declaration(tokens, position, keywords):
     return True
 
 
+# --------------------------------------------------------------------------- Lean 4
+
+LEAN_DECL_KINDS = {
+    "structure": "class",
+    "class": "class",
+    "inductive": "class",
+    "theorem": "function",
+    "lemma": "function",
+    "def": "function",
+    "abbrev": "function",
+    "instance": "function",
+    "axiom": "variable",
+    "opaque": "variable",
+    "constant": "variable",
+}
+LEAN_MODIFIERS = {"private", "protected", "noncomputable", "partial", "unsafe", "scoped", "local"}
+LEAN_IMPORT = re.compile(r"^[ \t]*import[ \t]+([A-Za-z_][\w.']*)", re.MULTILINE)
+LEAN_IDENT = re.compile(r"[A-Za-z_][\w']*(?:\.[A-Za-z_][\w']*)*")
+
+
+def strip_lean_comments(text):
+    """Lean 4 주석(-- 및 중첩 /- -/)과 문자열을 공백으로 바꾸고 줄 번호를 보존한다."""
+    out = []
+    i, n = 0, len(text)
+    depth = 0
+    while i < n:
+        ch = text[i]
+        pair = text[i:i + 2]
+        if depth:
+            if pair == "/-":
+                depth += 1
+                out.append("  ")
+                i += 2
+            elif pair == "-/":
+                depth -= 1
+                out.append("  ")
+                i += 2
+            else:
+                out.append("\n" if ch == "\n" else " ")
+                i += 1
+        elif pair == "/-":
+            depth = 1
+            out.append("  ")
+            i += 2
+        elif pair == "--":
+            end = text.find("\n", i)
+            end = n if end < 0 else end
+            out.append(" " * (end - i))
+            i = end
+        elif ch == '"':
+            end = i + 1
+            while end < n and text[end] != '"':
+                if text[end] == "\\" and end + 1 < n:
+                    end += 2
+                else:
+                    end += 1
+            end = min(n, end + 1)
+            out.append("".join("\n" if c == "\n" else " " for c in text[i:end]))
+            i = end
+        else:
+            out.append(ch)
+            i += 1
+    return "".join(out)
+
+
+class LeanAnalyzer:
+    def __init__(self, graph, files):
+        self.graph = graph
+        self.files = files
+        self.clean = {path: strip_lean_comments(text) for path, text in files.items()}
+        self.by_qualname = {}
+        self.by_short = defaultdict(list)
+        self.units = []  # (path, [(node_id, kind, qualname, start_pos, end_pos)])
+
+    def resolve_import(self, origin, mod_name):
+        rel = "/" + mod_name.replace(".", "/") + ".lean"
+        if rel in self.files:
+            return rel
+        origin_dir = posixpath.dirname(origin).rstrip("/")
+        if origin_dir:
+            candidate = origin_dir + rel
+            if candidate in self.files:
+                return candidate
+        matches = [p for p in self.files if p == rel or p.endswith(rel)]
+        return min(matches, key=len) if matches else None
+
+    def run(self):
+        for path, clean in sorted(self.clean.items()):
+            fid = file_id(path)
+            for match in LEAN_IMPORT.finditer(clean):
+                target = self.resolve_import(path, match.group(1))
+                if target:
+                    line = clean.count("\n", 0, match.start()) + 1
+                    self.graph.edge(fid, file_id(target), "imports", line)
+            self._collect_declarations(path, clean)
+
+        for path, decls in self.units:
+            clean = self.clean[path]
+            for node_id, _kind, qualname, start_pos, end_pos in decls:
+                snippet = clean[start_pos:end_pos]
+                base_line = clean.count("\n", 0, start_pos) + 1
+                seen = set()
+                for m in LEAN_IDENT.finditer(snippet):
+                    tok = m.group(0)
+                    if tok in seen:
+                        continue
+                    target = self._resolve_symbol(tok, qualname)
+                    if target and target[0] != node_id:
+                        seen.add(tok)
+                        edge_kind = "reads" if target[1] == "variable" else "calls"
+                        line = base_line + snippet.count("\n", 0, m.start())
+                        self.graph.edge(node_id, target[0], edge_kind, line)
+
+    def _collect_declarations(self, path, clean):
+        fid = file_id(path)
+        namespaces = []
+        raw_decls = []
+        lines = clean.splitlines(keepends=True)
+        offset = 0
+        for idx, raw_line in enumerate(lines, start=1):
+            stripped = raw_line.strip()
+            if not stripped:
+                offset += len(raw_line)
+                continue
+            parts = stripped.split()
+            if parts[0] == "namespace" and len(parts) >= 2 and re.fullmatch(r"[A-Za-z_][\w.']*", parts[1]):
+                namespaces.append(parts[1].split("."))
+                offset += len(raw_line)
+                continue
+            if parts[0] == "end":
+                if len(parts) == 1 and namespaces:
+                    namespaces.pop()
+                elif len(parts) >= 2 and namespaces:
+                    end_parts = parts[1].split(".")
+                    if namespaces[-1] == end_parts or namespaces[-1][-len(end_parts):] == end_parts:
+                        namespaces.pop()
+                offset += len(raw_line)
+                continue
+            pos = 0
+            while pos < len(parts) and parts[pos] in LEAN_MODIFIERS:
+                pos += 1
+            if pos < len(parts) and parts[pos] in LEAN_DECL_KINDS:
+                decl_word = parts[pos]
+                kind = LEAN_DECL_KINDS[decl_word]
+                name = None
+                if pos + 1 < len(parts):
+                    cand = parts[pos + 1].split(":")[0].split("(")[0].split("{")[0].split("[")[0]
+                    if re.fullmatch(r"[A-Za-z_][\w.']*", cand):
+                        name = cand
+                if name:
+                    prefix = [p for ns in namespaces for p in ns]
+                    qualname = ".".join(prefix + [name]) if prefix else name
+                    short = name.rsplit(".", 1)[-1]
+                    node_id = symbol_id(kind, path, qualname)
+                    self.graph.node(node_id, kind, short, path, idx, "lean4", qualname)
+                    self.graph.edge(fid, node_id, "contains", idx)
+                    self.by_qualname[qualname] = (node_id, kind)
+                    self.by_short[short].append((node_id, kind))
+                    raw_decls.append((node_id, kind, qualname, offset))
+            offset += len(raw_line)
+
+        decls = []
+        for idx, (node_id, kind, qualname, start_pos) in enumerate(raw_decls):
+            end_pos = raw_decls[idx + 1][3] if idx + 1 < len(raw_decls) else len(clean)
+            decls.append((node_id, kind, qualname, start_pos, end_pos))
+        self.units.append((path, decls))
+
+    def _resolve_symbol(self, token, current_qualname):
+        if token in self.by_qualname:
+            return self.by_qualname[token]
+        if "." in current_qualname and "." not in token:
+            ns = current_qualname.rsplit(".", 1)[0]
+            while ns:
+                cand = f"{ns}.{token}"
+                if cand in self.by_qualname:
+                    return self.by_qualname[cand]
+                ns = ns.rsplit(".", 1)[0] if "." in ns else ""
+        candidates = self.by_short.get(token, [])
+        return candidates[0] if len(candidates) == 1 else None
+
+
 # --------------------------------------------------------------------------- 진입점
 
 
@@ -1309,6 +1491,8 @@ def analyze(files):
     brace = {path: text for language in ("cpp", "java") for path, text in groups[language].items()}
     if brace:
         BraceAnalyzer(graph, brace).run()
+    if groups["lean4"]:
+        LeanAnalyzer(graph, groups["lean4"]).run()
     nodes = list(graph.nodes.values())
     edges = [edge for edge in graph.edges.values() if edge["from"] in graph.nodes and edge["to"] in graph.nodes]
     truncated = False
