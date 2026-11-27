@@ -23,6 +23,7 @@
   <script src="/static/channels.js" defer></script>
   <script src="/static/planner.js" defer></script>
   <script src="/static/weather.js" defer></script>
+  <script src="/static/mascot.js" defer></script>
 </head>
 <body data-view="home">
   <!-- Header used for Auth, QR Approve, IDE and Proofs views (hidden on Home landing) -->
@@ -89,6 +90,10 @@
           <svg class="theme-icon-moon" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M13.2 10.1A5.6 5.6 0 0 1 5.9 2.8a5.6 5.6 0 1 0 7.3 7.3Z"/></svg>
           <svg class="theme-icon-sun" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><circle cx="8" cy="8" r="2.9"/><path d="M8 1.3v1.6M8 13.1v1.6M1.3 8h1.6M13.1 8h1.6M3.3 3.3l1.1 1.1M11.6 11.6l1.1 1.1M3.3 12.7l1.1-1.1M11.6 4.4l1.1-1.1"/></svg>
           <span class="tool-text theme-label-light">다크</span><span class="tool-text theme-label-dark">라이트</span>
+        </button>
+        <button id="mascot-toggle" type="button" class="tool-btn" title="캐릭터 숨기기" aria-label="화면 위 캐릭터 보이기/숨기기" aria-pressed="true">
+          <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><rect x="2.5" y="4" width="11" height="10" rx="5"/><path d="M8 4V2.2l1.6-.9"/><circle cx="6.2" cy="8.4" r=".9" fill="currentColor" stroke="none"/><circle cx="9.8" cy="8.4" r=".9" fill="currentColor" stroke="none"/></svg>
+          <span class="tool-text">큐비</span>
         </button>
         <a id="proofs-link" class="tool-btn" href="/proofs" target="_blank" rel="noopener" title="증명 트리를 새 창에서 열기" hidden>
           <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" class="tool-icon-tree"><circle cx="8" cy="3.2" r="1.7"/><circle cx="4" cy="12.3" r="1.7"/><circle cx="12" cy="12.3" r="1.7"/><path d="M7.2 4.7 4.8 10.7M8.8 4.7l2.4 6"/></svg>
@@ -1071,15 +1076,16 @@
             <div class="welcome-card">
               <span class="welcome-symbol" aria-hidden="true">∴</span>
               <h1>코드가 살아 움직이는 증명 · 실행 스튜디오</h1>
-              <p>왼쪽에서 Lean 4와 Python 코드를 편집하면 실시간 Automerge 스테이징으로 협업하고, 오른쪽 시각화 패널에서 증명 목표 변화·호출 스택·자료구조·프로젝트 흐름을 단계별로 볼 수 있습니다.</p>
+              <p>왼쪽에서 Lean 4·Python·C++·Java 코드를 편집하면 실시간 Automerge 스테이징으로 협업하고, 오른쪽 시각화 패널에서 증명 목표 변화·호출 스택·포인터/힙 자료구조·프로젝트 흐름을 한 줄씩 볼 수 있습니다.</p>
               <div class="welcome-actions">
                 <button id="new-notebook" type="button" class="primary">새 연구 노트북 만들기</button>
-                <button id="welcome-new-file" type="button">새 Lean / Python 파일</button>
+                <button id="welcome-new-file" type="button">새 Lean / Python / C++ / Java 파일</button>
               </div>
               <div class="welcome-examples-head">
                 <strong>✦ 바로 실행해 보는 학습 예제</strong>
                 <span>클릭 한 번으로 워크스페이스에 생성하고 시각화를 실행합니다</span>
               </div>
+              <div id="welcome-examples-filter" class="examples-filter-bar" role="group" aria-label="예제 언어 필터"></div>
               <div id="welcome-examples-grid" class="welcome-examples-grid"></div>
               <div class="welcome-shortcuts">
                 <button id="welcome-graph" type="button" class="welcome-mini-card">
@@ -1136,7 +1142,8 @@
               <div class="notebook-tools">
                 <button id="add-code" type="button">＋ 코드 셀</button>
                 <button id="add-markdown" type="button">＋ Markdown 셀</button>
-                <span class="notebook-hint">병렬 Lean · Python 셀 · <code>Shift+Enter</code> 실행 &amp; 시각화 · 저장은 <code>Ctrl+S</code> 또는 전체 종료 시 자동</span>
+                <button id="run-all-cells" type="button" class="primary" title="모든 코드 셀을 병렬로 실행하고 시각화합니다">⇉ 병렬 전체 실행</button>
+                <span class="notebook-hint">병렬 Lean · 범주론 · Python · C++ · Java 셀 · <code>Shift+Enter</code> 실행</span>
                 <div class="spacer"></div>
                 <button id="prepare-python" type="button" class="quiet">Python 준비</button>
                 <button id="reset-python" type="button" class="quiet">Python 재시작</button>
@@ -1154,8 +1161,10 @@
             <div class="viz-tabs" role="tablist" aria-label="시각화 모드">
               <button id="viz-tab-lean" type="button" role="tab" aria-selected="true" class="viz-tab active">⊢ Lean 4 증명</button>
               <button id="viz-tab-python" type="button" role="tab" aria-selected="false" class="viz-tab">⚡ 코드 실행</button>
+              <button id="viz-tab-category" type="button" role="tab" aria-selected="false" class="viz-tab">𝒞 범주론</button>
               <button id="viz-tab-project" type="button" role="tab" aria-selected="false" class="viz-tab">⇄ 프로젝트 흐름</button>
             </div>
+            <span id="viz-parallel-badge" class="viz-parallel-badge" hidden></span>
             <button id="viz-examples-shortcut" type="button" class="quiet viz-head-btn" title="학습 예제">✦ 예제</button>
             <button id="viz-close" type="button" class="quiet viz-head-btn" aria-label="시각화 패널 닫기" title="시각화 패널 접기">×</button>
           </div>
@@ -1181,6 +1190,7 @@
                 <input id="viz-lean-slider" type="range" min="0" max="0" value="0" aria-label="Lean 증명 단계 이동">
               </div>
               <div id="viz-lean-step-box" class="viz-explain-card"></div>
+              <div id="viz-lean-calc" class="viz-prop-calc" hidden></div>
               <div id="viz-lean-goals" class="viz-lean-goals"></div>
               <div id="viz-lean-decls" class="viz-decls"></div>
             </div>
@@ -1190,10 +1200,12 @@
             <div id="viz-py-empty" class="viz-empty">
               <div class="viz-empty-icon">⚡</div>
               <h3>코드의 한 줄 한 줄을 시간 여행으로</h3>
-              <p>왼쪽에서 Python 셀 또는 <code>.py</code> 파일을 실행하면, 호출 스택·변수 값 변화·배열/객체 참조 구조·출력 흐름을 단계별로 되감아 보며 동작 원리를 이해할 수 있습니다.</p>
-              <button type="button" class="primary viz-open-examples">✦ Python 알고리즘 예제로 체험하기</button>
+              <p>왼쪽에서 Python·C++·Java 파일이나 노트북 셀을 실행하면, 호출 스택·포인터/참조·변수 변화·힙 자료구조·출력 흐름을 한 줄씩 되감아 보며 동작 원리를 이해할 수 있습니다.</p>
+              <button type="button" class="primary viz-open-examples">✦ Python · C++ · Java 예제로 체험하기</button>
             </div>
             <div id="viz-py-content" class="viz-scroll" hidden>
+              <div id="viz-py-lang-bar" class="viz-lang-bar"></div>
+              <div id="viz-py-pipeline" class="viz-pipeline viz-pipeline-3"></div>
               <div class="viz-scrubber">
                 <div class="viz-controls">
                   <button id="viz-py-first" type="button" title="처음">⏮</button>
@@ -1208,8 +1220,10 @@
                   </select>
                   <span id="viz-py-counter" class="viz-counter">0 / 0</span>
                 </div>
-                <input id="viz-py-slider" type="range" min="0" max="0" value="0" aria-label="Python 실행 단계 이동">
+                <input id="viz-py-slider" type="range" min="0" max="0" value="0" aria-label="실행 단계 이동">
               </div>
+              <div id="viz-py-line-bar" class="viz-line-visits" hidden></div>
+              <div id="viz-py-compile-errors" class="viz-compile-errors" hidden></div>
               <div id="viz-py-explain" class="viz-explain-card"></div>
               <div class="viz-section">
                 <h4>호출 스택 &amp; 지역 변수</h4>
@@ -1223,6 +1237,44 @@
                 <h4>누적 출력 (stdout)</h4>
                 <pre id="viz-py-stdout" class="viz-stdout"></pre>
               </div>
+            </div>
+          </section>
+
+          <section id="viz-pane-category" class="viz-pane" hidden>
+            <div id="viz-cat-empty" class="viz-empty">
+              <div class="viz-empty-icon">𝒞</div>
+              <h3>가환 도식과 사상 치환을 눈으로 증명하세요</h3>
+              <p><code>.cat</code> 파일이나 노트북의 <strong>Category Theory</strong> 셀을 실행하면 대상·사상·함자·자연변환·수반함자의 <strong>Quiver / String 다이어그램</strong>과 등식 계산 단계를 실시간으로 탐색할 수 있습니다.</p>
+              <button type="button" class="primary viz-open-examples">✦ 범주론 학습 예제로 체험하기</button>
+            </div>
+            <div id="viz-cat-content" class="viz-scroll" hidden>
+              <div id="viz-cat-pipeline" class="viz-pipeline"></div>
+              <div class="viz-scrubber">
+                <div class="viz-controls">
+                  <button id="viz-cat-first" type="button" title="처음">⏮</button>
+                  <button id="viz-cat-prev" type="button" title="이전 단계">◀</button>
+                  <button id="viz-cat-play" type="button" class="primary">▶ 자동재생</button>
+                  <button id="viz-cat-next" type="button" title="다음 단계">▶</button>
+                  <button id="viz-cat-last" type="button" title="마지막">⏭</button>
+                  <div class="viz-cat-mode-toggle" role="group" aria-label="도식 보기 방식">
+                    <button id="viz-cat-mode-quiver" type="button" class="viz-mode-btn active">Quiver 도식</button>
+                    <button id="viz-cat-mode-string" type="button" class="viz-mode-btn">String 다이어그램</button>
+                  </div>
+                  <span id="viz-cat-counter" class="viz-counter">0 / 0</span>
+                </div>
+                <input id="viz-cat-slider" type="range" min="0" max="0" value="0" aria-label="범주론 증명 단계 이동">
+              </div>
+              <div class="viz-cat-canvas-wrap">
+                <canvas id="viz-cat-canvas" aria-label="범주론 가환 도식 및 스트링 다이어그램"></canvas>
+                <div class="graph-navigation">
+                  <button id="viz-cat-zoom-out" type="button" aria-label="축소">−</button>
+                  <button id="viz-cat-zoom-in" type="button" aria-label="확대">＋</button>
+                  <button id="viz-cat-fit" type="button">초기화</button>
+                </div>
+              </div>
+              <div id="viz-cat-step-box" class="viz-explain-card"></div>
+              <div id="viz-cat-calc" class="viz-prop-calc" hidden></div>
+              <div id="viz-cat-summary" class="viz-decls"></div>
             </div>
           </section>
 
@@ -1465,20 +1517,64 @@
   <div id="explorer-context-menu" class="context-menu" role="menu" hidden></div>
 
   <dialog id="weather-dialog" class="weather-dialog" aria-labelledby="weather-dialog-title">
-    <form method="dialog">
-      <h2 id="weather-dialog-title">날씨 테마</h2>
-      <label class="weather-switch"><input type="checkbox" id="weather-enabled"> 날씨에 따라 IDE 디자인 바꾸기</label>
-      <fieldset id="weather-options" class="weather-options">
-        <legend class="sr-only">날씨 선택 방식</legend>
-        <label><input type="radio" name="weather-mode" value="auto"> 현재 위치의 실제 날씨 (자동)</label>
-        <label><input type="radio" name="weather-mode" value="manual"> 원하는 날씨 직접 선택</label>
-        <div id="weather-choices" class="weather-choices" role="radiogroup" aria-label="날씨 선택"></div>
-        <label class="weather-range">효과 강도 <input type="range" id="weather-intensity" min="10" max="100" step="5"></label>
-        <label class="weather-switch"><input type="checkbox" id="weather-motion"> 움직이는 효과 (비 · 눈 · 구름 애니메이션)</label>
-        <p id="weather-auto-status" class="weather-note" role="status"></p>
-        <p class="weather-note">자동 모드는 브라우저 위치 권한을 사용하며, 약 10 km 단위로 반올림한 좌표만 날씨 서비스(Open-Meteo)에 보냅니다. 위치는 서버에 저장되지 않습니다.</p>
-      </fieldset>
-      <div class="dialog-actions"><button value="close" class="primary" type="submit">닫기</button></div>
+    <form method="dialog" class="weather-dialog-form">
+      <div class="weather-preview-banner" id="weather-preview-banner">
+        <canvas id="weather-preview-canvas" width="520" height="146" aria-hidden="true"></canvas>
+        <div class="weather-preview-overlay">
+          <div class="weather-preview-top">
+            <span id="weather-preview-badge" class="weather-preview-badge">☀ 맑음</span>
+            <button id="weather-dialog-close" value="close" type="submit" class="weather-preview-close" aria-label="닫기">×</button>
+          </div>
+          <div class="weather-preview-bottom">
+            <h2 id="weather-dialog-title">날씨 분위기 &amp; IDE 애니메이션</h2>
+            <p id="weather-preview-label" class="weather-preview-sub">현재 하늘을 미리 보고 작업실 분위기를 선택하세요</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="weather-dialog-body">
+        <div class="weather-switch-row">
+          <label class="weather-switch"><input type="checkbox" id="weather-enabled"><span>실시간 날씨 효과 활성화</span></label>
+          <label class="weather-switch"><input type="checkbox" id="weather-motion"><span>하늘 · 입자 애니메이션 재생</span></label>
+        </div>
+
+        <fieldset id="weather-options" class="weather-options">
+          <legend class="sr-only">날씨 선택 방식</legend>
+          <div class="weather-mode-seg" role="radiogroup" aria-label="날씨 적용 방식">
+            <label class="weather-mode-pill">
+              <input type="radio" name="weather-mode" value="auto">
+              <span>📍 내 위치 실제 날씨 (자동)</span>
+            </label>
+            <label class="weather-mode-pill">
+              <input type="radio" name="weather-mode" value="manual">
+              <span>🎨 직접 테마 고르기</span>
+            </label>
+          </div>
+
+          <div id="weather-choices" class="weather-choices" role="radiogroup" aria-label="날씨 선택"></div>
+
+          <div class="weather-intensity-box">
+            <div class="weather-intensity-head">
+              <label for="weather-intensity">분위기 효과 강도</label>
+              <div class="weather-presets" role="group" aria-label="강도 프리셋">
+                <button type="button" class="weather-preset-btn" data-intensity="35">은은하게</button>
+                <button type="button" class="weather-preset-btn" data-intensity="70">표준</button>
+                <button type="button" class="weather-preset-btn" data-intensity="100">생동감</button>
+              </div>
+              <span id="weather-intensity-val" class="weather-intensity-val">75%</span>
+            </div>
+            <input type="range" id="weather-intensity" min="15" max="100" step="5">
+          </div>
+
+          <div class="weather-auto-bar">
+            <p id="weather-auto-status" class="weather-note" role="status"></p>
+            <button id="weather-refresh-auto" type="button" class="quiet" hidden>↻ 다시 측정</button>
+          </div>
+          <p class="weather-note muted">자동 모드는 약 10 km 단위로 반올림한 좌표만 Open-Meteo에 조회하며 위치는 저장되지 않습니다.</p>
+        </fieldset>
+
+        <div class="dialog-actions"><button value="close" class="primary" type="submit">적용하고 닫기</button></div>
+      </div>
     </form>
   </dialog>
   <dialog id="planner-dialog" class="planner-dialog" aria-labelledby="planner-dialog-title">
@@ -1656,6 +1752,7 @@
     <p class="ws-note">
       예제를 선택하면 워크스페이스(<code>/examples/</code>)에 파일이 생성되고, 왼쪽 편집기와 오른쪽 시각화 패널에서 동작 과정을 즉시 탐색할 수 있습니다.
     </p>
+    <div id="examples-filter-bar" class="examples-filter-bar" role="group" aria-label="예제 언어 필터"></div>
     <div id="examples-list" class="examples-list"></div>
   </dialog>
 </body>

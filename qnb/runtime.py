@@ -371,20 +371,42 @@ def language(doc, cell):
     if not isinstance(metadata, dict):
         raise RequestError("노트북 셀 메타데이터가 올바르지 않습니다.")
     explicit = metadata.get("qnb_language")
-    if explicit in ("lean4", "python"):
+    if explicit in ("lean4", "python", "cpp", "java", "category"):
         return explicit
-    if source(cell).startswith("%%lean4 ") or source(cell).split("\n", 1)[0] == "%%lean4":
+    first_line = source(cell).split("\n", 1)[0].strip()
+    if first_line == "%%lean4" or first_line.startswith("%%lean4 "):
         return "lean4"
+    if first_line in ("%%cpp", "%%c++"):
+        return "cpp"
+    if first_line == "%%java":
+        return "java"
+    if first_line in ("%%category", "%%cat") or first_line.startswith(("%%category ", "%%cat ")):
+        return "category"
     metadata = doc.get("metadata") or {}
     kernel = metadata.get("kernelspec") if isinstance(metadata, dict) else None
     name = kernel.get("name", "python3") if isinstance(kernel, dict) else "python3"
     if not isinstance(name, str):
         raise RequestError("노트북의 커널 이름이 올바르지 않습니다.")
-    if name.lower() in ("lean4", "lean"):
+    lower = name.lower()
+    if lower in ("lean4", "lean"):
         return "lean4"
-    if name.lower().startswith("python"):
+    if lower in ("cpp", "c++"):
+        return "cpp"
+    if lower == "java":
+        return "java"
+    if lower in ("category", "cat"):
+        return "category"
+    if lower.startswith("python"):
         return "python"
     raise RequestError(f"지원하지 않는 노트북 커널입니다 ({name}). 셀의 커널을 선택하세요.")
+
+
+def code_cell_source(cell, lang):
+    """Strip an optional %%cpp / %%java / %%python / %%category cell magic header line."""
+    code = source(cell).replace("\r\n", "\n")
+    if re.match(r"^%%(?:cpp|c\+\+|java|python|category|cat)(?:[ \t][^\n]*)?(?:\n|$)", code):
+        return code.partition("\n")[2]
+    return code
 
 
 def lean_cell_source(cell):
@@ -535,7 +557,7 @@ def lean_attempt(vm_id, file_path, document, marker, archives, *, preparing=Fals
     started = marker + "-started\n"
     # A readiness probe is safe to retry. Notebook code is retried only before elaboration.
     for _ in range(3):
-        result = vm(vm_id, {"language": "bash", "code": command})
+        result = vm(vm_id, {"language": "bash", "code": command, "stateless": True})
         if not result.get("timedOut") or (not preparing and started in result.get("output", "")):
             break
     if "exitCode" not in result:

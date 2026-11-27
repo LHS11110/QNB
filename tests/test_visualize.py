@@ -232,6 +232,7 @@ class VisualizeEndpointTests(unittest.TestCase):
 
             with patch("qnb.runtime.configure_disk"), \
                     patch("qnb.runtime.check_lean", return_value=(0, "", [], [], [], [], {})), \
+                    patch("qnb.visualize.probe_lean_lsp", return_value=([], [], {})), \
                     patch("qnb.visualize.collect_lean_visualization", return_value={
                         "kind": "lean4", "path": "/b.lean", "ok": True,
                         "steps": [], "pipeline": [], "declarations": [], "recovered": [], "output": "Lean 검사 통과",
@@ -241,6 +242,56 @@ class VisualizeEndpointTests(unittest.TestCase):
                 })
             self.assertEqual(lean_res.status_code, 200)
             self.assertEqual(lean_res.get_json()["visualization"]["kind"], "lean4")
+
+            cat_res = client.post("/api/visualize", json={
+                "path": "/cat.cat",
+                "language": "category",
+                "code": "category C\nobject A : C\ntheorem id_eq : id(A) ∘ id(A) = id(A) by\n  id_left\n  rfl\n",
+            })
+            self.assertEqual(cat_res.status_code, 200)
+            cat_body = cat_res.get_json()
+            self.assertEqual(cat_body["exitCode"], 0)
+            self.assertEqual(cat_body["visualization"]["kind"], "category")
+            self.assertTrue(cat_body["visualization"]["theorems"][0]["verified"])
+
+            cell_res = client.post("/api/kernel", json={
+                "operation": "run",
+                "path": "/nb.ipynb",
+                "language": "category",
+                "code": "%%category\ncategory C\nobject A : C\ntheorem t1 : id(A) = id(A) by\n  rfl\n",
+                "visualize": True,
+            })
+            self.assertEqual(cell_res.status_code, 200)
+            self.assertEqual(cell_res.get_json()["visualization"]["kind"], "category")
+
+    def test_lean_line_span_and_proposition_computation(self):
+        line = "    | succ k ih => rw [Nat.add_succ] -- apply succ"
+        col_start, col_end, tokens = visualize._lean_line_span(line)
+        self.assertEqual(line[col_start:col_end], "rw [Nat.add_succ]")
+        self.assertIn("Nat.add_succ", [t["name"] for t in tokens])
+
+        before_g = [visualize.parse_lean_goal("n : Nat\n⊢ 0 + (n + 1) = n + 1")]
+        after_g = [visualize.parse_lean_goal("n : Nat\n⊢ (0 + n) + 1 = n + 1")]
+        comp = visualize.compute_lean_proposition_trace(
+            "  rw [Nat.add_succ]",
+            before_g,
+            after_g,
+            hover_items=[{"name": "Nat.add_succ", "hover": {"contents": {"kind": "markdown", "value": "```lean\nNat.add_succ (n m : Nat) : n + m.succ = (n + m).succ\n```"}}}],
+        )
+        self.assertIsNotNone(comp)
+        self.assertEqual(comp["operation"], "등식 치환 (Rewrite)")
+        self.assertIn("0 + (n + 1)", comp["before"])
+        self.assertIn("(0 + n) + 1", comp["after"])
+        self.assertEqual(comp["rules"][0]["name"], "Nat.add_succ")
+        self.assertIn("Nat.add_succ", comp["rules"][0]["signature"])
+
+        solved_comp = visualize.compute_lean_proposition_trace(
+            "  rfl",
+            after_g,
+            [],
+        )
+        self.assertIn("종결", solved_comp["operation"])
+        self.assertEqual(solved_comp["contractum"], "True (Q.E.D. ✓)")
 
 
 if __name__ == "__main__":

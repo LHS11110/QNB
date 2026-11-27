@@ -7,7 +7,7 @@ import re
 import secrets
 import zlib
 
-from . import runtime
+from . import runtime, stepper
 
 MAX_PY_STEPS = 300
 MAX_PY_STACK = 16
@@ -166,6 +166,197 @@ def _prepare_lsp_document(document, entries):
     return "\n".join(combined), line_map
 
 
+def _strip_lean_inline_comment(line):
+    """Strip a trailing Lean `--` line comment outside double-quoted string literals."""
+    in_str = False
+    escaped = False
+    for idx, ch in enumerate(line):
+        if escaped:
+            escaped = False
+            continue
+        if ch == "\\" and in_str:
+            escaped = True
+            continue
+        if ch == '"':
+            in_str = not in_str
+            continue
+        if not in_str and ch == "-" and idx + 1 < len(line) and line[idx + 1] == "-":
+            return line[:idx].rstrip()
+    return line.rstrip()
+
+
+def _utf16_col(text, char_index):
+    return len(text[:char_index].encode("utf-16-le")) // 2
+
+
+def _lean_line_span(line):
+    """Return accurate UTF-16 (col_start, col_end, hover_tokens) for a Lean proof line.
+
+    Adjusts col_start past bullets (`·`, `•`) and inline `| case =>` headers when a
+    tactic follows on the same line, and trims inline `--` comments from col_end so
+    LSP plainGoal probes land right before and right after the tactic itself.
+    """
+    code = _strip_lean_inline_comment(line)
+    indent = len(code) - len(code.lstrip())
+    probe_start = indent
+    rest = code[indent:]
+    bullet_match = re.match(r"^(?:[·•+\-*])\s+(?=\S)", rest)
+    if bullet_match:
+        probe_start += bullet_match.end()
+    else:
+        case_match = re.match(r"^\|\s*[^=\n]*=>\s+(?=\S)", rest)
+        if case_match:
+            probe_start += case_match.end()
+
+    # Extract up to 2 identifier/theorem tokens (e.g. `Nat.add_succ`, `ih`) for hover docs.
+    tokens = []
+    seen = set()
+    body = code[probe_start:]
+    skip = {"rw", "simp", "dsimp", "apply", "exact", "intro", "intros", "cases", "induction",
+            "have", "let", "show", "calc", "with", "at", "only", "by", "rfl", "trivial",
+            "theorem", "lemma", "def", "example", "import", "open", "where", "match", "fun"}
+    for match in re.finditer(r"\b[A-Za-z_][A-Za-z0-9_'.]*", body):
+        name = match.group(0)
+        if name in skip or name in seen:
+            continue
+        seen.add(name)
+        tokens.append({"name": name, "col": _utf16_col(line, probe_start + match.start())})
+        if len(tokens) >= 2:
+            break
+    col_start = _utf16_col(line, probe_start)
+    col_end = _utf16_col(line, len(code))
+    if col_end < col_start:
+        col_end = col_start
+    return col_start, col_end, tokens
+
+
+def _extract_hover_signature(hover_result):
+    if not isinstance(hover_result, dict):
+        return ""
+    contents = hover_result.get("contents")
+    raw = ""
+    if isinstance(contents, dict):
+        raw = contents.get("value") or ""
+    elif isinstance(contents, list):
+        raw = "\n".join(c.get("value", "") if isinstance(c, dict) else str(c) for c in contents)
+    elif isinstance(contents, str):
+        raw = contents
+    if not raw:
+        return ""
+    # Prefer the first ```lean ... ``` code block if present, else first non-empty lines.
+    block = re.search(r"```(?:lean4?|lean)?\s*\n(.*?)```", raw, re.S)
+    text = block.group(1).strip() if block else raw.strip()
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    return " ".join(lines)[:220]
+
+
+def _diff_targets(before_target, after_target):
+    """Split before/after proposition targets into (prefix, redex, contractum, suffix)."""
+    if not before_target and not after_target:
+        return "", "", "", ""
+    if not after_target:
+        return "", before_target, "True (Q.E.D. ✓)", ""
+    if before_target == after_target:
+        return before_target, "", "", ""
+    prefix_len = 0
+    limit = min(len(before_target), len(after_target))
+    while prefix_len < limit and before_target[prefix_len] == after_target[prefix_len]:
+        prefix_len += 1
+    # Snap back to delimiter boundary if inside a word when helpful.
+    while prefix_len > 0 and prefix_len < limit and before_target[prefix_len].isalnum() and after_target[prefix_len].isalnum():
+        if before_target[prefix_len - 1].isalnum():
+            prefix_len -= 1
+        else:
+            break
+    b_rem = before_target[prefix_len:]
+    a_rem = after_target[prefix_len:]
+    suffix_len = 0
+    s_limit = min(len(b_rem), len(a_rem))
+    while suffix_len < s_limit and b_rem[-1 - suffix_len] == a_rem[-1 - suffix_len]:
+        suffix_len += 1
+    prefix = before_target[:prefix_len]
+    suffix = b_rem[len(b_rem) - suffix_len:] if suffix_len else ""
+    redex = b_rem[:len(b_rem) - suffix_len] if suffix_len else b_rem
+    contractum = a_rem[:len(a_rem) - suffix_len] if suffix_len else a_rem
+    return prefix, redex, contractum, suffix
+
+
+def compute_lean_proposition_trace(raw_line, before_goals, after_goals, *, added_hyps=None, hover_items=None):
+    """Compute a human-readable proposition reduction/calculation record for one Lean step."""
+    stripped = _strip_lean_inline_comment(raw_line).strip()
+    tactic = stripped.split(None, 1)[0] if stripped else ""
+    tactic = tactic.lstrip("·•+-*")
+    if not before_goals and not after_goals:
+        return None
+    before_target = before_goals[0]["target"] if before_goals else ""
+    after_target = after_goals[0]["target"] if after_goals else ""
+    solved = bool(before_goals) and len(after_goals) == 0
+
+    rules = []
+    for item in (hover_items or []):
+        name = item.get("name") or ""
+        sig = _extract_hover_signature(item.get("hover"))
+        if name and sig:
+            rules.append({"name": name, "signature": sig})
+    # Also note bracketed rule names in `rw [...]` / `simp [...]` even if hover was unavailable.
+    seen_rules = {r["name"] for r in rules}
+    for bm in re.findall(r"\[([^\]]+)\]", stripped):
+        for tok in bm.split(","):
+            clean = tok.strip().lstrip("←").strip().split(None, 1)[0]
+            if clean and clean not in seen_rules and not clean.startswith("_"):
+                seen_rules.add(clean)
+                rules.append({"name": clean, "signature": ""})
+
+    prefix, redex, contractum, suffix = _diff_targets(before_target, after_target)
+    if solved:
+        op = "목표 종결 (Q.E.D.)" if tactic not in ("rfl", "decide", "omega", "simp", "exact") else f"계산 종결 ({tactic})"
+        summary = f"`{before_target}` 양변이 정의/동치로 정규화되어 목표가 완전히 닫혔습니다."
+    elif len(after_goals) > len(before_goals):
+        op = f"하위 목표 분할 ({len(before_goals)} → {len(after_goals)})"
+        branch_preview = "  |  ".join(g["target"] for g in after_goals[:3])
+        if len(after_goals) > 3:
+            branch_preview += f"  (+{len(after_goals) - 3}개)"
+        prefix, redex, contractum, suffix = "", before_target, branch_preview, ""
+        summary = f"`{tactic or stripped}` 적용으로 `{len(after_goals)}`개의 사례/귀납 하위 명제로 전개되었습니다."
+    elif len(after_goals) < len(before_goals) and after_goals:
+        op = f"현 하위 목표 완료 (남은 목표 {len(after_goals)}개)"
+        summary = f"현재 분기를 해결하고 다음 하위 목표 `{after_target}`로 이동했습니다."
+    elif before_target == after_target and (added_hyps or []):
+        op = "맥락 가설 도입 (Context 확장)"
+        hyp_text = ", ".join(added_hyps)
+        summary = f"명제 본문 `{after_target}`을 유지하면서 가설 `{hyp_text}`를 문맥에 추가했습니다."
+    elif tactic in ("rw", "rewrite"):
+        op = "등식 치환 (Rewrite)"
+        rule_names = ", ".join(r["name"] for r in rules[:3]) or stripped
+        summary = f"`{rule_names}` 등식을 이용해 `{redex or before_target}` → `{contractum or after_target}` 로 치환했습니다."
+    elif tactic in ("simp", "dsimp", "norm_num", "ring"):
+        op = f"정규화 · 단순화 ({tactic})"
+        summary = f"정의 전개와 단순화 규칙으로 `{redex or before_target}` 를 `{contractum or after_target}` 로 계산했습니다."
+    elif tactic in ("intro", "intros") or added_hyps:
+        op = "전칭/함의 가설 도입"
+        summary = f"목표에서 가설({', '.join(added_hyps or [])})을 추출해 남은 결론 `{after_target}`을 정리했습니다."
+    else:
+        op = f"전술 변환 ({tactic or 'step'})"
+        if before_target != after_target:
+            summary = f"`{before_target}` 에서 `{after_target}` 로 목표 명제가 변환되었습니다."
+        else:
+            summary = "현재 증명 상태가 유지/정리되었습니다."
+
+    return {
+        "operation": op,
+        "before": before_target,
+        "after": after_target,
+        "prefix": prefix,
+        "redex": redex,
+        "contractum": contractum,
+        "suffix": suffix,
+        "subgoalCountBefore": len(before_goals),
+        "subgoalCountAfter": len(after_goals),
+        "rules": rules[:4],
+        "summary": summary,
+    }
+
+
 def _build_lsp_probe_script(lsp_doc, line_queries, working_dir):
     payload = json.dumps({"doc": lsp_doc, "queries": line_queries, "cwd": working_dir}, ensure_ascii=True)
     return f"""
@@ -181,33 +372,41 @@ proc = subprocess.Popen(
     cwd=cwd, env=env,
 )
 buf = b""
-deadline = time.monotonic() + 7.5
+deadline = time.monotonic() + 24.0
 
 def send(msg):
     raw = json.dumps(msg).encode("utf-8")
     proc.stdin.write(f"Content-Length: {{len(raw)}}\\r\\n\\r\\n".encode() + raw)
     proc.stdin.flush()
 
-def wait_id(req_id):
+def pump(wanted_ids):
     global buf
+    responses = {{}}
     sel = selectors.DefaultSelector()
     sel.register(proc.stdout, selectors.EVENT_READ)
     try:
-        while time.monotonic() < deadline:
-            if b"\\r\\n\\r\\n" in buf:
+        while time.monotonic() < deadline and not wanted_ids.issubset(responses):
+            progressed = False
+            while b"\\r\\n\\r\\n" in buf:
                 hdr, rest = buf.split(b"\\r\\n\\r\\n", 1)
                 cl = 0
                 for h in hdr.split(b"\\r\\n"):
                     if h.lower().startswith(b"content-length:"):
                         cl = int(h.split(b":", 1)[1].strip())
-                if len(rest) >= cl:
-                    msg = json.loads(rest[:cl])
-                    buf = rest[cl:]
-                    if msg.get("id") == req_id:
-                        return msg.get("result")
-                    if "method" in msg and "id" in msg:
-                        send({{"jsonrpc": "2.0", "id": msg["id"], "result": None}})
-                    continue
+                if len(rest) < cl:
+                    break
+                msg = json.loads(rest[:cl])
+                buf = rest[cl:]
+                progressed = True
+                mid = msg.get("id")
+                if mid in wanted_ids:
+                    responses[mid] = msg.get("result")
+                elif "method" in msg and "id" in msg:
+                    send({{"jsonrpc": "2.0", "id": msg["id"], "result": None}})
+            if wanted_ids.issubset(responses):
+                break
+            if progressed:
+                continue
             rem = deadline - time.monotonic()
             if rem <= 0 or not sel.select(min(rem, 0.1)):
                 continue
@@ -217,26 +416,43 @@ def wait_id(req_id):
             buf += chunk
     finally:
         sel.close()
-    return None
+    return responses
 
 out = []
 try:
     uri = "file://" + cwd.rstrip("/") + "/QnbViz.lean"
     send({{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {{"processId": None, "rootUri": "file://" + cwd, "capabilities": {{}}}}}})
-    wait_id(1)
+    pump({{1}})
     send({{"jsonrpc": "2.0", "method": "initialized", "params": {{}}}})
     send({{"jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {{"textDocument": {{"uri": uri, "languageId": "lean4", "version": 1, "text": cfg["doc"]}}}}}})
+    # Pipeline plainGoal + hover requests across lines for faster response.
     req_id = 10
+    wanted = set()
+    meta = []
     for q in cfg["queries"]:
-        if time.monotonic() >= deadline:
-            break
         req_id += 1
-        send({{"jsonrpc": "2.0", "id": req_id, "method": "$/lean/plainGoal", "params": {{"textDocument": {{"uri": uri}}, "position": {{"line": q["lspLine"], "character": q["colStart"]}}}}}})
-        before = wait_id(req_id)
+        before_id = req_id
+        send({{"jsonrpc": "2.0", "id": before_id, "method": "$/lean/plainGoal", "params": {{"textDocument": {{"uri": uri}}, "position": {{"line": q["lspLine"], "character": q["colStart"]}}}}}})
         req_id += 1
-        send({{"jsonrpc": "2.0", "id": req_id, "method": "$/lean/plainGoal", "params": {{"textDocument": {{"uri": uri}}, "position": {{"line": q["lspLine"], "character": q["colEnd"]}}}}}})
-        after = wait_id(req_id)
-        out.append({{"line": q["origLine"], "before": before, "after": after}})
+        after_id = req_id
+        send({{"jsonrpc": "2.0", "id": after_id, "method": "$/lean/plainGoal", "params": {{"textDocument": {{"uri": uri}}, "position": {{"line": q["lspLine"], "character": q["colEnd"]}}}}}})
+        wanted.update((before_id, after_id))
+        hover_ids = []
+        for tok in q.get("tokens", [])[:2]:
+            req_id += 1
+            hid = req_id
+            send({{"jsonrpc": "2.0", "id": hid, "method": "textDocument/hover", "params": {{"textDocument": {{"uri": uri}}, "position": {{"line": q["lspLine"], "character": tok["col"]}}}}}})
+            wanted.add(hid)
+            hover_ids.append((tok["name"], hid))
+        meta.append((q["origLine"], before_id, after_id, hover_ids))
+    responses = pump(wanted)
+    for orig_line, before_id, after_id, hover_ids in meta:
+        out.append({{
+            "line": orig_line,
+            "before": responses.get(before_id),
+            "after": responses.get(after_id),
+            "hovers": [{{"name": name, "hover": responses.get(hid)}} for name, hid in hover_ids if responses.get(hid)],
+        }})
 finally:
     proc.kill()
     proc.wait()
@@ -244,8 +460,8 @@ print(json.dumps(out, ensure_ascii=True))
 """
 
 
-def collect_lean_visualization(vm_id, file_path, document, *, status, rows, definitions, entries, output):
-    """Collect Lean 4 tactic-by-tactic goals and 4-stage pipeline metadata."""
+def probe_lean_lsp(vm_id, file_path, document, entries=None):
+    """Run pipelined Lean 4 LSP goal + hover probe safely & statelessly in the VM."""
     lines = document.splitlines()
     lsp_doc, line_map = _prepare_lsp_document(document, entries)
     queries = []
@@ -264,9 +480,14 @@ def collect_lean_visualization(vm_id, file_path, document, *, status, rows, defi
             continue
         if stripped.startswith("--"):
             continue
-        col_start = len(line[:len(line) - len(line.lstrip())].encode("utf-16-le")) // 2
-        col_end = len(line.encode("utf-16-le")) // 2
-        queries.append({"origLine": idx, "lspLine": line_map[idx], "colStart": col_start, "colEnd": col_end})
+        col_start, col_end, tokens = _lean_line_span(line)
+        queries.append({
+            "origLine": idx,
+            "lspLine": line_map[idx],
+            "colStart": col_start,
+            "colEnd": col_end,
+            "tokens": tokens,
+        })
         if len(queries) >= 80:
             break
 
@@ -275,15 +496,24 @@ def collect_lean_visualization(vm_id, file_path, document, *, status, rows, defi
     if queries:
         try:
             script = _build_lsp_probe_script(lsp_doc, queries, working)
-            res = runtime.vm(vm_id, {"language": "python", "code": script})
+            res = runtime.vm(vm_id, {"language": "python", "code": script, "stateless": True})
             if res.get("exitCode") == 0 and res.get("output"):
                 for item in json.loads(res["output"].strip().splitlines()[-1]):
                     lsp_rows[item["line"]] = item
         except (runtime.RequestError, ValueError, KeyError, IndexError):
             lsp_rows = {}
+    return lines, queries, lsp_rows
+
+
+def collect_lean_visualization(vm_id, file_path, document, *, status, rows, definitions, entries, output, pre_probed=None):
+    """Collect Lean 4 tactic-by-tactic goals, proposition computation traces, and 4-stage pipeline."""
+    if pre_probed is not None and not entries:
+        lines, queries, lsp_rows = pre_probed
+    else:
+        lines, queries, lsp_rows = probe_lean_lsp(vm_id, file_path, document, entries)
 
     steps = []
-    for q in queries:
+    for idx, q in enumerate(queries):
         orig_line = q["origLine"]
         raw_line = lines[orig_line - 1]
         probed = lsp_rows.get(orig_line, {})
@@ -291,7 +521,7 @@ def collect_lean_visualization(vm_id, file_path, document, *, status, rows, defi
         after_raw = probed.get("after")
         before_goals = [parse_lean_goal(g) for g in (before_raw or {}).get("goals", [])]
         after_goals = [parse_lean_goal(g) for g in (after_raw or {}).get("goals", [])]
-        solved = after_raw is not None and len(after_goals) == 0
+        solved = after_raw is not None and len(after_goals) == 0 and (len(before_goals) > 0 or bool(before_raw))
         if not before_goals and not after_goals and not solved:
             step_status = "decl"
         elif solved:
@@ -305,18 +535,25 @@ def collect_lean_visualization(vm_id, file_path, document, *, status, rows, defi
             for h in (after_goals[0]["hypotheses"] if after_goals else [])
             if h["name"] and h["name"] not in before_names
         ]
-        if before_raw is None and after_raw is None and step_status == "decl":
-            # Keep declarations too so learners can follow top-to-bottom structure.
-            pass
+        # Compute endLine up to the line right before the next parsed step (keeps comments/blanks attached).
+        next_line = queries[idx + 1]["origLine"] if idx + 1 < len(queries) else len(lines) + 1
+        end_line = max(orig_line, next_line - 1)
+        computation = compute_lean_proposition_trace(
+            raw_line, before_goals, after_goals, added_hyps=added, hover_items=probed.get("hovers") or [],
+        )
         steps.append({
             "index": len(steps),
             "line": orig_line,
+            "endLine": end_line,
+            "colStart": q["colStart"],
+            "colEnd": q["colEnd"],
             "code": raw_line,
-            "tactic": raw_line.strip().split(None, 1)[0] if raw_line.strip() else "",
+            "tactic": _strip_lean_inline_comment(raw_line).strip().split(None, 1)[0] if raw_line.strip() else "",
             "hint": tactic_hint(raw_line),
             "goalsBefore": before_goals,
             "goalsAfter": after_goals,
             "addedHypotheses": added,
+            "computation": computation,
             "status": step_status,
         })
 
@@ -607,6 +844,24 @@ def _decode_trace_line(line):
     return json.loads(text)
 
 
+def _enrich_python_viz(viz):
+    """Attach step variable diffs and pipeline summary for the code visualizer."""
+    steps = viz.get("steps") or []
+    for idx, step in enumerate(steps):
+        if "changes" not in step:
+            step["changes"] = stepper.compute_step_changes(steps[idx - 1] if idx > 0 else None, step)
+    if "pipeline" not in viz:
+        max_heap = max((len(s.get("heap") or {}) for s in steps), default=0)
+        ok = bool(viz.get("ok", True))
+        viz["pipeline"] = [
+            {"id": "parse", "label": "AST 구문 파싱", "status": "ok" if (steps or ok) else "error", "detail": "준비됨"},
+            {"id": "trace", "label": "sys.settrace 추적", "status": "ok" if ok else "error",
+             "detail": f"{len(steps)}단계" if ok else "예외 중단"},
+            {"id": "memory", "label": "스택·힙 분석", "status": "ok", "detail": f"힙 객체 {max_heap}개"},
+        ]
+    return viz
+
+
 def trace_python_script(vm_id, file_path, code):
     """Execute a .py file inside the VM under sys.settrace and capture execution steps."""
     working = "/workspace" + (posixpath.dirname(file_path) if posixpath.dirname(file_path) != "/" else "")
@@ -679,7 +934,7 @@ _qnb_payload = _qnb_json.dumps({{
 }}, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
 print("QNBZ:" + _qnb_b64.b64encode(_qnb_zlib.compress(_qnb_payload, 6)).decode("ascii"))
 """
-    res = runtime.vm(vm_id, {"language": "python", "code": runner})
+    res = runtime.vm(vm_id, {"language": "python", "code": runner, "stateless": True})
     if "exitCode" not in res:
         raise runtime.RequestError(f"Python 실행 실패 ({res.get('error', 'VM 응답 오류')}).", 503)
     raw = (res.get("output") or "").strip()
@@ -699,6 +954,7 @@ print("QNBZ:" + _qnb_b64.b64encode(_qnb_zlib.compress(_qnb_payload, 6)).decode("
             },
         }
     data = _decode_trace_line(raw.splitlines()[-1])
+    _enrich_python_viz(data["visualization"])
     outputs = []
     if data.get("stdout"):
         outputs.append({"output_type": "stream", "name": "stdout", "text": data["stdout"]})
@@ -816,10 +1072,10 @@ if _qnb_has_tail and _qnb_ns.get("_qnb_cell_value") is not None:
         "print('QNBZ:' + base64.b64encode(zlib.compress(raw, 6)).decode('ascii') if raw else '')"
     )
     try:
-        trace_res = runtime.vm(vm_id, {"language": "python", "code": reader})
+        trace_res = runtime.vm(vm_id, {"language": "python", "code": reader, "stateless": True})
         raw_trace = (trace_res.get("output") or "").strip()
         if trace_res.get("exitCode") == 0 and raw_trace:
-            result["visualization"] = _decode_trace_line(raw_trace.splitlines()[-1])
+            result["visualization"] = _enrich_python_viz(_decode_trace_line(raw_trace.splitlines()[-1]))
     except (runtime.RequestError, ValueError, KeyError, zlib.error):
         pass
     return result

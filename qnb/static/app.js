@@ -1724,7 +1724,7 @@ function retainEditors(keys) {
 
 function fileLanguage(path) {
   return {
-    lean: "lean4", py: "python", md: "markdown", markdown: "markdown", json: "json",
+    lean: "lean4", cat: "category", py: "python", md: "markdown", markdown: "markdown", json: "json",
     ipynb: "json", js: "javascript", jsx: "javascript", ts: "typescript", tsx: "typescript",
     cpp: "cpp", cc: "cpp", cxx: "cpp", "c++": "cpp", hpp: "cpp", hh: "cpp", hxx: "cpp", h: "cpp", c: "cpp",
     java: "java", html: "html", htm: "html", tex: "latex", ltx: "latex",
@@ -1736,7 +1736,7 @@ function runLanguage(path) {
   const ext = path.split(".").at(-1).toLowerCase();
   if (["cpp", "cc", "cxx", "c++"].includes(ext)) return "cpp";
   const language = fileLanguage(path);
-  return ["lean4", "python", "java"].includes(language) ? language : "";
+  return ["lean4", "python", "java", "category"].includes(language) ? language : "";
 }
 
 const RENDERABLE = { markdown: "Markdown", html: "HTML", latex: "LaTeX" };
@@ -1761,8 +1761,10 @@ function renderPlainFile(tab, minimalDiff = false) {
   const canRun = Boolean(runLanguage(tab.path));
   const markdownFile = Boolean(RENDERABLE[language]);
   if (runButton) {
+    const fileRunning = runningFiles.has(tab.path);
     runButton.hidden = !canRun;
-    runButton.disabled = busy;
+    runButton.disabled = busy || fileRunning;
+    runButton.textContent = fileRunning ? "⏳ 실행 중…" : "▶ 실행 · 시각화";
   }
   previewButton.hidden = !markdownFile;
   previewButton.setAttribute("aria-pressed", markdownFile && tab.markdownPreview !== false);
@@ -1784,12 +1786,14 @@ function renderPlainFile(tab, minimalDiff = false) {
       }
     },
     onRun() {
-      if (!canRun || busy) return false;
+      if (!canRun || busy || runningFiles.has(tab.path)) return false;
       runPlainFile(tab.path);
       return true;
     },
-    onCursorLine(line) {
-      if (language === "lean4") window.QNBVisualizer?.syncLeanCursor(tab.path, null, line);
+    onCursorLine(line, col, isUserClick) {
+      if (language === "lean4") window.QNBVisualizer?.syncLeanCursor(tab.path, null, line, col, isUserClick);
+      else if (language === "category") window.QNBVisualizer?.syncCategoryCursor(tab.path, null, line, col, isUserClick);
+      else if (["python", "cpp", "java"].includes(language)) window.QNBVisualizer?.syncCodeCursor(tab.path, null, line, col, isUserClick);
       collabRequest("cursor", { path: tab.path, cursorLine: line }).catch(() => {});
     },
   });
@@ -1815,21 +1819,56 @@ $("plain-output-close")?.addEventListener("click", () => {
   $("plain-output").hidden = true;
 });
 
+const runningFiles = new Set();
+const runningCells = new WeakSet();
+const activeParallelJobs = new Map();
+let nextParallelJobId = 1;
+
+function beginParallelJob(label) {
+  const id = nextParallelJobId++;
+  activeParallelJobs.set(id, label);
+  window.QNBVisualizer?.setParallelJobs([...activeParallelJobs.values()]);
+  return id;
+}
+
+function endParallelJob(id) {
+  activeParallelJobs.delete(id);
+  window.QNBVisualizer?.setParallelJobs([...activeParallelJobs.values()]);
+}
+
+function updateRunButtonState() {
+  const tab = activeTab();
+  const runButton = $("run-file-viz");
+  if (!tab || !runButton) return;
+  const fileRunning = runningFiles.has(tab.path);
+  runButton.disabled = busy || fileRunning;
+  runButton.textContent = fileRunning ? "⏳ 실행 중…" : "▶ 실행 · 시각화";
+}
+
 async function runPlainFile(targetPath = active) {
   const tab = tabs.get(targetPath);
   if (!tab) return;
   const language = runLanguage(tab.path);
-  if (!language) return;
-  await runTask(async () => {
-    status("VM에서 실행하고 시각화 데이터를 수집하는 중…");
-    const result = await vmRequest("visualize", { path: tab.path, language, code: tab.text });
+  if (!language || runningFiles.has(tab.path)) return;
+  runningFiles.add(tab.path);
+  updateRunButtonState();
+  const jobId = beginParallelJob(`${tab.path.split("/").pop()} (${language})`);
+  try {
+    status(`${tab.path.split("/").pop()} 병렬 실행 및 시각화 중…`);
+    const result = await api("visualize", { path: tab.path, language, code: tab.text });
     tab.plainResult = result;
     if (activeTab() === tab && !graphVisible) renderPlainOutput(tab);
     if (result.visualization) {
       window.QNBVisualizer?.showExecutionResult(result.visualization, { path: tab.path, cell: null });
     }
     status(result.exitCode === 0 ? "실행과 시각화를 완료했습니다." : "실행 중 오류가 발생했습니다.", result.exitCode !== 0);
-  });
+  } catch (error) {
+    status(error.message, true);
+  } finally {
+    runningFiles.delete(tab.path);
+    endParallelJob(jobId);
+    updateRunButtonState();
+  }
 }
 
 $("run-file-viz")?.addEventListener("click", () => active && runPlainFile(active));
@@ -1879,10 +1918,17 @@ function sourceOf(cell) {
 }
 function cellLanguage(doc, cell) {
   const explicit = cell.metadata?.qnb_language;
-  if (["lean4", "python"].includes(explicit)) return explicit;
-  if (/^%%lean4(?:\s|$)/.test(sourceOf(cell))) return "lean4";
+  if (["lean4", "python", "cpp", "java", "category"].includes(explicit)) return explicit;
+  const firstLine = sourceOf(cell).split("\n", 1)[0].trim();
+  if (/^%%lean4(?:\s|$)/.test(firstLine)) return "lean4";
+  if (/^%%(?:category|cat)(?:\s|$)/.test(firstLine)) return "category";
+  if (firstLine === "%%cpp" || firstLine === "%%c++") return "cpp";
+  if (firstLine === "%%java") return "java";
   const kernel = String(doc.metadata?.kernelspec?.name || "python3").toLowerCase();
   if (["lean", "lean4"].includes(kernel)) return "lean4";
+  if (["category", "cat"].includes(kernel)) return "category";
+  if (["cpp", "c++"].includes(kernel)) return "cpp";
+  if (kernel === "java") return "java";
   return kernel.startsWith("python") ? "python" : "";
 }
 
@@ -2236,7 +2282,7 @@ function renderNotebook(tab, focusCell) {
       const chooser = element("select");
       chooser.setAttribute("aria-label", (index + 1) + "번 셀 커널");
       const current = kernelLang;
-      for (const [value, label] of [["", "커널 선택"], ["lean4", "Lean 4"], ["python", "Python"]]) {
+      for (const [value, label] of [["", "커널 선택"], ["lean4", "Lean 4"], ["category", "Category Theory"], ["python", "Python"], ["cpp", "C++"], ["java", "Java"]]) {
         if (!value && current) continue;
         const opt = element("option", label); opt.value = value; chooser.append(opt);
       }
@@ -2244,17 +2290,22 @@ function renderNotebook(tab, focusCell) {
       chooser.disabled = busy;
       chooser.onchange = () => {
         const prior = sourceOf(cell);
-        if (/^%%lean4(?:[ \t][^\n]*)?(?:\n|$)/.test(prior)) cell.source = prior.replace(/^%%lean4(?:[ \t][^\n]*)?(?:\n|$)/, "");
+        if (/^%%(?:lean4|cpp|c\+\+|java|python|category|cat)(?:[ \t][^\n]*)?(?:\n|$)/.test(prior)) {
+          cell.source = prior.replace(/^%%(?:lean4|cpp|c\+\+|java|python|category|cat)(?:[ \t][^\n]*)?(?:\n|$)/, "");
+        }
         cell.metadata = { ...(cell.metadata || {}), qnb_language: chooser.value };
         cell.outputs = []; cell.execution_count = null;
         tab.feedback.delete(cell);
         markDirty(tab);
         renderNotebook(tab, cell);
       };
-      const run = button("▶ 실행", () => runCell(tab, cell, index), "primary cell-run-btn");
-      run.disabled = busy || !current;
+      const cellRunning = runningCells.has(cell);
+      const run = button(cellRunning ? "⏳ 실행 중…" : "▶ 실행", () => runCell(tab, cell, index), "primary cell-run-btn");
+      run.disabled = busy || !current || cellRunning;
       header.append(chooser, run);
       if (current === "lean4") header.append(element("span", "독립 검증 · DB 저장", "cell-kernel-tag"));
+      else if (current === "category") header.append(element("span", "범주 도식 · 등식 증명", "cell-kernel-tag"));
+      else if (current === "cpp" || current === "java") header.append(element("span", "한 줄 디버거 시각화", "cell-kernel-tag"));
     }
     if (markdown) {
       const toggle = button(editingMarkdown.has(cell) ? "문서 보기" : "편집", () => {
@@ -2322,8 +2373,10 @@ function renderNotebook(tab, focusCell) {
           runCell(tab, cell, index);
           return true;
         },
-        onCursorLine(line) {
-          if (code && kernelLang === "lean4") window.QNBVisualizer?.syncLeanCursor(tab.path, cell, line);
+        onCursorLine(line, col, isUserClick) {
+          if (code && kernelLang === "lean4") window.QNBVisualizer?.syncLeanCursor(tab.path, cell, line, col, isUserClick);
+          else if (code && kernelLang === "category") window.QNBVisualizer?.syncCategoryCursor(tab.path, cell, line, col, isUserClick);
+          else if (code && ["python", "cpp", "java"].includes(kernelLang)) window.QNBVisualizer?.syncCodeCursor(tab.path, cell, line, col, isUserClick);
         },
       });
     }
@@ -2362,13 +2415,18 @@ function appendCell(type) {
 $("add-code").onclick = () => appendCell("code");
 $("add-markdown").onclick = () => appendCell("markdown");
 
-function runCell(tab, cell) {
+async function runCell(tab, cell, index = null) {
   const doc = readNotebook(tab);
   const lang = cellLanguage(doc, cell);
   const code = sourceOf(cell);
-  return runTask(async () => {
-    status("VM에서 셀을 실행하고 시각화하는 중…");
-    const result = await vmRequest("kernel", {
+  if (!lang || runningCells.has(cell)) return;
+  const idx = index ?? doc.cells.indexOf(cell);
+  runningCells.add(cell);
+  const jobId = beginParallelJob(`${idx >= 0 ? (idx + 1) + "번 셀" : "셀"} (${lang})`);
+  if (activeTab() === tab && !graphVisible) renderNotebook(tab);
+  try {
+    status("VM에서 셀을 병렬 실행하고 시각화하는 중…");
+    const result = await api("kernel", {
       operation: "run", path: tab.path, language: lang, code, visualize: true,
     });
     tab.feedback.set(cell, result);
@@ -2378,11 +2436,28 @@ function runCell(tab, cell) {
     cell.execution_count = Number.isInteger(result.executionCount) ? result.executionCount : null;
     if (new TextEncoder().encode(JSON.stringify(tab.notebook, null, 1) + "\n").length > LARGE_FILE_LIMIT) cell.outputs = [];
     markDirty(tab);
-    if (activeTab() === tab && !graphVisible) renderNotebook(tab);
     if (result.visualization) window.QNBVisualizer?.showExecutionResult(result.visualization, { path: tab.path, cell });
     status(result.exitCode === 0 ? "셀 실행과 시각화를 완료했습니다." : result.error || "셀 실행이 실패했습니다.", result.exitCode !== 0);
-  });
+  } catch (error) {
+    status(error.message, true);
+  } finally {
+    runningCells.delete(cell);
+    endParallelJob(jobId);
+    if (activeTab() === tab && !graphVisible) renderNotebook(tab);
+  }
 }
+
+$("run-all-cells")?.addEventListener("click", async () => {
+  const tab = activeTab();
+  if (!tab || !tab.path.endsWith(".ipynb")) return;
+  const doc = readNotebook(tab);
+  const runnable = doc.cells
+    .map((cell, index) => ({ cell, index, lang: cell.cell_type === "code" ? cellLanguage(doc, cell) : "" }))
+    .filter((entry) => Boolean(entry.lang));
+  if (!runnable.length) return;
+  status(`코드 셀 ${runnable.length}개 병렬 실행 중…`);
+  await Promise.allSettled(runnable.map((entry) => runCell(tab, entry.cell, entry.index)));
+});
 
 function pythonAction(operation) {
   const tab = activeTab();
@@ -2805,13 +2880,13 @@ window.QNBVisualizer?.init({
     if (graphVisible) { graphVisible = false; renderWorkbench(); renderEntries(); }
     await openCodeLocation(norm, line);
   },
-  async highlightLine(filePath, cell, line, kind) {
-    if (cell) { editors.get(cell)?.setHighlightLine(line, kind, true); return; }
+  async highlightLine(filePath, cell, line, kind, scroll = false) {
+    if (cell) { editors.get(cell)?.setHighlightLine(line, kind, scroll); return; }
     if (!filePath) return;
     const norm = filePath.startsWith("/") ? filePath : "/" + filePath;
     if (active !== norm || graphVisible) await openFile(norm);
     const tab = tabs.get(norm);
-    if (tab) editors.get(tab)?.setHighlightLine(line, kind, true);
+    if (tab) editors.get(tab)?.setHighlightLine(line, kind, scroll);
   },
   runPlainFile,
   async runFirstCodeCell(nbPath) {

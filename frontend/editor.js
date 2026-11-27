@@ -148,8 +148,48 @@ const lean = StreamLanguage.define({
   languageData: { commentTokens: { line: "--", block: { open: "/-", close: "-/" } } },
 });
 
+const categoryKeywords = new Set([
+  "category", "object", "objects", "morphism", "hom", "iso", "terminal", "initial",
+  "product", "coproduct", "functor", "nat", "adjunction", "unit", "counit", "of", "in",
+  "axiom", "theorem", "lemma", "example", "by", "id", "inv",
+  "id_left", "id_right", "simp_id", "assoc", "assoc_left", "assoc_right",
+  "functor_id", "functor_comp", "functor_merge", "naturality",
+  "product_beta", "product_eta", "coproduct_beta", "coproduct_eta",
+  "iso_cancel", "terminal_uniq", "initial_uniq", "zig", "zag",
+  "rw", "rewrite", "symm", "normalize", "simp", "rfl", "qed",
+]);
+
+const categoryLang = StreamLanguage.define({
+  startState: () => ({ comment: 0 }),
+  token(stream, state) {
+    if (state.comment > 0) {
+      while (!stream.eol()) {
+        if (stream.match("/-")) state.comment++;
+        else if (stream.match("-/")) {
+          state.comment--;
+          if (state.comment === 0) return "comment";
+        } else stream.next();
+      }
+      return "comment";
+    }
+    if (stream.eatSpace()) return null;
+    if (stream.match("--")) { stream.skipToEnd(); return "comment"; }
+    if (stream.match("/-")) { state.comment = 1; return "comment"; }
+    if (stream.match(/[⟨⟩\[\]()∘→↔≅⇒⊣]/u)) return "operator";
+    if (stream.match(/[\p{L}_][\p{L}\p{N}_'₀-₉]*/u)) {
+      const word = stream.current();
+      return categoryKeywords.has(word) ? "keyword" : /^\p{Lu}/.test(word) ? "typeName" : "variableName";
+    }
+    if (stream.match(/[:=<>+\-*|.,!?]+/u)) return "operator";
+    stream.next();
+    return null;
+  },
+  languageData: { commentTokens: { line: "--", block: { open: "/-", close: "-/" } } },
+});
+
 const languages = {
   lean4: lean,
+  category: categoryLang,
   python: python(),
   markdown: markdown(),
   json: json(),
@@ -270,19 +310,40 @@ export class CodeEditor {
           EditorView.updateListener.of((update) => {
             if (update.docChanged && !this.replacing) this.options.onChange(update.state.doc.toString());
             if (update.selectionSet && this.options.onCursorLine) {
-              const line = update.state.doc.lineAt(update.state.selection.main.head).number;
-              if (line !== this.lastCursorLine) {
-                this.lastCursorLine = line;
-                this.options.onCursorLine(line);
+              const isUserEvent = update.transactions.some((tr) =>
+                tr.isUserEvent("select") || tr.isUserEvent("select.pointer")
+                || tr.isUserEvent("input") || tr.isUserEvent("delete") || tr.isUserEvent("move"),
+              );
+              if (!isUserEvent && this.replacing) return;
+              const head = update.state.selection.main.head;
+              const lineInfo = update.state.doc.lineAt(head);
+              const col = head - lineInfo.from;
+              if (lineInfo.number !== this.lastCursorLine || col !== this.lastCursorCol) {
+                this.lastCursorLine = lineInfo.number;
+                this.lastCursorCol = col;
+                this.options.onCursorLine(lineInfo.number, col, isUserEvent);
               }
             }
+          }),
+          EditorView.domEventHandlers({
+            pointerup: (event, view) => {
+              if (!this.options.onCursorLine || event.button !== 0) return;
+              requestAnimationFrame(() => {
+                const head = view.state.selection.main.head;
+                const lineInfo = view.state.doc.lineAt(head);
+                const col = head - lineInfo.from;
+                this.lastCursorLine = lineInfo.number;
+                this.lastCursorCol = col;
+                this.options.onCursorLine(lineInfo.number, col, true);
+              });
+            },
           }),
         ],
       }),
     });
   }
 
-  setHighlightLine(lineNumber, kind = "active", scroll = true) {
+  setHighlightLine(lineNumber, kind = "active", scroll = false) {
     if (!lineNumber || lineNumber < 1 || lineNumber > this.view.state.doc.lines) {
       this.view.dispatch({ effects: setExecLine.of(null) });
       return;

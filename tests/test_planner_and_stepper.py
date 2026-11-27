@@ -1,16 +1,21 @@
+import base64
+import importlib.util
 import json
 import os
 import shutil
 import subprocess
 import tempfile
 import unittest
+import zlib
 from pathlib import Path
 from unittest.mock import patch
 
-from qnb import planner, runtime, stepper, store
+from qnb import identity, planner, runtime, stepper, store
 from qnb.runtime import RequestError
 
 HAS_GPP = shutil.which("g++") is not None
+HAS_JDK = shutil.which("javac") is not None and shutil.which("java") is not None
+HAS_FLASK = importlib.util.find_spec("flask") is not None
 
 
 class PlannerTests(unittest.TestCase):
@@ -147,6 +152,124 @@ class StepperTests(unittest.TestCase):
         vector = [e for e in line8["heap"].values() if e["type"] == "vector<int>"][0]
         self.assertEqual([i["value"] for i in vector["items"]], [1, 2])
         self.assertEqual(viz["steps"][-1]["stdout"], "5\n")
+        self.assertTrue(any(s.get("changes") for s in viz["steps"]))
+        self.assertEqual([p["status"] for p in viz["pipeline"]], ["ok", "ok", "ok"])
+
+    @unittest.skipUnless(HAS_GDB, "g++ and gdb are required")
+    def test_gdb_pointers_multifile_and_signal(self):
+        with tempfile.TemporaryDirectory() as td:
+            proj = Path(td)
+            (proj / "helper.hpp").write_text("struct Box { int v; Box* next; };\nint dbl(int x);\n")
+            (proj / "helper.cpp").write_text('#include "helper.hpp"\nint dbl(int x) { return x * 2; }\n')
+            # Sibling file with its own main() must be ignored when building main.cpp
+            (proj / "other_demo.cpp").write_text("int main() { return 42; }\n")
+            main_code = '#include "helper.hpp"\nint main() {\n  Box b{7, nullptr};\n  Box* p = &b;\n  int y = dbl(p->v);\n  return 0;\n}\n'
+            main_path = proj / "main.cpp"
+            main_path.write_text(main_code)
+
+            def run_with_dir(vm_id, payload):
+                code_mod = payload["code"]
+                # Point projectDir to our host temp folder during local execution test
+                return run_locally(vm_id, {"code": code_mod})
+
+            with patch.object(runtime, "vm", run_with_dir):
+                # Exercise pointer/heap tracing via standalone file plus compile error & crash
+                ptr_code = (
+                    "#include <iostream>\n"
+                    "struct Node { int v; Node* next; Node(int x, Node* n) : v(x), next(n) {} };\n"
+                    "int main() { Node* h = new Node(11, new Node(22, nullptr)); std::cout << h->v; return 0; }\n"
+                )
+                res_ptr = stepper.trace(1, "/main.cpp", ptr_code, "cpp")
+                self.assertEqual(res_ptr["exitCode"], 0)
+                self.assertTrue(any(
+                    any(e.get("type") == "Node" for e in s.get("heap", {}).values())
+                    for s in res_ptr["visualization"]["steps"]
+                ))
+
+                crash_code = "int main() { int* p = nullptr; return *p; }\n"
+                res_crash = stepper.trace(1, "/crash.cpp", crash_code, "cpp")
+                self.assertNotEqual(res_crash["exitCode"], 0)
+                self.assertEqual(res_crash["visualization"]["steps"][-1]["event"], "exception")
+
+    @unittest.skipUnless(HAS_JDK, "javac and java are required")
+    def test_jdi_trace_recursion_and_exception(self):
+        java_code = (
+            "import java.util.*;\n"
+            "public class Main {\n"
+            "  static int fact(int n) {\n"
+            "    if (n <= 1) return 1;\n"
+            "    return n * fact(n - 1);\n"
+            "  }\n"
+            "  public static void main(String[] args) {\n"
+            "    int ans = fact(3);\n"
+            "    System.out.println(ans);\n"
+            "  }\n"
+            "}\n"
+        )
+        with patch.object(runtime, "vm", run_locally):
+            res = stepper.trace(1, "/Main.java", java_code, "java")
+        self.assertEqual(res["exitCode"], 0)
+        self.assertEqual(res["outputs"][0]["text"].strip(), "6")
+        returns = [s for s in res["visualization"]["steps"] if s["event"] == "return" and s["func"] == "Main.fact"]
+        self.assertTrue(any(s.get("returnValue") == "6" for s in returns))
+
+    def test_qnbz_decode_and_compile_error_parsing(self):
+        payload = {"exitCode": 0, "stdout": "ok\n", "trace": [step(1)]}
+        encoded = "QNBZ:" + base64.b64encode(zlib.compress(json.dumps(payload).encode())).decode()
+        self.assertEqual(stepper._decode_runner_output(encoded)["stdout"], "ok\n")
+
+        err_data = {
+            "exitCode": 1, "note": "compile", "stdout": "", "trace": [],
+            "stderr": "/demo/main.cpp:4:12: error: 'xyz' was not declared in this scope\n",
+        }
+        res = stepper.build_result(err_data, "int main() {\n\n\n  int a = xyz;\n}\n", "/demo/main.cpp", "cpp")
+        viz = res["visualization"]
+        self.assertFalse(viz["ok"])
+        self.assertEqual(viz["compileErrors"][0]["file"], "/demo/main.cpp")
+        self.assertEqual(viz["compileErrors"][0]["line"], 4)
+        self.assertEqual(viz["steps"][0]["event"], "exception")
+        self.assertEqual(viz["steps"][0]["line"], 4)
+        self.assertEqual(viz["pipeline"][0]["status"], "error")
+
+    @unittest.skipUnless(HAS_FLASK, "Flask is required for /api/kernel notebook tests")
+    def test_notebook_cpp_and_java_cells(self):
+        from qnb import app
+
+        with tempfile.TemporaryDirectory() as td, patch.dict(os.environ, {
+            "QNB_DATABASE": str(Path(td) / "qnb.sqlite3"),
+            "QNB_SECRET_KEY": "test-secret",
+        }):
+            store.initialize()
+            client = app.app.test_client()
+            with client:
+                client.post("/api/signup", json={"email": "nb@example.test", "password": "Password1!", "nickname": "nbuser"})
+                with store.database() as db:
+                    acc = db.execute("SELECT id FROM accounts WHERE email = ?", ("nb@example.test",)).fetchone()
+                    db.execute("UPDATE accounts SET email_verified = 1 WHERE id = ?", (acc["id"],))
+
+                cpp_res_mock = {
+                    "exitCode": 0,
+                    "outputs": [{"output_type": "stream", "name": "stdout", "text": "9\n"}],
+                    "visualization": {"kind": "cpp", "primaryFile": "/nb/cell.cpp", "ok": True, "steps": [], "callEdges": []},
+                }
+                with patch.object(runtime, "configure_disk"), \
+                        patch.object(stepper, "trace", return_value=cpp_res_mock) as mocked_trace:
+                    r1 = client.post("/api/kernel", json={
+                        "path": "/nb/study.ipynb", "operation": "run", "language": "cpp",
+                        "code": "%%cpp\nint main() { return 0; }\n", "visualize": True,
+                    })
+                    self.assertEqual(r1.status_code, 200)
+                    self.assertEqual(r1.get_json()["visualization"]["kind"], "cpp")
+                    mocked_trace.assert_called_once()
+                    self.assertEqual(mocked_trace.call_args[0][1], "/nb/cell.cpp")
+
+                doc = {
+                    "nbformat": 4, "nbformat_minor": 5,
+                    "metadata": {"kernelspec": {"name": "python3"}},
+                    "cells": [{"cell_type": "code", "metadata": {"qnb_language": "java"}, "source": "%%java\npublic class Main { public static void main(String[] a) {} }"}],
+                }
+                self.assertEqual(runtime.language(doc, doc["cells"][0]), "java")
+                self.assertTrue(runtime.code_cell_source(doc["cells"][0], "java").startswith("public class Main"))
 
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@ import socket
 import sqlite3
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from threading import BoundedSemaphore
 from urllib.parse import urlencode, urlsplit
 
@@ -16,7 +17,7 @@ from flask_sock import Sock
 from simple_websocket import ConnectionClosed
 from werkzeug.security import check_password_hash, generate_password_hash
 
-from . import auth, channels, codegraph, collab, gitstatus, identity, mailer, mcp_server, planner, runtime, stepper, store, visualize
+from . import auth, category, channels, codegraph, collab, gitstatus, identity, mailer, mcp_server, planner, runtime, stepper, store, visualize
 from .runtime import RequestError
 
 app = Flask(__name__)
@@ -1547,10 +1548,21 @@ def serve_vm_request(ws, operation):
 
 
 def _run_lean_document(vm_id, owner, file_path, document, *, want_viz=False):
-    status, output, rows, names, definitions, entries, imported = runtime.check_lean(
-        vm_id, file_path, document, 0, secrets.token_hex(24),
-        lambda name: store.lookup_declaration(owner, name),
-    )
+    lookup = lambda name: store.lookup_declaration(owner, name)
+    pre_probed = None
+    if want_viz:
+        # Execute Lean kernel check and LSP goal+hover probing concurrently in the VM.
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            kernel_future = pool.submit(
+                runtime.check_lean, vm_id, file_path, document, 0, secrets.token_hex(24), lookup,
+            )
+            probe_future = pool.submit(visualize.probe_lean_lsp, vm_id, file_path, document, None)
+            status, output, rows, names, definitions, entries, imported = kernel_future.result()
+            pre_probed = probe_future.result()
+    else:
+        status, output, rows, names, definitions, entries, imported = runtime.check_lean(
+            vm_id, file_path, document, 0, secrets.token_hex(24), lookup,
+        )
     projection_pending = False
     if status == 0:
         inserted = store.save_declarations(owner, file_path, rows, definitions, document, entries, imported)
@@ -1574,6 +1586,7 @@ def _run_lean_document(vm_id, owner, file_path, document, *, want_viz=False):
         result["visualization"] = visualize.collect_lean_visualization(
             vm_id, file_path, document,
             status=status, rows=rows, definitions=definitions, entries=entries, output=output,
+            pre_probed=pre_probed,
         )
     return result
 
@@ -1590,10 +1603,9 @@ def kernel_operation(data):
     if operation != "run":
         raise RequestError("지원하지 않는 커널 작업입니다.")
     want_viz = bool(data.get("visualize"))
-    runtime.configure_disk(vm_id)
     if "code" in data or "language" in data:
         lang = data.get("language")
-        if lang not in ("lean4", "python"):
+        if lang not in ("lean4", "python", "cpp", "java", "category"):
             raise RequestError("지원하지 않는 노트북 커널입니다. 셀의 커널을 선택하세요.")
         raw_code = data.get("code")
         if not isinstance(raw_code, str):
@@ -1601,6 +1613,7 @@ def kernel_operation(data):
         cell = {"cell_type": "code", "metadata": {"qnb_language": lang}, "source": raw_code}
         selected_language = lang
     else:
+        runtime.configure_disk(vm_id)
         doc = runtime.notebook(vm_id, file_path, data.get("etag"))
         index = data.get("index")
         if type(index) is not int or not 0 <= index < len(doc["cells"]):
@@ -1609,15 +1622,29 @@ def kernel_operation(data):
         if cell.get("cell_type") != "code":
             raise RequestError("코드 셀만 실행할 수 있습니다.")
         selected_language = runtime.language(doc, cell)
+    if selected_language == "category":
+        code = runtime.code_cell_source(cell, selected_language)
+        if len(code.encode("utf-8")) > 65536:
+            raise RequestError("셀 코드가 64 KiB를 초과했습니다.", 413)
+        nb_dir = file_path.rsplit("/", 1)[0] or ""
+        return category.verify_and_visualize(f"{nb_dir}/cell.cat", code)
+    runtime.configure_disk(vm_id)
     if selected_language == "python":
         code = runtime.source(cell)
         if len(code.encode()) > 65536:
             raise RequestError("셀 코드가 64 KiB를 초과했습니다.", 413)
-        if code.startswith(("%%lean4", "%%rocq")):
+        if code.startswith(("%%lean4", "%%rocq", "%%category", "%%cat")):
             raise RequestError("셀의 매직 명령과 선택한 커널을 확인하세요.")
         if want_viz:
             return visualize.jupyter_with_trace(vm_id, file_path, code)
         return runtime.jupyter(vm_id, "execute", file_path, code)
+    if selected_language in ("cpp", "java"):
+        code = runtime.code_cell_source(cell, selected_language)
+        if len(code.encode("utf-8")) > 65536:
+            raise RequestError("셀 코드가 64 KiB를 초과했습니다.", 413)
+        nb_dir = file_path.rsplit("/", 1)[0] or ""
+        virtual_path = f"{nb_dir}/Main.java" if selected_language == "java" else f"{nb_dir}/cell.cpp"
+        return stepper.trace(vm_id, virtual_path, code, selected_language)
     document = runtime.lean_cell_source(cell)
     return _run_lean_document(vm_id, g.workspace["owner_id"], file_path, document, want_viz=want_viz)
 
@@ -1625,13 +1652,15 @@ def kernel_operation(data):
 def visualize_operation(data):
     file_path = runtime.path(data.get("path"))
     lang = data.get("language")
-    if lang not in ("lean4", "python", "cpp", "java"):
-        raise RequestError("시각화 실행은 Lean 4 · Python · C++ · Java 파일만 지원합니다.")
+    if lang not in ("lean4", "python", "cpp", "java", "category"):
+        raise RequestError("시각화 실행은 Lean 4 · Python · C++ · Java · Category 파일만 지원합니다.")
     code = data.get("code")
     if not isinstance(code, str):
         raise RequestError("실행할 코드 문자열이 필요합니다.")
     if len(code.encode("utf-8")) > 65536:
         raise RequestError("코드 크기가 64 KiB를 초과했습니다.", 413)
+    if lang == "category":
+        return category.verify_and_visualize(file_path, code)
     vm_id = g.workspace["vm_id"]
     runtime.configure_disk(vm_id)
     if lang == "python":
