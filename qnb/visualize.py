@@ -526,7 +526,18 @@ def probe_lean_lsp(vm_id, file_path, document, entries=None):
 
 def collect_lean_visualization(vm_id, file_path, document, *, status, rows, definitions, entries, output, pre_probed=None):
     """Collect Lean 4 tactic-by-tactic goals, proposition computation traces, and 4-stage pipeline."""
-    if pre_probed is not None and not entries:
+    has_live_goals = (
+        pre_probed is not None
+        and not entries
+        and (
+            not pre_probed[1]
+            or any(
+                (v.get("before") is not None or v.get("after") is not None)
+                for v in pre_probed[2].values()
+            )
+        )
+    )
+    if has_live_goals:
         lines, queries, lsp_rows = pre_probed
     else:
         lines, queries, lsp_rows = probe_lean_lsp(vm_id, file_path, document, entries)

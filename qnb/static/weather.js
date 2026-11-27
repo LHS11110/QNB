@@ -564,12 +564,25 @@ window.QNBWeather = (() => {
       $("weather-open").setAttribute("aria-label", description);
       $("weather-open").classList.toggle("active", settings.enabled);
     }
+    if ($("home-weather-icon")) $("home-weather-icon").textContent = settings.enabled ? chip.icon : "☼";
+    if ($("home-weather-label")) {
+      $("home-weather-label").textContent = !settings.enabled
+        ? "날씨"
+        : settings.mode === "auto" && live
+          ? `${live.temp}°`
+          : chip.label;
+    }
+    if ($("home-weather-open")) {
+      $("home-weather-open").title = description + " · 클릭해서 설정";
+      $("home-weather-open").setAttribute("aria-label", description);
+      $("home-weather-open").classList.toggle("active", settings.enabled);
+    }
     populateScene(mainState, weather, innerWidth, innerHeight, settings.intensity, false);
     ensureLoop();
   }
 
   function active() {
-    return Boolean(current()) && document.body.dataset.view === "ide" && !document.hidden;
+    return Boolean(current()) && !document.hidden;
   }
 
   function resize() {
@@ -702,11 +715,13 @@ window.QNBWeather = (() => {
     updatePreviewHeader();
   }
 
-  $("weather-open")?.addEventListener("click", () => {
+  const openWeatherDialog = () => {
     renderDialog();
     $("weather-dialog").showModal();
     ensurePreviewLoop();
-  });
+  };
+  $("weather-open")?.addEventListener("click", openWeatherDialog);
+  $("home-weather-open")?.addEventListener("click", openWeatherDialog);
   $("weather-dialog")?.addEventListener("close", () => {
     hoveredWeather = null;
     ensurePreviewLoop();

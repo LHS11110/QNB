@@ -8,12 +8,29 @@ window.QNBParticles = (() => {
   let chapterPanels = [];
   let hudChapterBtns = [];
 
-  const INK_TONES = [
+  const LIGHT_INK_TONES = [
     { r: 20, g: 20, b: 19 },
     { r: 46, g: 45, b: 42 },
     { r: 94, g: 92, b: 86 },
     { r: 150, g: 146, b: 136 },
   ];
+  const DARK_INK_TONES = [
+    { r: 245, g: 243, b: 238 },
+    { r: 214, g: 210, b: 200 },
+    { r: 164, g: 160, b: 150 },
+    { r: 118, g: 114, b: 106 },
+  ];
+  const WEATHER_ACCENTS = {
+    clear: { r: 245, g: 158, b: 11 },
+    partly: { r: 56, g: 189, b: 248 },
+    cloudy: { r: 148, g: 163, b: 184 },
+    rain: { r: 59, g: 130, b: 246 },
+    snow: { r: 125, g: 211, b: 252 },
+    thunder: { r: 139, g: 92, b: 246 },
+    fog: { r: 148, g: 163, b: 184 },
+    night: { r: 129, g: 140, b: 248 },
+  };
+  const isDarkTheme = () => document.documentElement.dataset.ideTheme === "dark";
 
   const CHAPTER_META = [
     { cxRatio: 0.72, textSide: "left" },
@@ -78,12 +95,17 @@ window.QNBParticles = (() => {
     return width >= 900 ? 2200 : 1050;
   }
 
-  function pickInkTone(rng, darkBias) {
+  function pickInkTone(rng, darkBias, weatherAccent = false) {
+    const wx = document.documentElement.dataset.weather;
+    if (weatherAccent && wx && WEATHER_ACCENTS[wx] && rng() < 0.42) {
+      return WEATHER_ACCENTS[wx];
+    }
+    const tones = isDarkTheme() ? DARK_INK_TONES : LIGHT_INK_TONES;
     const roll = rng();
-    if (roll < darkBias) return INK_TONES[0];
-    if (roll < darkBias + 0.34) return INK_TONES[1];
-    if (roll < darkBias + 0.72) return INK_TONES[2];
-    return INK_TONES[3];
+    if (roll < darkBias) return tones[0];
+    if (roll < darkBias + 0.34) return tones[1];
+    if (roll < darkBias + 0.72) return tones[2];
+    return tones[3];
   }
 
   function getAnchorForChapter(idx) {
@@ -183,11 +205,12 @@ window.QNBParticles = (() => {
           const jy = (rng() - 0.5) * 10;
           const ox = Math.cos(baseAngle) * rx + jx;
           const oy = Math.sin(baseAngle) * ry + jy;
+          const tone = pickInkTone(rng, 0.9, true);
           targets.push({
             x: cx + ox * Math.cos(tilt) - oy * Math.sin(tilt),
             y: cy + ox * Math.sin(tilt) + oy * Math.cos(tilt),
             size: 1.35 + rng() * 0.8,
-            r: 20, g: 20, b: 19, alpha: 0.92,
+            r: tone.r, g: tone.g, b: tone.b, alpha: 0.92,
             role: "orbitDot", cx, cy, angle: baseAngle, rx, ry, tilt, jx, jy,
           });
         } else {
@@ -198,7 +221,7 @@ window.QNBParticles = (() => {
           const tTilt = tier === 0 ? -0.22 : 0.2;
           const ox = Math.cos(a) * rrx;
           const oy = Math.sin(a) * rry;
-          const tone = pickInkTone(rng, tier === 0 ? 0.35 : 0.14);
+          const tone = pickInkTone(rng, tier === 0 ? 0.35 : 0.14, true);
           targets.push({
             x: cx + ox * Math.cos(tTilt) - oy * Math.sin(tTilt),
             y: cy + ox * Math.sin(tTilt) + oy * Math.cos(tTilt),
@@ -211,7 +234,7 @@ window.QNBParticles = (() => {
         const tier = i % 3;
         const a = (i / auxCount) * Math.PI * 2 * 3 + rng() * 0.08;
         const rad = scale * (0.45 + tier * 0.115) + (rng() - 0.5) * 7;
-        const tone = pickInkTone(rng, tier === 0 ? 0.5 : 0.18);
+        const tone = pickInkTone(rng, tier === 0 ? 0.5 : 0.18, true);
         targets.push({
           x: cx + Math.cos(a) * rad, y: cy + Math.sin(a) * rad * 0.88,
           size: 0.85 + rng() * 0.95, r: tone.r, g: tone.g, b: tone.b, alpha: 0.72 - tier * 0.14,
@@ -220,9 +243,10 @@ window.QNBParticles = (() => {
       } else {
         const a = rng() * Math.PI * 2;
         const rad = scale * (0.5 + rng() * 0.34);
+        const tone = pickInkTone(rng, 0.12, true);
         targets.push({
           x: cx + Math.cos(a) * rad, y: cy + Math.sin(a) * rad * 0.72,
-          size: 0.75 + rng() * 0.7, r: 150, g: 146, b: 136, alpha: 0.32, role: "ambient",
+          size: 0.75 + rng() * 0.7, r: tone.r, g: tone.g, b: tone.b, alpha: 0.32, role: "ambient",
         });
       }
     }
@@ -232,7 +256,7 @@ window.QNBParticles = (() => {
   function samplePentagonGraphShape(count, anchor, seed) {
     const rng = mulberry32(seed);
     const { cx, cy, scale } = anchor;
-    const labels = ["OPEN", "STAGE", "CRDT", "SAVE", "0→FLUSH"];
+    const labels = ["LINE", "STACK", "HEAP", "GRAPH", "FLOW"];
     const ringR = scale * 0.38;
     const nodeR = Math.max(14, Math.min(24, scale * 0.064));
     const nodes = [];
@@ -274,7 +298,7 @@ window.QNBParticles = (() => {
       const p2 = { x: eN.x, y: eN.y + nodeR * 0.8 };
       const fT = i / feedbackCount;
       const inv = 1 - fT;
-      const tone = outer ? INK_TONES[1] : INK_TONES[2];
+      const tone = pickInkTone(rng, outer ? 0.45 : 0.2, true);
       targets.push({
         x: inv * inv * p0.x + 2 * inv * fT * p1.x + fT * fT * p2.x,
         y: inv * inv * p0.y + 2 * inv * fT * p1.y + fT * fT * p2.y,
@@ -282,7 +306,8 @@ window.QNBParticles = (() => {
       });
     }
     while (targets.length < count) {
-      targets.push({ x: cx + (rng() - 0.5) * scale * 1.15, y: cy + (rng() - 0.5) * scale * 0.92, size: 0.75 + rng() * 0.65, r: 150, g: 146, b: 136, alpha: 0.28, role: "ambient" });
+      const tone = pickInkTone(rng, 0.1, true);
+      targets.push({ x: cx + (rng() - 0.5) * scale * 1.15, y: cy + (rng() - 0.5) * scale * 0.92, size: 0.75 + rng() * 0.65, r: tone.r, g: tone.g, b: tone.b, alpha: 0.28, role: "ambient" });
     }
     return sortCohesively(targets, anchor, seed + 17);
   }
@@ -327,7 +352,7 @@ window.QNBParticles = (() => {
       const x = dbCx + rp * rx + (rng() - 0.5) * 1.5;
       const yOff = Math.sqrt(Math.max(0, 1 - rp * rp)) * ry;
       const y = topY + yOff + rng() * cylH;
-      const tone = isOuter ? INK_TONES[0] : INK_TONES[2];
+      const tone = pickInkTone(rng, isOuter ? 0.9 : 0.2);
       targets.push({ x, y, size: isOuter ? 1.2 : 0.85, r: tone.r, g: tone.g, b: tone.b, alpha: isOuter ? 0.86 : 0.52, role: "shape" });
     }
     const bx = cx + scale * 0.27;
@@ -350,10 +375,12 @@ window.QNBParticles = (() => {
         x = bx - br * 0.1 + f * br * 0.54;
         y = by + br * 0.3 - f * br * 0.58;
       }
-      targets.push({ x, y, size: 1.1 + rng() * 0.75, r: 20, g: 20, b: 19, alpha: 0.9, role: "shape" });
+      const tone = pickInkTone(rng, 0.95, true);
+      targets.push({ x, y, size: 1.1 + rng() * 0.75, r: tone.r, g: tone.g, b: tone.b, alpha: 0.9, role: "shape" });
     }
     while (targets.length < count) {
-      targets.push({ x: cx + (rng() - 0.5) * scale * 1.18, y: cy + (rng() - 0.5) * scale * 0.84, size: 0.75 + rng() * 0.65, r: 150, g: 146, b: 136, alpha: 0.28, role: "ambient" });
+      const tone = pickInkTone(rng, 0.1, true);
+      targets.push({ x: cx + (rng() - 0.5) * scale * 1.18, y: cy + (rng() - 0.5) * scale * 0.84, size: 0.75 + rng() * 0.65, r: tone.r, g: tone.g, b: tone.b, alpha: 0.28, role: "ambient" });
     }
     return sortCohesively(targets, anchor, seed + 17);
   }
@@ -378,7 +405,7 @@ window.QNBParticles = (() => {
       const b = verts[(seg + 1) % 6];
       const f = rng();
       const inner = i % 4 === 0 ? 0.88 : 1.0;
-      const tone = inner === 1.0 ? pickInkTone(rng, 0.7) : INK_TONES[2];
+      const tone = pickInkTone(rng, inner === 1.0 ? 0.7 : 0.2);
       targets.push({
         x: cx + (lerp(a.x, b.x, f) - cx) * inner,
         y: cy + (lerp(a.y, b.y, f) - cy) * inner,
@@ -399,18 +426,21 @@ window.QNBParticles = (() => {
         const nd = allNodes[i % allNodes.length];
         const a = rng() * Math.PI * 2;
         const r = rng() * 8.5;
-        targets.push({ x: nd.x + Math.cos(a) * r, y: nd.y + Math.sin(a) * r, size: 1.3, r: 20, g: 20, b: 19, alpha: 0.9, role: "shape" });
+        const tone = pickInkTone(rng, 0.9, true);
+        targets.push({ x: nd.x + Math.cos(a) * r, y: nd.y + Math.sin(a) * r, size: 1.3, r: tone.r, g: tone.g, b: tone.b, alpha: 0.9, role: "shape" });
       } else {
         const br = edges[i % edges.length];
         const f = rng();
-        targets.push({ x: lerp(br[0].x, br[1].x, f), y: lerp(br[0].y, br[1].y, f), size: 0.95, r: 72, g: 70, b: 64, alpha: 0.76, role: "shape" });
+        const tone = pickInkTone(rng, 0.45);
+        targets.push({ x: lerp(br[0].x, br[1].x, f), y: lerp(br[0].y, br[1].y, f), size: 0.95, r: tone.r, g: tone.g, b: tone.b, alpha: 0.76, role: "shape" });
       }
     }
     while (targets.length < count) {
       const v = verts[targets.length % 6];
       const a = rng() * Math.PI * 2;
       const r = 8 + rng() * 24;
-      targets.push({ x: v.x + Math.cos(a) * r, y: v.y + Math.sin(a) * r, size: 0.75, r: 150, g: 146, b: 136, alpha: 0.28, role: "ambient" });
+      const tone = pickInkTone(rng, 0.1, true);
+      targets.push({ x: v.x + Math.cos(a) * r, y: v.y + Math.sin(a) * r, size: 0.75, r: tone.r, g: tone.g, b: tone.b, alpha: 0.28, role: "ambient" });
     }
     return sortCohesively(targets, anchor, seed + 17);
   }
@@ -428,19 +458,21 @@ window.QNBParticles = (() => {
       const tier = i % 3;
       const a = (i / ringCount) * Math.PI * 2 * 3;
       const rad = outerR * (0.6 + tier * 0.2);
-      const tone = pickInkTone(rng, tier === 2 ? 0.56 : 0.24);
+      const tone = pickInkTone(rng, tier === 2 ? 0.56 : 0.24, true);
       targets.push({ x: cx + Math.cos(a) * rad, y: cy + Math.sin(a) * rad, size: 0.85 + rng() * 0.85, r: tone.r, g: tone.g, b: tone.b, alpha: 0.74 - (2 - tier) * 0.14, role: "radarRing", cx, cy, angle: a, rx: rad, ry: rad, tier });
     }
     const tickCount = Math.floor(count * 0.14);
     for (let i = 0; i < tickCount; i++) {
       const ang = ((i % 4) * Math.PI) / 2;
       const rad = outerR * (0.92 + rng() * 0.24);
-      targets.push({ x: cx + Math.cos(ang) * rad + (rng() - 0.5) * 2.0, y: cy + Math.sin(ang) * rad + (rng() - 0.5) * 2.0, size: 1.05, r: 20, g: 20, b: 19, alpha: 0.82, role: "shape" });
+      const tone = pickInkTone(rng, 0.9);
+      targets.push({ x: cx + Math.cos(ang) * rad + (rng() - 0.5) * 2.0, y: cy + Math.sin(ang) * rad + (rng() - 0.5) * 2.0, size: 1.05, r: tone.r, g: tone.g, b: tone.b, alpha: 0.82, role: "shape" });
     }
     while (targets.length < count) {
       const a = rng() * Math.PI * 2;
       const rad = outerR * (1.06 + rng() * 0.28);
-      targets.push({ x: cx + Math.cos(a) * rad, y: cy + Math.sin(a) * rad, size: 0.75, r: 150, g: 146, b: 136, alpha: 0.26, role: "ambient" });
+      const tone = pickInkTone(rng, 0.1, true);
+      targets.push({ x: cx + Math.cos(a) * rad, y: cy + Math.sin(a) * rad, size: 0.75, r: tone.r, g: tone.g, b: tone.b, alpha: 0.26, role: "ambient" });
     }
     return sortCohesively(targets, anchor, seed + 17);
   }
@@ -604,13 +636,14 @@ window.QNBParticles = (() => {
 
     if (washEl) {
       if (vw >= 900 && !focusView) {
+        const wRgb = isDarkTheme() ? "20,20,19" : "250,249,246";
         const cosV = Math.cos(clamp(smoothedP, 0, 5) * Math.PI);
         const leftW = Math.max(0, cosV) * chapterVisMult;
         const rightW = Math.max(0, -cosV) * chapterVisMult;
         if (leftW > 0.02) {
-          washEl.style.background = `linear-gradient(90deg, rgba(250,249,246,${(0.92 * leftW).toFixed(2)}) 0%, rgba(250,249,246,${(0.56 * leftW).toFixed(2)}) 40%, rgba(250,249,246,0) 62%)`;
+          washEl.style.background = `linear-gradient(90deg, rgba(${wRgb},${(0.92 * leftW).toFixed(2)}) 0%, rgba(${wRgb},${(0.56 * leftW).toFixed(2)}) 40%, rgba(${wRgb},0) 62%)`;
         } else if (rightW > 0.02) {
-          washEl.style.background = `linear-gradient(270deg, rgba(250,249,246,${(0.92 * rightW).toFixed(2)}) 0%, rgba(250,249,246,${(0.56 * rightW).toFixed(2)}) 40%, rgba(250,249,246,0) 62%)`;
+          washEl.style.background = `linear-gradient(270deg, rgba(${wRgb},${(0.92 * rightW).toFixed(2)}) 0%, rgba(${wRgb},${(0.56 * rightW).toFixed(2)}) 40%, rgba(${wRgb},0) 62%)`;
         } else {
           washEl.style.background = "none";
         }
@@ -670,19 +703,20 @@ window.QNBParticles = (() => {
     for (const d of dustSpecks) {
       d.x = (d.x + d.vx + dirSign * Math.abs(pDiff) * 24 + scatterDirX * scatterGust * 3.2 + vw) % vw;
       d.y = (d.y + d.vy - scrollVel * 0.13 + Math.sin(tSec + d.phase) * 0.18 + vh) % vh;
-      ctx.fillStyle = `rgba(92, 90, 84, ${d.alpha})`;
+      ctx.fillStyle = isDarkTheme() ? `rgba(210, 206, 196, ${d.alpha})` : `rgba(92, 90, 84, ${d.alpha})`;
       ctx.beginPath();
       ctx.arc(d.x, d.y, d.size, 0, Math.PI * 2);
       ctx.fill();
     }
 
     if (customBlend < 0.25) {
+      const fgRgb = isDarkTheme() ? "245, 243, 238" : "20, 20, 19";
       const cFade = 1 - customBlend * 4;
       const chFade = 1 - smoothstep(0.02, 0.45, labBlend);
       const graphVis = clamp(1 - Math.abs(smoothedP - 2) * 2.4, 0, 1) * chFade * cFade;
       if (graphVis > 0.02 && geoGraphNodes.length === 5) {
         ctx.save();
-        ctx.strokeStyle = `rgba(20, 20, 19, ${(0.14 * graphVis).toFixed(3)})`;
+        ctx.strokeStyle = `rgba(${fgRgb}, ${(0.14 * graphVis).toFixed(3)})`;
         ctx.lineWidth = 1;
         ctx.setLineDash([3, 4]);
         for (let i = 0; i < 5; i++) {
@@ -696,7 +730,7 @@ window.QNBParticles = (() => {
         ctx.setLineDash([]);
         ctx.font = "600 9.5px ui-monospace, SFMono-Regular, Menlo, monospace";
         ctx.textAlign = "center";
-        ctx.fillStyle = `rgba(20, 20, 19, ${(0.72 * graphVis).toFixed(3)})`;
+        ctx.fillStyle = `rgba(${fgRgb}, ${(0.72 * graphVis).toFixed(3)})`;
         for (const nd of geoGraphNodes) ctx.fillText(nd.label, nd.x, nd.y - nd.r - 9);
         ctx.restore();
       }
@@ -705,8 +739,8 @@ window.QNBParticles = (() => {
         ctx.save();
         const sweep = tSec * 1.15;
         const g = ctx.createRadialGradient(geoRadar.cx, geoRadar.cy, 8, geoRadar.cx, geoRadar.cy, geoRadar.r);
-        g.addColorStop(0, "rgba(20, 20, 19, 0)");
-        g.addColorStop(1, `rgba(20, 20, 19, ${(0.11 * radarVis).toFixed(3)})`);
+        g.addColorStop(0, `rgba(${fgRgb}, 0)`);
+        g.addColorStop(1, `rgba(${fgRgb}, ${(0.11 * radarVis).toFixed(3)})`);
         ctx.fillStyle = g;
         ctx.beginPath();
         ctx.moveTo(geoRadar.cx, geoRadar.cy);
@@ -1033,8 +1067,8 @@ window.QNBParticles = (() => {
         vb.textContent = astBug ? "▲ UNSOLVED GOAL" : "✓ QED · DB 저장됨";
         vn.textContent = astBug ? "succ 사례 목표 k.succ = k + 1 미해결" : "모든 전술 목표 완료 · 정리 DB 저장 완료";
         jv.innerHTML = astBug
-          ? `<div class="alert-striped" style="padding:12px;"><strong>case succ</strong><br>k : Nat<br>ih : 0 + k = k<br>⊢ Nat.succ (0 + k) = Nat.succ k</div>`
-          : `<div class="sub-surface" style="padding:12px;background:#fff;"><strong>✓ no goals</strong> — 모든 하위 목표가 <code>rw [ih]</code>로 닫혔습니다.</div>`;
+          ? `<div class="alert-striped" style="padding:12px;"><strong>case succ</strong><br>k : Nat<br>ih : 0 + k = k<br>⊢ 0 + (k + 1) = k + 1</div><div class="sub-surface" style="padding:10px 12px;"><strong>🧮 명제 계산 (미적용)</strong><br>전술 <code>rw [Nat.add_succ]</code> 적용 전 — <code>0 + (k + 1)</code> 축약 대기</div>`
+          : `<div class="sub-surface" style="padding:12px;background:var(--surface-paper);"><strong>✓ no goals</strong> — 모든 하위 목표가 <code>rw [ih]</code>로 닫혔습니다.</div><div class="sub-surface" style="padding:10px 12px;background:var(--surface-paper);"><strong>🧮 명제 계산 (Nat.add_succ)</strong><br><code>0 + (k + 1)</code> → <code>(0 + k).succ</code> → <code>ih</code> 치환 → <code>k + 1 = k + 1</code> (Q.E.D.)</div>`;
       }
     }
     document.getElementById("sem-btn-ok")?.addEventListener("click", () => { astBug = false; document.getElementById("sem-btn-ok").classList.add("active"); document.getElementById("sem-btn-bug")?.classList.remove("active"); renderAst(); });
@@ -1137,7 +1171,97 @@ window.QNBParticles = (() => {
       msg.textContent = ux.locked ? "✓ locked_by_user=true — 스타일이 안전하게 유지됩니다." : "▲ 잠금 해제됨 — 기본 스타일로 재설정 가능합니다.";
     });
     renderUx();
+
+    // Tab 5: Category Theory + Polyglot Stepper Interactive Demos
+    let catDemoMode = "nat";
+    function renderCatDemo() {
+      const diag = document.getElementById("cat-demo-diagram");
+      const code = document.getElementById("cat-demo-code");
+      const calc = document.getElementById("cat-demo-calc");
+      if (!diag || !code || !calc) return;
+      if (catDemoMode === "nat") {
+        diag.innerHTML = `<svg class="demo-quiver-svg" viewBox="0 0 360 120" aria-label="Naturality square diagram">
+          <defs><marker id="qarr" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" fill="currentColor"/></marker></defs>
+          <circle cx="65" cy="28" r="16" class="dq-node"/><text x="65" y="32">F(A)</text>
+          <circle cx="295" cy="28" r="16" class="dq-node"/><text x="295" y="32">G(A)</text>
+          <circle cx="65" cy="92" r="16" class="dq-node"/><text x="65" y="96">F(B)</text>
+          <circle cx="295" cy="92" r="16" class="dq-node"/><text x="295" y="96">G(B)</text>
+          <line x1="83" y1="28" x2="275" y2="28" class="dq-edge active" marker-end="url(#qarr)"/>
+          <line x1="65" y1="46" x2="65" y2="73" class="dq-edge" marker-end="url(#qarr)"/>
+          <line x1="295" y1="46" x2="295" y2="73" class="dq-edge active" marker-end="url(#qarr)"/>
+          <line x1="83" y1="92" x2="275" y2="92" class="dq-edge" marker-end="url(#qarr)"/>
+          <text x="180" y="18" class="dq-lbl active">α(A)</text>
+          <text x="41" y="62" class="dq-lbl">F(f)</text>
+          <text x="319" y="62" class="dq-lbl active">G(f)</text>
+          <text x="180" y="108" class="dq-lbl">α(B)</text>
+        </svg>`;
+        code.textContent = "category C, D\nobject A, B : C\nmorphism f : A -> B\nfunctor F, G : C -> D\nnat alpha : F => G\ntheorem nat_sq : G(f) ∘ alpha(A) = alpha(B) ∘ F(f) by\n  naturality alpha\n  rfl";
+        calc.innerHTML = `<span class="badge badge-pass">✓ 가환 증명 완료</span><code>G(f) ∘ α(A) → α(B) ∘ F(f) (Naturality Square)</code>`;
+      } else {
+        diag.innerHTML = `<svg class="demo-quiver-svg" viewBox="0 0 360 120" aria-label="Adjunction zig-zag triangle diagram">
+          <defs><marker id="qarr2" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" fill="currentColor"/></marker></defs>
+          <circle cx="58" cy="30" r="17" class="dq-node"/><text x="58" y="34">F(A)</text>
+          <circle cx="180" cy="88" r="22" class="dq-node"/><text x="180" y="92">FGF(A)</text>
+          <circle cx="302" cy="30" r="17" class="dq-node"/><text x="302" y="34">F(A)</text>
+          <line x1="75" y1="30" x2="280" y2="30" class="dq-edge" marker-end="url(#qarr2)"/>
+          <line x1="72" y1="42" x2="159" y2="79" class="dq-edge active" marker-end="url(#qarr2)"/>
+          <line x1="201" y1="79" x2="288" y2="42" class="dq-edge active" marker-end="url(#qarr2)"/>
+          <text x="180" y="20" class="dq-lbl">id(F(A))</text>
+          <text x="95" y="74" class="dq-lbl active">F(η(A))</text>
+          <text x="266" y="74" class="dq-lbl active">ε(F(A))</text>
+        </svg>`;
+        code.textContent = "category C, D\nobject A : C\nadjunction F -| G : C <-> D\ntheorem zig_law : eps(F(A)) ∘ F(eta(A)) = id(F(A)) by\n  zig\n  rfl";
+        calc.innerHTML = `<span class="badge badge-pass">✓ 삼각 항등식 완료</span><code>ε(F(A)) ∘ F(η(A)) → id(F(A)) (F ⊣ G Adjunction)</code>`;
+      }
+    }
+    document.getElementById("cat-demo-nat")?.addEventListener("click", () => {
+      catDemoMode = "nat";
+      document.getElementById("cat-demo-nat")?.classList.add("active");
+      document.getElementById("cat-demo-adj")?.classList.remove("active");
+      renderCatDemo();
+    });
+    document.getElementById("cat-demo-adj")?.addEventListener("click", () => {
+      catDemoMode = "adj";
+      document.getElementById("cat-demo-adj")?.classList.add("active");
+      document.getElementById("cat-demo-nat")?.classList.remove("active");
+      renderCatDemo();
+    });
+    renderCatDemo();
+
+    let dbgDemoMode = "py";
+    function renderDbgDemo() {
+      const code = document.getElementById("dbg-demo-code");
+      const st = document.getElementById("dbg-demo-state");
+      if (!code || !st) return;
+      if (dbgDemoMode === "py") {
+        code.innerHTML = `def step_orbit(x, y, vx, vy, dt):\n    r2 = x*x + y*y\n<span class="code-line-ok">    ax = -x / (r2 ** 1.5)   # 3행 실행 중</span>\n    return x + vx*dt, y + vy*dt`;
+        st.innerHTML = `<div class="demo-dbg-row"><strong>스택</strong><code>step_orbit() · 3행 (sys.settrace)</code></div><div class="demo-dbg-row"><strong>변수 델타</strong><span class="badge badge-pass">Δ ax = -0.354</span> <span class="badge badge-neutral">r2 = 2.0</span></div><div class="demo-dbg-row"><strong>자료구조 힙</strong><code>trail : list#1 (len 12) → [(1.0, 0.0), …]</code></div>`;
+      } else if (dbgDemoMode === "cpp") {
+        code.innerHTML = `auto dijkstra(WeightedGraph&amp; g, int s) {\n  std::vector&lt;int&gt; dist(g.n, INF);\n<span class="code-line-ok">  dist[s] = 0; pq.push({0, s});  // GDB step</span>\n  return dist;\n}`;
+        st.innerHTML = `<div class="demo-dbg-row"><strong>디버거</strong><code>g++ -g -O0 · GDB MI (4행 멈춤)</code></div><div class="demo-dbg-row"><strong>포인터 · 델타</strong><span class="badge badge-pass">ptr → g#1</span> <span class="badge badge-neutral">dist[0] = 0</span></div><div class="demo-dbg-row"><strong>힙/컨테이너</strong><code>std::vector&lt;int&gt; [0, INF, INF, INF] · map{node_3: 5}</code></div>`;
+      } else {
+        code.innerHTML = `static TreeNode insert(TreeNode root, int k) {\n  if (root == null) return new TreeNode(k);\n<span class="code-line-ok">  if (k &lt; root.key) root.left = insert(root.left, k);</span>\n  return root;\n}`;
+        st.innerHTML = `<div class="demo-dbg-row"><strong>디버거</strong><code>javac -g · JDI StepEvent (3행 재귀)</code></div><div class="demo-dbg-row"><strong>객체 참조</strong><span class="badge badge-pass">root = TreeNode#4</span> <span class="badge badge-neutral">key = 5 → left</span></div><div class="demo-dbg-row"><strong>힙 트리</strong><code>TreeNode#2 {key:10, left:TreeNode#4, right:TreeNode#6}</code></div>`;
+      }
+    }
+    [["dbg-demo-py", "py"], ["dbg-demo-cpp", "cpp"], ["dbg-demo-java", "java"]].forEach(([id, mode]) => {
+      document.getElementById(id)?.addEventListener("click", () => {
+        dbgDemoMode = mode;
+        ["dbg-demo-py", "dbg-demo-cpp", "dbg-demo-java"].forEach((k) => {
+          document.getElementById(k)?.classList.toggle("active", k === id);
+        });
+        renderDbgDemo();
+      });
+    });
+    renderDbgDemo();
   }
+
+  function refreshTheme() {
+    if (sandParticles.length) precomputeAllShapes();
+  }
+
+  new MutationObserver(() => refreshTheme())
+    .observe(document.documentElement, { attributes: true, attributeFilter: ["data-ide-theme", "data-weather"] });
 
   function start() {
     canvas = document.getElementById("sand-canvas");
@@ -1166,5 +1290,5 @@ window.QNBParticles = (() => {
     }
   }
 
-  return { start, stop };
+  return { start, stop, refreshTheme };
 })();

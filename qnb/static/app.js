@@ -37,11 +37,13 @@ function applyTheme(theme) {
   } catch {
     // Ignore storage errors in restricted contexts.
   }
-  const toggle = $("theme-toggle");
-  if (toggle) {
-    toggle.setAttribute("aria-pressed", String(normalized === "dark"));
-    toggle.title = normalized === "dark" ? "라이트 테마로 전환" : "다크 테마로 전환";
-    toggle.setAttribute("aria-label", toggle.title);
+  for (const id of ["theme-toggle", "home-theme-toggle"]) {
+    const toggle = $(id);
+    if (toggle) {
+      toggle.setAttribute("aria-pressed", String(normalized === "dark"));
+      toggle.title = normalized === "dark" ? "라이트 테마로 전환" : "다크 테마로 전환";
+      toggle.setAttribute("aria-label", toggle.title);
+    }
   }
   if (ideInitialized && !standaloneProofPage) {
     renderWorkbench();
@@ -49,6 +51,7 @@ function applyTheme(theme) {
   if (graphVisible && graphMode === "proof") {
     proofGraph?.draw();
   }
+  window.QNBParticles?.refreshTheme?.();
 }
 
 applyTheme((() => {
@@ -621,9 +624,10 @@ function showView(view) {
   $("home-nav").hidden = !isHome;
   $("ide-header-controls").hidden = !isIDE || standaloneProofPage;
   if (!isIDE || standaloneProofPage) $("channels-panel").hidden = true;
-  $("theme-toggle").hidden = !isIDE;
+  $("theme-toggle").hidden = false;
   $("layout-controls").hidden = !isIDE || standaloneProofPage;
-  $("ide-tools").hidden = !isIDE;
+  $("ide-tools").hidden = false;
+  if ($("mascot-toggle")) $("mascot-toggle").hidden = !isIDE || standaloneProofPage;
 
   const loggedIn = Boolean(currentSession.email);
   const label = $("account-label");
@@ -1017,6 +1021,7 @@ $("logout").onclick = async () => {
 };
 
 $("theme-toggle").onclick = () => applyTheme(currentTheme() === "dark" ? "light" : "dark");
+$("home-theme-toggle")?.addEventListener("click", () => applyTheme(currentTheme() === "dark" ? "light" : "dark"));
 
 document.addEventListener("keydown", (event) => {
   if (document.body.dataset.view !== "ide" || !(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "b") return;
