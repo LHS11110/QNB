@@ -1,0 +1,4246 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GraphSpec — 자율 그래프 주도 개발(AGDD) & RDB 토큰 최적화 플랫폼</title>
+  <style>
+    /* =========================================================================
+       1. WISPR FLOW INSPIRED WARM MONOCHROME PAPER & INK DESIGN SYSTEM
+          Zero external dependencies · Strict single-tone monochrome palette
+       ========================================================================= */
+    :root {
+      --paper: #FAF9F6;
+      --paper-rgb: 250, 249, 246;
+      --surface: #FFFFFF;
+      --stone: #F2EFE9;
+      --stone-deep: #EAE6DE;
+      --ink: #141413;
+      --ink-soft: #2E2D2A;
+      --graphite: #5C5A54;
+      --ash: #8C8980;
+
+      --border-hair: rgba(20, 20, 19, 0.09);
+      --border-mid: rgba(20, 20, 19, 0.16);
+      --border-strong: rgba(20, 20, 19, 0.32);
+      --shadow-card: 0 12px 36px rgba(20, 20, 19, 0.045);
+      --shadow-float: 0 18px 44px rgba(20, 20, 19, 0.09);
+
+      /* Editorial Serif Display vs Clean Sans UI vs Monospace */
+      --font-serif: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", "Nanum Myeongjo", "AppleMyungjo", Georgia, serif;
+      --font-sans: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Malgun Gothic", "Segoe UI", Roboto, sans-serif;
+      --font-mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
+
+      --radius-sm: 10px;
+      --radius-md: 16px;
+      --radius-lg: 24px;
+      --radius-xl: 32px;
+      --radius-pill: 999px;
+    }
+
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    html {
+      background-color: var(--paper);
+      color: var(--ink);
+      font-family: var(--font-sans);
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      scroll-behavior: smooth;
+    }
+
+    body {
+      background-color: var(--paper);
+      color: var(--ink);
+      min-height: 100vh;
+      overflow-x: hidden;
+      line-height: 1.6;
+    }
+
+    button, input {
+      font-family: inherit;
+      color: inherit;
+    }
+
+    button {
+      cursor: pointer;
+      border: none;
+      background: transparent;
+    }
+
+    a {
+      color: inherit;
+      text-decoration: none;
+    }
+
+    code, pre, .mono {
+      font-family: var(--font-mono);
+    }
+
+    .serif {
+      font-family: var(--font-serif);
+      font-weight: 400;
+      letter-spacing: -0.025em;
+    }
+
+    /* Subtle paper grain & hairline architectural background */
+    .paper-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 0;
+      pointer-events: none;
+      background-image:
+        radial-gradient(ellipse 68% 58% at 50% 42%, rgba(20, 20, 19, 0.022), transparent 72%),
+        linear-gradient(to right, rgba(20, 20, 19, 0.025) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(20, 20, 19, 0.025) 1px, transparent 1px);
+      background-size: 100% 100%, 88px 88px, 88px 88px;
+    }
+
+    /* Full-Viewport Fixed Ink-Sand Particle Canvas */
+    #sand-canvas {
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 1;
+      pointer-events: none;
+      display: block;
+      transition: opacity 0.45s ease;
+    }
+
+    body.in-below:not(.focus-view) #sand-canvas {
+      opacity: 0.42;
+    }
+
+    /* Directional soft paper wash behind active editorial text for razor-sharp contrast */
+    #stage-wash {
+      position: fixed;
+      inset: 0;
+      z-index: 4;
+      pointer-events: none;
+      transition: opacity 0.4s ease;
+    }
+
+    body.focus-view #stage-wash {
+      opacity: 0;
+    }
+
+    /* Focus view ("입자 집중") smoothly fades chrome & editorial cards */
+    body.focus-view #fixed-stage,
+    body.focus-view #below-fold,
+    body.focus-view #top-chrome {
+      opacity: 0.04;
+      pointer-events: none;
+    }
+
+    #focus-exit-pill {
+      position: fixed;
+      top: 20px;
+      left: 50%;
+      transform: translate(-50%, -18px);
+      z-index: 70;
+      padding: 9px 20px;
+      border-radius: var(--radius-pill);
+      background: var(--ink);
+      color: var(--paper);
+      font-family: var(--font-mono);
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.03em;
+      box-shadow: var(--shadow-float);
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+      transition: all 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+    }
+
+    body.focus-view #focus-exit-pill {
+      opacity: 1;
+      visibility: visible;
+      pointer-events: auto;
+      transform: translate(-50%, 0);
+    }
+
+    /* =========================================================================
+       2. WISPR FLOW CHROME: ANNOUNCEMENT BAR + FROSTED IVORY STICKY NAV
+       ========================================================================= */
+    #top-chrome {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 45;
+      transition: opacity 0.35s ease;
+    }
+
+    /* 34px Deep-Ink Announcement Bar */
+    .announce-bar {
+      height: 34px;
+      background: var(--ink);
+      color: var(--paper);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      padding: 0 16px;
+      font-size: 12px;
+      letter-spacing: -0.005em;
+    }
+
+    .announce-text {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      opacity: 0.92;
+    }
+
+    .announce-link {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      padding: 2px 9px;
+      border-radius: var(--radius-pill);
+      border: 1px solid rgba(250, 249, 246, 0.28);
+      color: var(--paper);
+      white-space: nowrap;
+      flex-shrink: 0;
+      transition: background 0.2s ease, color 0.2s ease;
+    }
+
+    .announce-link:hover {
+      background: var(--paper);
+      color: var(--ink);
+    }
+
+    /* Frosted Ivory Navigation Bar */
+    .main-nav {
+      height: 60px;
+      background: rgba(var(--paper-rgb), 0.86);
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+      border-bottom: 1px solid var(--border-hair);
+    }
+
+    .nav-inner {
+      max-width: 1280px;
+      height: 100%;
+      margin: 0 auto;
+      padding: 0 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+
+    .nav-left {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .brand-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+    }
+
+    .brand-wordmark {
+      font-family: var(--font-serif);
+      font-size: 20px;
+      font-weight: 400;
+      letter-spacing: -0.025em;
+      color: var(--ink);
+    }
+
+    .nav-divider {
+      width: 1px;
+      height: 18px;
+      background: var(--border-mid);
+    }
+
+    .nav-mode-tags {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--graphite);
+    }
+
+    .nav-mode-tag {
+      padding: 3px 8px;
+      border-radius: var(--radius-pill);
+      background: var(--stone);
+      border: 1px solid var(--border-hair);
+    }
+
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 24px;
+      font-size: 13.5px;
+      font-weight: 500;
+      color: var(--graphite);
+    }
+
+    .nav-links a:hover {
+      color: var(--ink);
+    }
+
+    .nav-right {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    #nav-morph-pill {
+      padding: 5px 12px;
+      border-radius: var(--radius-pill);
+      border: 1px solid var(--border-mid);
+      background: rgba(255, 255, 255, 0.72);
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--ink);
+      font-variant-numeric: tabular-nums;
+      min-width: 132px;
+      text-align: center;
+      white-space: nowrap;
+    }
+
+    .nav-progress-line {
+      height: 1.5px;
+      width: 100%;
+      background: rgba(20, 20, 19, 0.06);
+    }
+
+    #nav-progress-fill {
+      height: 100%;
+      width: 0%;
+      background: var(--ink);
+      transition: width 0.08s linear;
+    }
+
+    /* =========================================================================
+       3. MONOCHROME UI PRIMITIVES (BUTTONS, PILLS, BADGES, ALERTS)
+       ========================================================================= */
+    .btn-ink-pill {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      padding: 10px 20px;
+      border-radius: var(--radius-pill);
+      background: var(--ink);
+      color: var(--paper);
+      font-size: 13.5px;
+      font-weight: 600;
+      border: 1px solid var(--ink);
+      transition: transform 0.16s ease, background 0.2s ease, opacity 0.2s ease;
+      white-space: nowrap;
+    }
+
+    .btn-ink-pill:hover {
+      background: #2B2B28;
+      transform: translateY(-1px);
+    }
+
+    .btn-ink-pill:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    .btn-hair-pill {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      padding: 9px 18px;
+      border-radius: var(--radius-pill);
+      background: rgba(255, 255, 255, 0.78);
+      color: var(--ink);
+      font-size: 13px;
+      font-weight: 500;
+      border: 1px solid var(--border-mid);
+      transition: background 0.2s ease, border-color 0.2s ease, transform 0.16s ease;
+      white-space: nowrap;
+    }
+
+    .btn-hair-pill:hover {
+      background: var(--surface);
+      border-color: var(--border-strong);
+      transform: translateY(-1px);
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 4px 10px;
+      border-radius: var(--radius-pill);
+      font-family: var(--font-mono);
+      font-size: 11px;
+      line-height: 1.25;
+      white-space: nowrap;
+      transition: all 0.2s ease;
+    }
+
+    /* Strict Monochrome Status Encodings */
+    .badge-pass {
+      background: var(--ink);
+      color: var(--paper);
+      border: 1px solid var(--ink);
+      font-weight: 600;
+    }
+
+    .badge-neutral {
+      background: transparent;
+      color: var(--graphite);
+      border: 1px solid var(--border-mid);
+      font-weight: 500;
+    }
+
+    .badge-reject {
+      background: var(--stone);
+      color: var(--ash);
+      border: 1px dashed rgba(20, 20, 19, 0.28);
+      text-decoration: line-through;
+    }
+
+    .badge-warn {
+      background-color: var(--stone);
+      background-image: repeating-linear-gradient(
+        -45deg,
+        rgba(20, 20, 19, 0.085) 0px,
+        rgba(20, 20, 19, 0.085) 4px,
+        transparent 4px,
+        transparent 8px
+      );
+      color: var(--ink);
+      border: 1px dashed rgba(20, 20, 19, 0.56);
+      font-weight: 700;
+    }
+
+    .card-white {
+      background: var(--surface);
+      border: 1px solid var(--border-hair);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-card);
+    }
+
+    .card-stone {
+      background: var(--stone);
+      border: 1px solid var(--border-hair);
+      border-radius: var(--radius-lg);
+    }
+
+    .alert-striped {
+      background-color: var(--stone);
+      background-image: repeating-linear-gradient(
+        -45deg,
+        rgba(20, 20, 19, 0.055) 0px,
+        rgba(20, 20, 19, 0.055) 6px,
+        transparent 6px,
+        transparent 12px
+      );
+      border: 1px dashed rgba(20, 20, 19, 0.48);
+      border-radius: var(--radius-md);
+    }
+
+    /* Monochrome range sliders */
+    input[type="range"].ink-slider {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 100%;
+      height: 4px;
+      border-radius: 999px;
+      background: rgba(20, 20, 19, 0.16);
+      outline: none;
+    }
+
+    input[type="range"].ink-slider::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: var(--ink);
+      border: 2px solid var(--paper);
+      box-shadow: 0 0 0 1px rgba(20, 20, 19, 0.45);
+      cursor: pointer;
+    }
+
+    input[type="range"].ink-slider::-moz-range-thumb {
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: var(--ink);
+      border: 2px solid var(--paper);
+      box-shadow: 0 0 0 1px rgba(20, 20, 19, 0.45);
+      cursor: pointer;
+    }
+
+    @keyframes subtlePulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.35; }
+    }
+    .pulse-ink {
+      animation: subtlePulse 1.8s ease-in-out infinite;
+    }
+
+    /* =========================================================================
+       4. FIXED ALTERNATING EDITORIAL STAGE & 920VH SCROLL TRACK
+       ========================================================================= */
+    #fixed-stage {
+      position: fixed;
+      inset: 0;
+      z-index: 10;
+      pointer-events: none;
+      transition: opacity 0.35s ease;
+    }
+
+    .chapter-panel {
+      position: absolute;
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+      will-change: opacity, transform;
+    }
+
+    /* Immediate first-paint visibility for Chapter 01 at y = 0 */
+    .chapter-panel[data-panel="0"] {
+      opacity: 1;
+      visibility: visible;
+      pointer-events: auto;
+    }
+
+    @media (min-width: 900px) {
+      .chapter-panel {
+        top: calc(50% + 26px);
+        width: min(510px, 42vw);
+        transform: translate3d(0, -50%, 0);
+      }
+      .chapter-left {
+        left: 6vw;
+        right: auto;
+      }
+      .chapter-right {
+        right: 6vw;
+        left: auto;
+      }
+    }
+
+    @media (max-width: 899px) {
+      .nav-divider, .nav-mode-tags, .nav-links, #nav-morph-pill {
+        display: none;
+      }
+      .announce-bar {
+        font-size: 11px;
+        gap: 8px;
+      }
+      .chapter-panel {
+        left: 14px;
+        right: 14px;
+        bottom: 84px;
+        width: auto;
+        padding: 20px 18px;
+        border-radius: var(--radius-lg);
+        background: rgba(255, 255, 255, 0.90);
+        backdrop-filter: blur(16px);
+        -webkit-backdrop-filter: blur(16px);
+        border: 1px solid var(--border-mid);
+        box-shadow: var(--shadow-float);
+        transform: translate3d(0, 0, 0);
+      }
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--graphite);
+      margin-bottom: 16px;
+    }
+
+    .eyebrow-rule {
+      width: 24px;
+      height: 1px;
+      background: rgba(20, 20, 19, 0.28);
+    }
+
+    .ch-heading {
+      font-family: var(--font-serif);
+      font-weight: 400;
+      font-size: clamp(2rem, 3.6vw, 3.35rem);
+      line-height: 1.09;
+      letter-spacing: -0.028em;
+      color: var(--ink);
+      margin-bottom: 18px;
+    }
+
+    .ch-heading em {
+      font-style: italic;
+      color: var(--ink);
+    }
+
+    .ch-body {
+      font-size: clamp(0.92rem, 1.05vw, 1.02rem);
+      line-height: 1.68;
+      color: var(--graphite);
+      margin-bottom: 22px;
+      max-width: 480px;
+    }
+
+    .ch-body strong {
+      color: var(--ink);
+      font-weight: 600;
+    }
+
+    .ch-pills {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 22px;
+    }
+
+    .ch-cta-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+
+    .ch-meta-line {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--ash);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .ch-metrics-strip {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 14px;
+      padding-top: 18px;
+      border-top: 1px solid var(--border-hair);
+    }
+
+    .ch-metric-num {
+      font-family: var(--font-serif);
+      font-size: 28px;
+      line-height: 1.1;
+      color: var(--ink);
+    }
+
+    .ch-metric-lbl {
+      font-family: var(--font-mono);
+      font-size: 10.5px;
+      color: var(--ash);
+      margin-top: 4px;
+    }
+
+    .ch-sql-box {
+      padding: 13px 16px;
+      border-radius: var(--radius-md);
+      background: var(--surface);
+      border: 1px solid var(--border-hair);
+      box-shadow: var(--shadow-card);
+      font-family: var(--font-mono);
+      font-size: 11.5px;
+      color: var(--graphite);
+      line-height: 1.6;
+    }
+
+    /* 920vh Continuous Reversible Scroll Track (p: 0.0 -> 5.8) */
+    #scroll-track {
+      position: relative;
+      height: 920vh;
+      width: 100%;
+      z-index: 2;
+      pointer-events: none;
+    }
+
+    /* =========================================================================
+       5. BELOW-THE-FOLD WISPR FLOW EDITORIAL SECTIONS
+       ========================================================================= */
+    #below-fold {
+      position: relative;
+      z-index: 20;
+      background: linear-gradient(
+        180deg,
+        rgba(var(--paper-rgb), 0) 0%,
+        rgba(var(--paper-rgb), 0.86) 110px,
+        rgba(var(--paper-rgb), 0.92) 100%
+      );
+      padding-top: 84px;
+      padding-bottom: 120px;
+      transition: opacity 0.35s ease;
+    }
+
+    .section-wrap {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 0 24px;
+    }
+
+    /* --- Section A: Monochrome Tech Marquee --- */
+    .marquee-section {
+      padding: 36px 0 68px;
+      border-top: 1px solid var(--border-hair);
+      border-bottom: 1px solid var(--border-hair);
+      background: rgba(var(--paper-rgb), 0.76);
+    }
+
+    .marquee-kicker {
+      text-align: center;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.16em;
+      color: var(--ash);
+      margin-bottom: 24px;
+    }
+
+    .marquee-viewport {
+      position: relative;
+      overflow: hidden;
+      width: 100%;
+    }
+
+    .marquee-viewport::before,
+    .marquee-viewport::after {
+      content: "";
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      width: 110px;
+      z-index: 2;
+      pointer-events: none;
+    }
+
+    .marquee-viewport::before {
+      left: 0;
+      background: linear-gradient(90deg, var(--paper) 0%, rgba(var(--paper-rgb), 0) 100%);
+    }
+
+    .marquee-viewport::after {
+      right: 0;
+      background: linear-gradient(270deg, var(--paper) 0%, rgba(var(--paper-rgb), 0) 100%);
+    }
+
+    .marquee-track {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      width: max-content;
+      animation: marqueeScroll 34s linear infinite;
+    }
+
+    .marquee-track:hover {
+      animation-play-state: paused;
+    }
+
+    @keyframes marqueeScroll {
+      0% { transform: translateX(0); }
+      100% { transform: translateX(-50%); }
+    }
+
+    .marquee-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 9px 18px;
+      border-radius: var(--radius-pill);
+      background: var(--surface);
+      border: 1px solid var(--border-hair);
+      font-family: var(--font-mono);
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--ink);
+      white-space: nowrap;
+      box-shadow: 0 4px 14px rgba(20, 20, 19, 0.025);
+    }
+
+    .marquee-dot {
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: var(--ink);
+      opacity: 0.45;
+    }
+
+    /* --- Section B: Wispr Flow Signature "Before vs After" Cleaning-Up Showcase --- */
+    .compare-section {
+      padding: 96px 0 84px;
+    }
+
+    .editorial-center-head {
+      text-align: center;
+      max-width: 760px;
+      margin: 0 auto 48px;
+    }
+
+    .editorial-h2 {
+      font-family: var(--font-serif);
+      font-weight: 400;
+      font-size: clamp(2rem, 3.6vw, 3.2rem);
+      line-height: 1.1;
+      letter-spacing: -0.028em;
+      color: var(--ink);
+      margin-bottom: 14px;
+    }
+
+    .editorial-h2 em {
+      font-style: italic;
+    }
+
+    .editorial-sub {
+      font-size: 15.5px;
+      color: var(--graphite);
+      line-height: 1.65;
+    }
+
+    .compare-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 20px;
+      align-items: stretch;
+    }
+
+    @media (max-width: 900px) {
+      .compare-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .compare-card {
+      padding: 28px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      gap: 20px;
+    }
+
+    .compare-head-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding-bottom: 16px;
+      border-bottom: 1px solid var(--border-hair);
+    }
+
+    .compare-card-title {
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--ink);
+    }
+
+    .compare-log-stream {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      line-height: 1.55;
+    }
+
+    .noise-chunk {
+      padding: 11px 14px;
+      border-radius: var(--radius-sm);
+      background: rgba(255, 255, 255, 0.56);
+      border: 1px solid var(--border-hair);
+      color: var(--ink-soft);
+      transition: all 0.25s ease;
+    }
+
+    .noise-chunk.cleaned {
+      background: transparent;
+      border-style: dashed;
+      border-color: rgba(20, 20, 19, 0.16);
+      color: var(--ash);
+      text-decoration: line-through;
+      opacity: 0.62;
+    }
+
+    .noise-tag {
+      display: inline-block;
+      font-size: 10px;
+      font-weight: 700;
+      margin-bottom: 4px;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      color: var(--graphite);
+    }
+
+    .distilled-pre {
+      padding: 18px;
+      border-radius: var(--radius-md);
+      background: var(--paper);
+      border: 1px solid var(--border-hair);
+      font-family: var(--font-mono);
+      font-size: 12px;
+      line-height: 1.65;
+      color: var(--ink);
+      overflow-x: auto;
+      white-space: pre;
+    }
+
+    .meter-block {
+      padding-top: 16px;
+      border-top: 1px solid var(--border-hair);
+    }
+
+    .meter-meta {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      margin-bottom: 8px;
+    }
+
+    .bar-track {
+      width: 100%;
+      height: 8px;
+      border-radius: 999px;
+      background: var(--stone-deep);
+      overflow: hidden;
+      position: relative;
+    }
+
+    .bar-fill-ink {
+      height: 100%;
+      background: var(--ink);
+      border-radius: 999px;
+      transition: width 0.35s cubic-bezier(0.22, 1, 0.36, 1);
+    }
+
+    .bar-fill-hatch {
+      height: 100%;
+      background-image: repeating-linear-gradient(
+        -45deg,
+        rgba(20, 20, 19, 0.42) 0px,
+        rgba(20, 20, 19, 0.42) 5px,
+        rgba(20, 20, 19, 0.16) 5px,
+        rgba(20, 20, 19, 0.16) 10px
+      );
+      border-radius: 999px;
+    }
+
+    /* Wispr "Cleaning up..." Interactive Toggle Strip */
+    .cleaning-strip {
+      margin-top: 22px;
+      padding: 18px 22px;
+      border-radius: var(--radius-lg);
+      background: var(--surface);
+      border: 1px solid var(--border-hair);
+      box-shadow: var(--shadow-card);
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+    }
+
+    .cleaning-label {
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+      font-family: var(--font-serif);
+      font-style: italic;
+      font-size: 17px;
+      color: var(--ink);
+    }
+
+    .cleaning-pills {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .clean-toggle {
+      padding: 8px 14px;
+      border-radius: var(--radius-pill);
+      font-family: var(--font-mono);
+      font-size: 11.5px;
+      border: 1px solid var(--border-mid);
+      color: var(--graphite);
+      background: var(--paper);
+      transition: all 0.2s ease;
+    }
+
+    .clean-toggle:hover {
+      border-color: var(--border-strong);
+      color: var(--ink);
+    }
+
+    .clean-toggle.active {
+      background: var(--ink);
+      color: var(--paper);
+      border-color: var(--ink);
+      font-weight: 600;
+    }
+
+    /* --- Section C: 4-Tab Interactive Sandbox Lab --- */
+    .lab-section {
+      padding: 40px 0 88px;
+    }
+
+    .lab-shell {
+      background: var(--surface);
+      border: 1px solid var(--border-hair);
+      border-radius: var(--radius-xl);
+      box-shadow: var(--shadow-card);
+      padding: 32px;
+    }
+
+    @media (max-width: 720px) {
+      .lab-shell {
+        padding: 18px;
+        border-radius: var(--radius-lg);
+      }
+    }
+
+    .lab-switcher-wrap {
+      display: flex;
+      justify-content: center;
+      margin-bottom: 28px;
+    }
+
+    .lab-segmented {
+      display: inline-flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 4px;
+      padding: 5px;
+      border-radius: var(--radius-pill);
+      background: var(--stone);
+      border: 1px solid var(--border-hair);
+    }
+
+    @media (max-width: 760px) {
+      .lab-segmented {
+        border-radius: var(--radius-md);
+        width: 100%;
+      }
+    }
+
+    .lab-tab-btn {
+      padding: 9px 16px;
+      border-radius: var(--radius-pill);
+      font-size: 12.5px;
+      font-weight: 600;
+      color: var(--graphite);
+      transition: all 0.2s ease;
+      white-space: nowrap;
+    }
+
+    .lab-tab-btn:hover {
+      color: var(--ink);
+    }
+
+    .lab-tab-btn.active {
+      background: var(--ink);
+      color: var(--paper);
+      box-shadow: 0 4px 12px rgba(20, 20, 19, 0.14);
+    }
+
+    .lab-panel {
+      display: none;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    .lab-panel.active {
+      display: flex;
+    }
+
+    .toolbar-box {
+      padding: 18px 20px;
+      border-radius: var(--radius-md);
+      background: var(--paper);
+      border: 1px solid var(--border-hair);
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+    }
+
+    .toolbar-btns {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px;
+    }
+
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    @media (max-width: 900px) {
+      .grid-2, .grid-3 {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .sub-surface {
+      background: var(--paper);
+      border: 1px solid var(--border-hair);
+      border-radius: var(--radius-md);
+      overflow: hidden;
+    }
+
+    .sub-header {
+      padding: 11px 16px;
+      background: var(--stone);
+      border-bottom: 1px solid var(--border-hair);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+    }
+
+    .table-wrap {
+      overflow-x: auto;
+    }
+
+    table.spec-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12.5px;
+      text-align: left;
+    }
+
+    table.spec-table th {
+      padding: 10px 14px;
+      font-family: var(--font-mono);
+      font-size: 10.5px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--ash);
+      background: rgba(242, 239, 233, 0.65);
+      border-bottom: 1px solid var(--border-hair);
+    }
+
+    table.spec-table td {
+      padding: 11px 14px;
+      border-bottom: 1px solid var(--border-hair);
+      color: var(--graphite);
+      vertical-align: middle;
+    }
+
+    table.spec-table tr:last-child td {
+      border-bottom: none;
+    }
+
+    table.spec-table tr:hover td {
+      background: rgba(20, 20, 19, 0.02);
+    }
+
+    .seg-inline {
+      display: inline-flex;
+      padding: 4px;
+      border-radius: var(--radius-pill);
+      background: var(--stone);
+      border: 1px solid var(--border-hair);
+      gap: 4px;
+    }
+
+    .seg-inline-btn {
+      padding: 6px 13px;
+      border-radius: var(--radius-pill);
+      font-family: var(--font-mono);
+      font-size: 11.5px;
+      color: var(--graphite);
+      transition: all 0.2s ease;
+    }
+
+    .seg-inline-btn.active {
+      background: var(--ink);
+      color: var(--paper);
+      font-weight: 600;
+    }
+
+    .code-paper {
+      padding: 16px;
+      background: var(--paper);
+      font-family: var(--font-mono);
+      font-size: 12px;
+      line-height: 1.65;
+      color: var(--ink-soft);
+      overflow-x: auto;
+      white-space: pre;
+    }
+
+    .code-line-ok {
+      display: block;
+      margin: 0 -16px;
+      padding: 4px 16px;
+      background: rgba(20, 20, 19, 0.06);
+      border-left: 3px solid var(--ink);
+      color: var(--ink);
+      font-weight: 600;
+    }
+
+    .code-line-bug {
+      display: block;
+      margin: 0 -16px;
+      padding: 4px 16px;
+      background-image: repeating-linear-gradient(
+        -45deg,
+        rgba(20, 20, 19, 0.075) 0px,
+        rgba(20, 20, 19, 0.075) 5px,
+        transparent 5px,
+        transparent 10px
+      );
+      border-left: 3px dashed var(--ink);
+      color: var(--ink);
+      text-decoration: line-through;
+    }
+
+    /* Simulator 6-step strip */
+    .sim-nodes-grid {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      gap: 8px;
+      padding: 14px;
+      background: var(--paper);
+      border: 1px solid var(--border-hair);
+      border-radius: var(--radius-md);
+    }
+
+    @media (max-width: 860px) {
+      .sim-nodes-grid {
+        grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+      }
+    }
+
+    .sim-node {
+      padding: 10px 6px;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border-hair);
+      background: var(--surface);
+      text-align: center;
+      font-family: var(--font-mono);
+      font-size: 10.5px;
+      color: var(--ash);
+      transition: all 0.22s ease;
+    }
+
+    .sim-node.running {
+      background: var(--ink);
+      color: var(--paper);
+      border-color: var(--ink);
+      font-weight: 700;
+      transform: translateY(-2px);
+    }
+
+    .sim-node.done {
+      background: var(--stone);
+      color: var(--ink);
+      border-color: var(--border-strong);
+      font-weight: 600;
+    }
+
+    .sim-node.skipped {
+      border-style: dashed;
+      opacity: 0.45;
+      text-decoration: line-through;
+    }
+
+    .sim-node.paused {
+      background-color: var(--stone);
+      background-image: repeating-linear-gradient(
+        -45deg,
+        rgba(20, 20, 19, 0.09) 0px,
+        rgba(20, 20, 19, 0.09) 5px,
+        transparent 5px,
+        transparent 10px
+      );
+      border: 1px dashed var(--ink);
+      color: var(--ink);
+      font-weight: 700;
+    }
+
+    .budget-marker {
+      position: absolute;
+      left: 80%;
+      top: -3px;
+      bottom: -3px;
+      width: 2px;
+      background: var(--ink);
+    }
+
+    .trace-box {
+      padding: 16px;
+      background: var(--paper);
+      font-family: var(--font-mono);
+      font-size: 12px;
+      min-height: 210px;
+      max-height: 290px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .res-step {
+      padding: 14px 16px;
+      border-radius: var(--radius-md);
+      background: var(--paper);
+      border: 1px solid var(--border-hair);
+      transition: border-color 0.25s ease;
+    }
+
+    .res-step.active {
+      border-color: var(--border-strong);
+      background: var(--surface);
+    }
+
+    .ux-stage {
+      padding: 18px;
+      border-radius: var(--radius-md);
+      background: var(--stone);
+      border: 1px solid var(--border-hair);
+    }
+
+    .ux-sliders {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    @media (max-width: 600px) {
+      .ux-sliders {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .slider-meta {
+      display: flex;
+      justify-content: space-between;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--graphite);
+      margin-bottom: 6px;
+    }
+
+    /* --- Section D: Wispr-Style Editorial Closing CTA & Minimal Footer --- */
+    .closing-section {
+      padding: 72px 0 40px;
+      text-align: center;
+    }
+
+    .closing-card {
+      padding: 64px 28px;
+      border-radius: var(--radius-xl);
+      background: var(--surface);
+      border: 1px solid var(--border-hair);
+      box-shadow: var(--shadow-card);
+    }
+
+    .closing-heading {
+      font-family: var(--font-serif);
+      font-weight: 400;
+      font-size: clamp(2.1rem, 4vw, 3.6rem);
+      line-height: 1.08;
+      letter-spacing: -0.028em;
+      color: var(--ink);
+      margin-bottom: 16px;
+    }
+
+    .closing-heading em {
+      font-style: italic;
+    }
+
+    .closing-actions {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 12px;
+      margin-top: 28px;
+    }
+
+    .site-footer {
+      margin-top: 64px;
+      padding-top: 24px;
+      border-top: 1px solid var(--border-hair);
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      font-family: var(--font-mono);
+      font-size: 11.5px;
+      color: var(--ash);
+    }
+
+    /* =========================================================================
+       6. FLOATING WISPR-STYLE PILL HUD (BOTTOM CENTER)
+       ========================================================================= */
+    #bottom-hud {
+      position: fixed;
+      bottom: 18px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 50;
+      max-width: calc(100vw - 20px);
+    }
+
+    .hud-pill {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 12px;
+      border-radius: var(--radius-pill);
+      background: rgba(255, 255, 255, 0.88);
+      backdrop-filter: blur(18px);
+      -webkit-backdrop-filter: blur(18px);
+      border: 1px solid var(--border-mid);
+      box-shadow: var(--shadow-float);
+      overflow-x: auto;
+    }
+
+    .hud-ch-wrap {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      flex-shrink: 0;
+    }
+
+    .hud-ch-row {
+      display: flex;
+      align-items: center;
+      gap: 3px;
+    }
+
+    .hud-ch-btn {
+      width: 28px;
+      height: 26px;
+      border-radius: var(--radius-pill);
+      font-family: var(--font-mono);
+      font-size: 10.5px;
+      color: var(--graphite);
+      transition: all 0.2s ease;
+    }
+
+    .hud-ch-btn:hover {
+      color: var(--ink);
+      background: var(--stone);
+    }
+
+    .hud-ch-btn.active {
+      background: var(--ink);
+      color: var(--paper);
+      font-weight: 700;
+    }
+
+    .hud-ch-progress {
+      width: 100%;
+      height: 2px;
+      border-radius: 999px;
+      background: rgba(20, 20, 19, 0.12);
+      overflow: hidden;
+    }
+
+    #hud-ch-fill {
+      height: 100%;
+      width: 0%;
+      background: var(--ink);
+    }
+
+    .hud-sep {
+      width: 1px;
+      height: 22px;
+      background: var(--border-mid);
+      flex-shrink: 0;
+    }
+
+    .hud-form {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      flex-shrink: 0;
+    }
+
+    .hud-input {
+      width: 124px;
+      padding: 6px 11px;
+      border-radius: var(--radius-pill);
+      background: var(--paper);
+      border: 1px solid var(--border-mid);
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--ink);
+      outline: none;
+    }
+
+    .hud-input::placeholder {
+      color: var(--ash);
+    }
+
+    .hud-input:focus {
+      border-color: var(--ink);
+    }
+
+    .hud-btn {
+      flex-shrink: 0;
+      padding: 6px 12px;
+      border-radius: var(--radius-pill);
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--graphite);
+      border: 1px solid var(--border-hair);
+      background: transparent;
+      transition: all 0.2s ease;
+      white-space: nowrap;
+    }
+
+    .hud-btn:hover {
+      color: var(--ink);
+      border-color: var(--border-strong);
+      background: var(--stone);
+    }
+
+    .hud-btn.active {
+      background: var(--ink);
+      color: var(--paper);
+      border-color: var(--ink);
+      font-weight: 600;
+    }
+
+    @media (max-width: 720px) {
+      .hud-input {
+        width: 92px;
+      }
+      .hud-pill {
+        border-radius: var(--radius-lg);
+      }
+    }
+
+    .hidden {
+      display: none !important;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Subtle Alabaster Paper Backdrop -->
+  <div class="paper-backdrop" aria-hidden="true"></div>
+
+  <!-- Full-Viewport Fixed Reversible Ink-Sand Particle Canvas -->
+  <canvas id="sand-canvas" aria-hidden="true"></canvas>
+
+  <!-- Soft Paper Wash Behind Active Editorial Text -->
+  <div id="stage-wash" aria-hidden="true"></div>
+
+  <!-- Focus View Exit Pill -->
+  <button id="focus-exit-pill" type="button">✕ 입자 집중 해제 (ESC)</button>
+
+  <!-- ==================== 1. WISPR FLOW STYLE TOP CHROME ==================== -->
+  <div id="top-chrome">
+    <!-- 34px Deep-Ink Announcement Bar -->
+    <div class="announce-bar">
+      <span class="announce-text">GraphSpec v2.0 — 인메모리 SQLite 명세 엔진 &amp; 사전 모순 검사 게이트 공개</span>
+      <a href="#interactive-lab" class="announce-link">실전 랩 이동 →</a>
+    </div>
+
+    <!-- Sticky Frosted-Ivory Navigation Bar -->
+    <nav class="main-nav" aria-label="주 내비게이션">
+      <div class="nav-inner">
+        <div class="nav-left">
+          <a href="#scroll-track" id="brand-top-link" class="brand-link">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <rect x="2" y="2" width="20" height="20" rx="6" stroke="#141413" stroke-width="1.5" />
+              <circle cx="8" cy="8.2" r="2.1" fill="#141413" />
+              <circle cx="16" cy="8.2" r="2.1" stroke="#141413" stroke-width="1.4" />
+              <circle cx="12" cy="16" r="2.1" fill="#141413" />
+              <path d="M10.2 8.2H13.8M9 10L11 14.1M15 10L13 14.1" stroke="#141413" stroke-width="1.25" />
+            </svg>
+            <span class="brand-wordmark">GraphSpec</span>
+          </a>
+          <span class="nav-divider"></span>
+          <div class="nav-mode-tags">
+            <span class="nav-mode-tag">AGDD Engine</span>
+            <span class="nav-mode-tag">Spec RDB</span>
+          </div>
+        </div>
+
+        <div class="nav-links">
+          <a href="#scroll-track" id="nav-how-link">작동 원리</a>
+          <a href="#efficiency-compare">효율 비교</a>
+          <a href="#interactive-lab">실전 랩</a>
+        </div>
+
+        <div class="nav-right">
+          <span id="nav-morph-pill">01 / 06 · LOCKED</span>
+          <a href="#interactive-lab" class="btn-ink-pill" style="padding: 8px 17px; font-size: 12.5px;">직접 체험하기</a>
+        </div>
+      </div>
+      <div class="nav-progress-line">
+        <div id="nav-progress-fill"></div>
+      </div>
+    </nav>
+  </div>
+
+  <!-- ==================== 2. FIXED ALTERNATING EDITORIAL STAGE ==================== -->
+  <div id="fixed-stage">
+
+    <!-- CHAPTER 01: Text LEFT / Particle RIGHT ("AGDD" + Orbital Ring & 5 Nodes) -->
+    <article class="chapter-panel chapter-left" data-panel="0">
+      <div class="eyebrow">
+        <span>01 · AUTONOMOUS GRAPH</span>
+        <span class="eyebrow-rule"></span>
+        <span>CLOSED LOOP</span>
+      </div>
+      <h1 class="ch-heading">지시하지 마세요,<br /><em>그래프가 스스로 실행합니다.</em></h1>
+      <p class="ch-body">
+        <strong>"Don't call us, we'll call you."</strong><br />
+        매 턴 프롬프트를 입력하는 대신 <code>Upstream → Spec → Dev → Verify → Audit</code> 닫힌 루프가
+        스스로 개발하고, 의사결정이 필요한 순간에만 사람을 호출합니다.
+      </p>
+      <div class="ch-cta-row">
+        <a href="#interactive-lab" class="btn-ink-pill">실전 랩 바로가기 →</a>
+        <button type="button" data-jump="1" class="btn-hair-pill">다음 챕터 ↓</button>
+      </div>
+      <div class="ch-meta-line">
+        <span>✓ 백엔드 공수 -86%</span>
+        <span>·</span>
+        <span>전체 비용 -71%</span>
+        <span>·</span>
+        <span>스크롤을 내리면 변형 · 올리면 복원</span>
+      </div>
+    </article>
+
+    <!-- CHAPTER 02: Text RIGHT / Particle LEFT ("-90%" + Concentric Contracting Rings) -->
+    <article class="chapter-panel chapter-right" data-panel="1">
+      <div class="eyebrow">
+        <span>02 · TOKEN ARCHITECTURE</span>
+        <span class="eyebrow-rule"></span>
+        <span>O(T²) → O(T)</span>
+      </div>
+      <h2 class="ch-heading">토큰은 90% 낮추고,<br /><em>정확도는 더 단단하게.</em></h2>
+      <p class="ch-body">
+        코딩 에이전트에서 실제 코드 출력(Output)은 <strong>1% 미만</strong>이고,
+        <strong>95% 이상</strong>은 반복되는 입력 컨텍스트입니다. 프리픽스 고정 <strong>Prompt Caching</strong>,
+        <strong>SQLite FTS5 출력 오프로딩(98% 축소)</strong>, 일괄 <code>tool_result</code> 비우기로 비용을 구조적으로 꺾습니다.
+      </p>
+      <div class="ch-metrics-strip">
+        <div>
+          <div class="ch-metric-num">90%+</div>
+          <div class="ch-metric-lbl">Prompt Cache 할인</div>
+        </div>
+        <div style="border-left: 1px solid var(--border-hair); padding-left: 14px;">
+          <div class="ch-metric-num">98%</div>
+          <div class="ch-metric-lbl">FTS5 출력 축소</div>
+        </div>
+        <div style="border-left: 1px solid var(--border-hair); padding-left: 14px;">
+          <div class="ch-metric-num">&lt;1%</div>
+          <div class="ch-metric-lbl">코드 Output 비중</div>
+        </div>
+      </div>
+    </article>
+
+    <!-- CHAPTER 03: Text LEFT / Particle RIGHT (5-Node Pentagonal Graph + Feedback Loop) -->
+    <article class="chapter-panel chapter-left" data-panel="2">
+      <div class="eyebrow">
+        <span>03 · CLOSED-LOOP PIPELINE</span>
+        <span class="eyebrow-rule"></span>
+        <span>WATCHDOG &amp; LOCK</span>
+      </div>
+      <h2 class="ch-heading">생성하고, 검증하고,<br /><em>스스로 되돌아가 고칩니다.</em></h2>
+      <p class="ch-body">
+        5개의 독립 노드가 경계마다 대화 이력을 초기화하며, <strong>JUnit · SARIF</strong> 결정론적 검증으로 결함을 잡습니다.
+        테스트 파일은 <strong>Read-Only</strong>로 잠그고, 무상태 저렴 모델 <strong>Watchdog</strong>이
+        꼼수 수정과 핑퐁 루프를 즉시 차단합니다.
+      </p>
+      <div class="ch-pills">
+        <span class="badge badge-pass">✓ 5-Node Context Reset</span>
+        <span class="badge badge-neutral">○ tests/** Read-Only 잠금</span>
+        <span class="badge badge-neutral">○ Stateless Watchdog</span>
+      </div>
+    </article>
+
+    <!-- CHAPTER 04: Text RIGHT / Particle LEFT (3D Isometric RDB Cylinder + Check Badge) -->
+    <article class="chapter-panel chapter-right" data-panel="3">
+      <div class="eyebrow">
+        <span>04 · IN-MEMORY SPEC RDB</span>
+        <span class="eyebrow-rule"></span>
+        <span>PRE-FLIGHT GATE</span>
+      </div>
+      <h2 class="ch-heading">명세는 표로 고정하고,<br /><em>모순은 시작 전에 차단합니다.</em></h2>
+      <p class="ch-body">
+        요구사항(<strong>SRS</strong>)·아키텍처(<strong>ARC</strong>)·스키마(<strong>SCH</strong>)를
+        <code>adoption_status='ACCEPT_NOW'</code> 컬럼이 붙은 <strong>In-Memory SQLite</strong> 테이블로 관리합니다.
+        코드 한 줄 쓰기 전에 <strong>0-토큰 SQL 무결성 검사</strong>와 저렴 모델 의미 충돌 게이트를 통과해야 합니다.
+      </p>
+      <div class="ch-sql-box">
+        <strong style="color: var(--ink);">SELECT</strong> req_id, arch_id, schema_id<br />
+        <strong style="color: var(--ink);">FROM</strong> in_memory_spec <strong style="color: var(--ink);">WHERE</strong> adoption_status = <strong style="color: var(--ink);">'ACCEPT_NOW'</strong>;
+        <span style="color: var(--ash);">-- 0.08ms</span>
+      </div>
+    </article>
+
+    <!-- CHAPTER 05: Text LEFT / Particle RIGHT ("AST" + Hexagonal Shield & Tree) -->
+    <article class="chapter-panel chapter-left" data-panel="4">
+      <div class="eyebrow">
+        <span>05 · SEMANTIC VERIFICATION</span>
+        <span class="eyebrow-rule"></span>
+        <span>SEMANTIC LIFTING</span>
+      </div>
+      <h2 class="ch-heading">파일 전체가 아닌,<br /><em>바뀐 함수만 의미 검증합니다.</em></h2>
+      <p class="ch-body">
+        Tree-sitter로 <code>ast_hash</code>가 바뀐 함수·메서드만 증분 추출해 저렴한 모델로
+        <strong>선언형 계약 명세</strong>로 변환·대조합니다. 실행 상태는 외부 테이블로 분리해
+        장기 세션에서도 <strong>O(1)</strong> 프롬프트 크기를 유지합니다.
+      </p>
+      <div class="ch-pills">
+        <span class="badge badge-pass">✓ 14,200 → 640 tok (-95.5%)</span>
+        <span class="badge badge-neutral">○ 미변경 심볼 0 tok 캐시</span>
+        <span class="badge badge-neutral">○ O(1) 명시적 상태 분리</span>
+      </div>
+    </article>
+
+    <!-- CHAPTER 06: Text RIGHT / Particle LEFT ("DOCS" + Sweeping Radar Grid) -->
+    <article class="chapter-panel chapter-right" data-panel="5">
+      <div class="eyebrow">
+        <span>06 · RESEARCH &amp; UX CONTROL</span>
+        <span class="eyebrow-rule"></span>
+        <span>INSIGHT &amp; LOCK</span>
+      </div>
+      <h2 class="ch-heading">막히면 논문에서 찾고,<br /><em>UX는 직접 조절합니다.</em></h2>
+      <p class="ch-body">
+        교착 상태에 빠지면 사내 코드를 익명화해 <strong>arXiv · 공식 문서</strong>를 병렬 검색하고
+        1,000토큰 이내 <strong>Insight Brief</strong>를 생성합니다.
+        주관적 UI는 워크벤치에서 직접 조절하고 <code>locked_by_user</code>로 보호합니다.
+      </p>
+      <div class="ch-cta-row">
+        <a href="#efficiency-compare" class="btn-ink-pill">효율 비교 &amp; 실전 랩 보기 ↓</a>
+      </div>
+    </article>
+
+  </div>
+
+  <!-- ==================== 3. 920VH REVERSIBLE SCROLL TRACK ==================== -->
+  <div id="scroll-track" aria-hidden="true"></div>
+
+  <!-- ==================== 4. BELOW-THE-FOLD WISPR EDITORIAL SECTIONS ==================== -->
+  <main id="below-fold">
+
+    <!-- SECTION A: MONOCHROME TECH MARQUEE -->
+    <section class="marquee-section" aria-label="핵심 기술 스택">
+      <div class="marquee-kicker">BUILT ON PROVEN PRIMITIVES</div>
+      <div class="marquee-viewport">
+        <div class="marquee-track">
+          <!-- Set 1 -->
+          <span class="marquee-pill"><span class="marquee-dot"></span>PostgreSQL 15+</span>
+          <span class="marquee-pill"><span class="marquee-dot"></span>In-Memory SQLite FTS5</span>
+          <span class="marquee-pill"><span class="marquee-dot"></span>Tree-sitter AST</span>
+          <span class="marquee-pill"><span class="marquee-dot"></span>Prompt Caching</span>
+          <span class="marquee-pill"><span class="marquee-dot"></span>JSONB Graph</span>
+          <span class="marquee-pill"><span class="marquee-dot"></span>Valkey Streams</span>
+          <span class="marquee-pill"><span class="marquee-dot"></span>Testcontainers</span>
+          <span class="marquee-pill"><span class="marquee-dot"></span>JUnit / SARIF</span>
+          <span class="marquee-pill"><span class="marquee-dot"></span>pgvector HNSW</span>
+          <span class="marquee-pill"><span class="marquee-dot"></span>arXiv Research API</span>
+          <!-- Set 2 (seamless loop clone) -->
+          <span class="marquee-pill"><span class="marquee-dot"></span>PostgreSQL 15+</span>
+          <span class="marquee-pill"><span class="marquee-dot"></span>In-Memory SQLite FTS5</span>
+          <span class="marquee-pill"><span class="marquee-dot"></span>Tree-sitter AST</span>
+          <span class="marquee-pill"><span class="marquee-dot"></span>Prompt Caching</span>
+          <span class="marquee-pill"><span class="marquee-dot"></span>JSONB Graph</span>
+          <span class="marquee-pill"><span class="marquee-dot"></span>Valkey Streams</span>
+          <span class="marquee-pill"><span class="marquee-dot"></span>Testcontainers</span>
+          <span class="marquee-pill"><span class="marquee-dot"></span>JUnit / SARIF</span>
+          <span class="marquee-pill"><span class="marquee-dot"></span>pgvector HNSW</span>
+          <span class="marquee-pill"><span class="marquee-dot"></span>arXiv Research API</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- SECTION B: WISPR FLOW SIGNATURE "BEFORE VS AFTER" TRANSFORMATION CARD -->
+    <section id="efficiency-compare" class="compare-section">
+      <div class="section-wrap">
+        <div class="editorial-center-head">
+          <div class="eyebrow" style="justify-content: center;">
+            <span>HOW IT SAVES TOKENS</span>
+          </div>
+          <h2 class="editorial-h2">179,000토큰의 잡음을,<br /><em>7,000토큰의 정제된 맥락으로.</em></h2>
+          <p class="editorial-sub">
+            하단의 <strong>Cleaning up...</strong> 필터를 켜고 끄며 기존 수동 에이전트 루프의 노이즈가 어떻게 제거되고
+            매 턴 입력 토큰이 실시간으로 축소되는지 확인해 보세요.
+          </p>
+        </div>
+
+        <div class="compare-grid">
+          <!-- Left: Raw Messy Agent Loop (Warm Stone Surface) -->
+          <div class="card-stone compare-card">
+            <div>
+              <div class="compare-head-row">
+                <div>
+                  <div class="mono" style="font-size: 10.5px; color: var(--ash); margin-bottom: 3px;">BEFORE · MANUAL LOOP</div>
+                  <div class="compare-card-title">기존 수동 에이전트 루프</div>
+                </div>
+                <span class="badge badge-warn">179k tok / turn</span>
+              </div>
+
+              <div class="compare-log-stream" style="margin-top: 16px;">
+                <div class="noise-chunk cleaned" data-clean-group="file">
+                  <span class="noise-tag">[READ_FILE · 68,400 TOK] 중복 파일 전체 덤프</span>
+                  <div>import { ... } // src/auth/auth.service.ts (840줄 전체 매 턴 재전송) + 관련 6개 파일 전체 읽기</div>
+                </div>
+                <div class="noise-chunk cleaned" data-clean-group="log">
+                  <span class="noise-tag">[STDOUT · 44,200 TOK] 미가공 pytest / 빌드 로그</span>
+                  <div>collecting 54 items ... passed ... passed ... DeprecationWarning × 180줄 + 전체 스택트레이스 1,420줄</div>
+                </div>
+                <div class="noise-chunk cleaned" data-clean-group="symbol">
+                  <span class="noise-tag">[REVIEW · 32,800 TOK] 미변경 심볼 14개 반복 리뷰</span>
+                  <div>변경되지 않은 validateJwt(), signPayload() 등 14개 메서드까지 상위 모델이 매 루프 재검토</div>
+                </div>
+                <div class="noise-chunk cleaned" data-clean-group="clear">
+                  <span class="noise-tag">[HISTORY · 26,500 TOK] 낡은 도구 결과 · 실패 가설 누적</span>
+                  <div>3턴째 API JSON 12KB + 5턴째 실패한 수정 가설 대화 + 미사용 MCP 스키마 24KB 상시 적재</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="meter-block">
+              <div class="meter-meta">
+                <span style="color: var(--graphite);">평균 턴당 컨텍스트 입력</span>
+                <strong style="color: var(--ink);">179,000 tok (100%)</strong>
+              </div>
+              <div class="bar-track">
+                <div class="bar-fill-hatch" style="width: 100%;"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Right: Distilled GraphSpec AGDD (Pure Elevated White Card) -->
+          <div class="card-white compare-card">
+            <div>
+              <div class="compare-head-row">
+                <div>
+                  <div class="mono" style="font-size: 10.5px; color: var(--ash); margin-bottom: 3px;">AFTER · GRAPHSPEC AGDD</div>
+                  <div class="compare-card-title">정제된 구조화 컨텍스트</div>
+                </div>
+                <span id="compare-after-badge" class="badge badge-pass">✓ 7.1k tok / turn · -96.0%</span>
+              </div>
+
+              <pre id="compare-distilled-json" class="distilled-pre" style="margin-top: 16px;"></pre>
+            </div>
+
+            <div class="meter-block">
+              <div class="meter-meta">
+                <span style="color: var(--ink); font-weight: 600;">현재 정제 후 컨텍스트 입력</span>
+                <strong id="compare-meter-text" style="color: var(--ink);">7,100 tok (4.0%)</strong>
+              </div>
+              <div class="bar-track">
+                <div id="compare-meter-fill" class="bar-fill-ink" style="width: 4.0%;"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Wispr Flow "Cleaning up..." Interactive Toggle Pills -->
+        <div class="cleaning-strip">
+          <div class="cleaning-label">
+            <span style="width: 7px; height: 7px; border-radius: 50%; background: var(--ink); display: inline-block;" class="pulse-ink"></span>
+            <span>Cleaning up…</span>
+          </div>
+          <div class="cleaning-pills" role="group" aria-label="토큰 정제 필터 토글">
+            <button type="button" class="clean-toggle active" data-clean="file">✓ 중복 파일 읽기 제거 (-68.4k)</button>
+            <button type="button" class="clean-toggle active" data-clean="log">✓ 표준 로그 25줄 압축 (-44.2k)</button>
+            <button type="button" class="clean-toggle active" data-clean="symbol">✓ 미변경 심볼 0 토큰 (-32.8k)</button>
+            <button type="button" class="clean-toggle active" data-clean="clear">✓ 도구 결과 일괄 비우기 (-26.5k)</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- SECTION C: 4-TAB INTERACTIVE SANDBOX LAB -->
+    <section id="interactive-lab" class="lab-section">
+      <div class="section-wrap">
+        <div class="editorial-center-head" style="margin-bottom: 36px;">
+          <div class="eyebrow" style="justify-content: center;">
+            <span>INTERACTIVE ARCHITECTURE LAB</span>
+          </div>
+          <h2 class="editorial-h2">설계서를 넘어,<br /><em>지금 브라우저에서 실행해 보세요.</em></h2>
+          <p class="editorial-sub">
+            인메모리 SQLite 사전 모순 검사, 함수 단위 AST 의미 검증, JSON 그래프 실행 시뮬레이터,
+            즉각 논문 리서치와 사용자 잠금 UX 워크벤치를 직접 테스트할 수 있습니다.
+          </p>
+        </div>
+
+        <div class="lab-shell">
+          <!-- Wispr-Style Segmented Pill Tab Switcher -->
+          <div class="lab-switcher-wrap">
+            <div class="lab-segmented" role="tablist">
+              <button type="button" class="lab-tab-btn active" data-tab="tab-1">01. 인메모리 명세 &amp; 모순 검사</button>
+              <button type="button" class="lab-tab-btn" data-tab="tab-2">02. 함수 단위 의미 검증</button>
+              <button type="button" class="lab-tab-btn" data-tab="tab-3">03. JSON 그래프 시뮬레이터</button>
+              <button type="button" class="lab-tab-btn" data-tab="tab-4">04. 즉각 리서치 &amp; UX 워크벤치</button>
+            </div>
+          </div>
+
+          <!-- ==================== TAB 1: IN-MEMORY SPEC & CONFLICT CHECK ==================== -->
+          <div id="tab-1" class="lab-panel active">
+            <div class="toolbar-box">
+              <div>
+                <div class="mono" style="font-size: 10.5px; color: var(--ash); letter-spacing: 0.08em;">SQLITE://:MEMORY:/SPEC_ENGINE · PRAGMA FOREIGN_KEYS = ON</div>
+                <h3 style="font-size: 16px; font-weight: 700; margin-top: 3px;">SRS · ARC · SCH 수용 여부 편집 &amp; 2단계 사전 모순 검사</h3>
+              </div>
+              <div class="toolbar-btns">
+                <button id="btn-sql-check" type="button" class="btn-hair-pill mono" style="font-size: 11.5px;">1단계: 0-토큰 SQL 검사</button>
+                <button id="btn-llm-check" type="button" class="btn-ink-pill mono" style="font-size: 11.5px; padding: 9px 16px;">2단계: 저렴 모델 의미 충돌 검사</button>
+                <button id="btn-auto-resolve" type="button" class="btn-hair-pill mono" style="font-size: 11.5px;">✓ 충돌 자동 해결</button>
+                <button id="btn-spec-reset" type="button" class="btn-hair-pill mono" style="font-size: 11.5px;">초기화</button>
+              </div>
+            </div>
+
+            <!-- Live SQL Scope Query Preview & Gate Status -->
+            <div id="spec-gate-banner" class="toolbar-box" style="padding: 13px 18px; font-family: var(--font-mono); font-size: 12px;">
+              <div id="spec-sql-live" style="color: var(--ink-soft);"></div>
+              <span id="spec-gate-badge" class="badge badge-neutral">○ STANDBY</span>
+            </div>
+
+            <!-- Editable SRS / ARC / SCH Tables -->
+            <div class="grid-2">
+              <div class="sub-surface">
+                <div class="sub-header">
+                  <strong style="color: var(--ink);">srs_requirements (REQ)</strong>
+                  <span style="color: var(--ash);">수용 여부 클릭 순환</span>
+                </div>
+                <div class="table-wrap">
+                  <table class="spec-table">
+                    <thead>
+                      <tr>
+                        <th>ID</th>
+                        <th>요구 내용</th>
+                        <th>의존</th>
+                        <th style="text-align: right;">수용 여부</th>
+                      </tr>
+                    </thead>
+                    <tbody id="tbody-srs"></tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div style="display: flex; flex-direction: column; gap: 16px;">
+                <div class="sub-surface">
+                  <div class="sub-header">
+                    <strong style="color: var(--ink);">arch_definitions (ARC)</strong>
+                    <span style="color: var(--ash);">아키텍처 컴포넌트</span>
+                  </div>
+                  <div class="table-wrap">
+                    <table class="spec-table">
+                      <thead>
+                        <tr>
+                          <th>ID</th>
+                          <th>역할 내용</th>
+                          <th style="text-align: right;">수용 여부</th>
+                        </tr>
+                      </thead>
+                      <tbody id="tbody-arc"></tbody>
+                    </table>
+                  </div>
+                </div>
+
+                <div class="sub-surface">
+                  <div class="sub-header">
+                    <strong style="color: var(--ink);">schema_definitions (SCH)</strong>
+                    <span style="color: var(--ash);">데이터 스키마</span>
+                  </div>
+                  <div class="table-wrap">
+                    <table class="spec-table">
+                      <thead>
+                        <tr>
+                          <th>ID</th>
+                          <th>테이블 / 저장 역할</th>
+                          <th style="text-align: right;">수용 여부</th>
+                        </tr>
+                      </thead>
+                      <tbody id="tbody-sch"></tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Conflict Report Cards -->
+            <div class="grid-2">
+              <div id="report-stage1" class="sub-surface" style="padding: 18px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 10px;">
+                  <span class="mono" style="font-size: 11px; color: var(--ash);">STAGE 1 · SQL INTEGRITY (0 TOK)</span>
+                  <span id="badge-stage1" class="badge badge-neutral">○ STANDBY</span>
+                </div>
+                <div id="body-stage1" style="font-size: 13px; color: var(--graphite); line-height: 1.6;"></div>
+              </div>
+
+              <div id="report-stage2" class="sub-surface" style="padding: 18px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 10px;">
+                  <span class="mono" style="font-size: 11px; color: var(--ash);">STAGE 2 · CHEAP MODEL SEMANTIC (~380 TOK)</span>
+                  <span id="badge-stage2" class="badge badge-neutral">○ STANDBY</span>
+                </div>
+                <div id="body-stage2" style="font-size: 13px; color: var(--graphite); line-height: 1.6;"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- ==================== TAB 2: FUNCTION-LEVEL SEMANTIC LIFTING ==================== -->
+          <div id="tab-2" class="lab-panel">
+            <div class="toolbar-box">
+              <div>
+                <div class="mono" style="font-size: 10.5px; color: var(--ash);">SEMANTIC_VERIFY · TREE-SITTER AST_HASH INCREMENTAL</div>
+                <h3 style="font-size: 16px; font-weight: 700; margin-top: 3px;"><code>AuthService.rotateRefreshToken()</code> 함수 단위 의미 검증</h3>
+              </div>
+              <div class="toolbar-btns">
+                <div class="seg-inline">
+                  <button id="sem-btn-ok" type="button" class="seg-inline-btn active">✓ 정상 구현</button>
+                  <button id="sem-btn-bug" type="button" class="seg-inline-btn">▲ 예외 처리 누락 (Drift)</button>
+                </div>
+                <button id="btn-run-ast" type="button" class="btn-ink-pill mono" style="font-size: 11.5px; padding: 9px 16px;">AST 증분 검증 실행</button>
+              </div>
+            </div>
+
+            <!-- 3 Summary Metrics -->
+            <div class="grid-3 mono" style="font-size: 12px;">
+              <div class="sub-surface" style="padding: 15px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                  <strong style="color: var(--ink);">rotateRefreshToken()</strong>
+                  <span class="badge badge-pass">CHANGED</span>
+                </div>
+                <div id="ast-hash-line" style="font-size: 11px; color: var(--graphite);">ast_hash: 9f4a2c → b82e19</div>
+                <div style="font-size: 11px; color: var(--ink); margin-top: 5px;">● 저렴 모델 선언형 변환 (640 tok)</div>
+              </div>
+
+              <div class="sub-surface" style="padding: 15px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                  <strong style="color: var(--graphite);">미변경 14개 심볼</strong>
+                  <span class="badge badge-neutral">✓ CACHED</span>
+                </div>
+                <div style="font-size: 11px; color: var(--ash);">semantic_projections 캐시 적중</div>
+                <div style="font-size: 11px; color: var(--graphite); margin-top: 5px;">○ LLM 호출 생략 · 0 tok</div>
+              </div>
+
+              <div class="sub-surface" style="padding: 15px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                  <strong style="color: var(--ink);">선언형 계약 판정</strong>
+                  <span id="ast-verdict-badge" class="badge badge-neutral">○ STANDBY</span>
+                </div>
+                <div id="ast-verdict-note" style="font-size: 11px; color: var(--graphite); margin-top: 5px;">AST 증분 검증을 실행하세요.</div>
+              </div>
+            </div>
+
+            <!-- Code vs Declarative Lifting Projection -->
+            <div class="grid-2">
+              <div class="sub-surface" style="display: flex; flex-direction: column;">
+                <div class="sub-header">
+                  <strong style="color: var(--ink);">src/auth/auth.service.ts (L84–L104)</strong>
+                  <span style="color: var(--ash);">명령형 코드 조각</span>
+                </div>
+                <div id="ast-code-view" class="code-paper" style="flex: 1;"></div>
+              </div>
+
+              <div class="sub-surface" style="display: flex; flex-direction: column;">
+                <div class="sub-header">
+                  <strong style="color: var(--ink);">declarative_projection.json</strong>
+                  <span style="color: var(--ash);">CHEAP MODEL (thinking=none)</span>
+                </div>
+                <div id="ast-json-view" style="padding: 16px; background: var(--paper); flex: 1; display: flex; flex-direction: column; gap: 10px; font-family: var(--font-mono); font-size: 11.5px;"></div>
+              </div>
+            </div>
+
+            <!-- Monochrome Token Bar Comparison -->
+            <div class="sub-surface" style="padding: 18px 20px;">
+              <div style="display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 14px;">
+                <strong style="font-size: 14px;">토큰 소모 비교 — 전체 파일 상위 모델 리뷰 vs AST 증분 저렴 모델 검증</strong>
+                <span class="badge badge-pass">✓ -95.5% 절감 (14,200 → 640 tok)</span>
+              </div>
+              <div style="display: flex; flex-direction: column; gap: 14px; font-family: var(--font-mono); font-size: 12px;">
+                <div>
+                  <div style="display: flex; justify-content: space-between; color: var(--graphite); margin-bottom: 6px;">
+                    <span>전체 파일 상위 모델 리뷰</span>
+                    <strong style="color: var(--ink);">14,200 tok (100%)</strong>
+                  </div>
+                  <div class="bar-track"><div class="bar-fill-hatch" style="width: 100%;"></div></div>
+                </div>
+                <div>
+                  <div style="display: flex; justify-content: space-between; color: var(--ink); margin-bottom: 6px;">
+                    <span>AST 증분 저렴 모델 검증 (14개 미변경 심볼 0 tok)</span>
+                    <strong>640 tok (4.5%)</strong>
+                  </div>
+                  <div class="bar-track"><div class="bar-fill-ink" style="width: 4.5%;"></div></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- ==================== TAB 3: JSON GRAPH EXECUTION SIMULATOR ==================== -->
+          <div id="tab-3" class="lab-panel">
+            <div class="toolbar-box">
+              <div class="seg-inline">
+                <button id="sim-mode-fast" type="button" class="seg-inline-btn">Fast-Track ≤30줄 우회</button>
+                <button id="sim-mode-full" type="button" class="seg-inline-btn active">Full AGDD 6단계 파이프라인</button>
+              </div>
+              <div class="toolbar-btns">
+                <button id="btn-sim-run" type="button" class="btn-ink-pill mono" style="font-size: 11.5px; padding: 9px 16px;">파이프라인 실행</button>
+                <button id="btn-sim-reset" type="button" class="btn-hair-pill mono" style="font-size: 11.5px;">초기화</button>
+              </div>
+            </div>
+
+            <!-- 6-Node Execution Strip -->
+            <div class="sim-nodes-grid">
+              <div class="sim-node" data-snode="0">ENTRY_ROUTER</div>
+              <div class="sim-node" data-snode="1">AMBIGUITY_GATE</div>
+              <div class="sim-node" data-snode="2">SPEC_DRIVE</div>
+              <div class="sim-node" data-snode="3">DEV</div>
+              <div class="sim-node" data-snode="4">SEMANTIC_VERIFY</div>
+              <div class="sim-node" data-snode="5">VERIFY / AUDIT</div>
+            </div>
+
+            <!-- Real-time Budget Progress Bar with 80% Cheap-Model Fallback Marker -->
+            <div class="sub-surface" style="padding: 16px 20px;">
+              <div style="display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px; font-family: var(--font-mono); font-size: 12px; margin-bottom: 10px;">
+                <div>
+                  <span style="color: var(--ash);">WORKSPACE BUDGET · </span>
+                  <strong id="sim-budget-text" style="color: var(--ink);">$0.00 / $5.00</strong>
+                </div>
+                <div style="display: flex; gap: 10px; align-items: center;">
+                  <span id="sim-reset-count" style="color: var(--graphite);">Context Reset: 0회</span>
+                  <span id="sim-fallback-badge" class="badge badge-neutral">○ 80% ($4.00) 저가 폴백 기준</span>
+                </div>
+              </div>
+              <div class="bar-track" style="height: 10px; overflow: visible;">
+                <div id="sim-budget-fill" class="bar-fill-ink" style="width: 0%;"></div>
+                <div class="budget-marker" title="80% ($4.00) 저가 모델 자동 폴백 마커"></div>
+              </div>
+            </div>
+
+            <!-- Wispr-Style 3-Line HITL Decision Card (Paused on IRREVERSIBLE DDL) -->
+            <div id="sim-hitl-card" class="alert-striped hidden" style="padding: 18px 20px; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px;">
+              <div style="max-width: 720px;">
+                <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+                  <span class="badge badge-warn">▲ HITL PAUSE · IRREVERSIBLE DDL</span>
+                  <span class="mono" style="font-size: 11px; color: var(--graphite);">3줄 결정 카드 (저렴 모델 압축)</span>
+                </div>
+                <div style="font-size: 13px; color: var(--ink); line-height: 1.65;">
+                  <div><strong>1) 영향도:</strong> <code>ALTER TABLE refresh_tokens DROP COLUMN legacy_hash</code> 실행 시 구버전 앱 인스턴스 즉시 장애 위험.</div>
+                  <div><strong>2) 선택지:</strong> A) 즉시 삭제(비가역) vs B) Expand-Contract 2단계 분리(무중단).</div>
+                  <div><strong>3) 권장안:</strong> B안(Expand-Contract) 승인 후 백그라운드 이관 검증.</div>
+                </div>
+              </div>
+              <button id="btn-sim-approve" type="button" class="btn-ink-pill mono" style="font-size: 12px;">✓ 승인 및 재개</button>
+            </div>
+
+            <!-- Live Execution Trace -->
+            <div class="sub-surface">
+              <div class="sub-header">
+                <strong style="color: var(--ink);">graphspec-orchestrator · execution trace</strong>
+                <span id="sim-status-label" style="color: var(--ash);">READY</span>
+              </div>
+              <div id="sim-log" class="trace-box">
+                <div style="color: var(--ash);">$ 실행 모드를 선택하고 "파이프라인 실행" 버튼을 눌러 주세요.</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- ==================== TAB 4: ON-DEMAND RESEARCH & UX WORKBENCH ==================== -->
+          <div id="tab-4" class="lab-panel">
+            <div class="grid-2">
+
+              <!-- LEFT: On-Demand Research Engine -->
+              <div class="sub-surface" style="padding: 20px; display: flex; flex-direction: column; gap: 14px;">
+                <div style="display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px; padding-bottom: 14px; border-bottom: 1px solid var(--border-hair);">
+                  <div>
+                    <div class="mono" style="font-size: 10.5px; color: var(--ash);">ON-DEMAND RESEARCH ENGINE</div>
+                    <h3 style="font-size: 16px; font-weight: 700; margin-top: 2px;">교착 시 즉각 논문·문서 검색</h3>
+                  </div>
+                  <button id="btn-run-research" type="button" class="btn-ink-pill mono" style="font-size: 11px; padding: 8px 14px;">Watchdog 교착 → 즉각 리서치</button>
+                </div>
+
+                <div class="alert-striped" style="padding: 12px 14px; font-family: var(--font-mono); font-size: 11.5px;">
+                  <div style="color: var(--ink); font-weight: 700;">▲ [DEADLOCK] Watchdog 2회 연속 핑퐁 수정 감지</div>
+                  <div style="color: var(--graphite); margin-top: 4px;"><code>SQLSTATE 26000: prepared statement does not exist</code> (PgBouncer Transaction Pooling)</div>
+                </div>
+
+                <div id="res-step-1" class="res-step">
+                  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; font-family: var(--font-mono); font-size: 11px;">
+                    <strong style="color: var(--ink);">1. 익명화 쿼리 정제 (Sanitization)</strong>
+                    <span id="res-b1" class="badge badge-neutral">○ 대기</span>
+                  </div>
+                  <div id="res-t1" class="mono" style="font-size: 11.5px; color: var(--graphite);">
+                    실행 시 사내 저장소명·내부 테이블명·시크릿을 제거하고 순수 기술 시그니처만 추출합니다.
+                  </div>
+                </div>
+
+                <div id="res-step-2" class="res-step">
+                  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; font-family: var(--font-mono); font-size: 11px;">
+                    <strong style="color: var(--ink);">2. arXiv · 공식 문서 병렬 검색 &amp; SQLite FTS5 발췌</strong>
+                    <span id="res-b2" class="badge badge-neutral">○ 대기</span>
+                  </div>
+                  <div id="res-t2" style="font-size: 12px; color: var(--graphite);">
+                    수집 원문(42KB)은 S3에 보관하고 로컬 SQLite FTS5 BM25 상위 문단만 발췌합니다.
+                  </div>
+                </div>
+
+                <div id="res-step-3" class="res-step">
+                  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; font-family: var(--font-mono); font-size: 11px;">
+                    <strong style="color: var(--ink);">3. Insight Brief (&lt; 1,000 tok)</strong>
+                    <span id="res-b3" class="badge badge-neutral">○ 대기</span>
+                  </div>
+                  <div id="res-t3" style="font-size: 12.5px; color: var(--graphite); line-height: 1.65;">
+                    상단 버튼을 눌러 문제 원인, 논문 패턴, 트레이드오프, 인용 태그가 담긴 브리핑을 생성하세요.
+                  </div>
+                </div>
+              </div>
+
+              <!-- RIGHT: Interactive UX Workbench -->
+              <div class="sub-surface" style="padding: 20px; display: flex; flex-direction: column; gap: 14px;">
+                <div style="display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px; padding-bottom: 14px; border-bottom: 1px solid var(--border-hair);">
+                  <div>
+                    <div class="mono" style="font-size: 10.5px; color: var(--ash);">INTERACTIVE UX WORKBENCH</div>
+                    <h3 style="font-size: 16px; font-weight: 700; margin-top: 2px;">사용자 직접 조절 &amp; <code>locked_by_user</code></h3>
+                  </div>
+                  <button id="btn-ux-overwrite" type="button" class="btn-hair-pill mono" style="font-size: 11px; padding: 7px 13px;">에이전트 임의 수정 시뮬레이션</button>
+                </div>
+
+                <!-- Live Preview Card -->
+                <div class="ux-stage">
+                  <div style="display: flex; justify-content: space-between; font-family: var(--font-mono); font-size: 10.5px; color: var(--ash); margin-bottom: 10px;">
+                    <span>LIVE PREVIEW · hitl_decision_card</span>
+                    <span id="ux-stage-lock-lbl" style="color: var(--ink); font-weight: 700;">✓ LOCKED_BY_USER</span>
+                  </div>
+
+                  <div id="ux-live-card" style="background: #FFFFFF; border: 1px solid rgba(20,20,19,0.22); border-radius: 16px; padding: 20px; transition: all 0.12s ease;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                      <span class="badge badge-pass" style="font-size: 10px;">▲ IRREVERSIBLE DDL</span>
+                      <span class="mono" style="font-size: 10px; color: var(--ash);">#HITL-209</span>
+                    </div>
+                    <div id="ux-live-title" class="serif" style="font-size: 19px; color: var(--ink); margin-bottom: 6px;">
+                      refresh_tokens.legacy_hash 삭제 승인
+                    </div>
+                    <div id="ux-live-desc" style="font-size: 12.5px; color: var(--graphite); line-height: 1.55; margin-bottom: 14px;">
+                      Expand-Contract 2단계 완료 및 구버전 참조 0건이 확인되었습니다.
+                    </div>
+                    <div style="display: flex; gap: 8px;">
+                      <span id="ux-live-cta" style="padding: 7px 14px; background: var(--ink); color: var(--paper); font-family: var(--font-mono); font-size: 11px; font-weight: 600; border-radius: 999px;">✓ 승인 및 배포</span>
+                      <span style="padding: 7px 14px; border: 1px solid var(--border-mid); color: var(--graphite); font-family: var(--font-mono); font-size: 11px; border-radius: 999px;">보류</span>
+                    </div>
+                  </div>
+
+                  <div id="ux-audit-msg" class="hidden" style="margin-top: 12px; padding: 10px 12px; font-family: var(--font-mono); font-size: 11.5px;"></div>
+                </div>
+
+                <!-- 4 Monochrome Controls -->
+                <div class="ux-sliders">
+                  <div>
+                    <div class="slider-meta"><label for="sl-padding">여백 밀도</label><span id="val-padding" style="color: var(--ink);">20px</span></div>
+                    <input id="sl-padding" class="ink-slider" type="range" min="10" max="34" value="20" />
+                  </div>
+                  <div>
+                    <div class="slider-meta"><label for="sl-radius">모서리 반경</label><span id="val-radius" style="color: var(--ink);">16px</span></div>
+                    <input id="sl-radius" class="ink-slider" type="range" min="0" max="28" value="16" />
+                  </div>
+                  <div>
+                    <div class="slider-meta"><label for="sl-type">타이포 크기</label><span id="val-type" style="color: var(--ink);">1.00x</span></div>
+                    <input id="sl-type" class="ink-slider" type="range" min="85" max="125" value="100" />
+                  </div>
+                  <div>
+                    <div class="slider-meta"><label for="sl-contrast">대비 강도</label><span id="val-contrast" style="color: var(--ink);">22%</span></div>
+                    <input id="sl-contrast" class="ink-slider" type="range" min="6" max="42" value="22" />
+                  </div>
+                </div>
+
+                <!-- locked_by_user Toggle -->
+                <label style="display: flex; align-items: center; justify-content: space-between; padding: 11px 14px; border-radius: var(--radius-sm); background: var(--surface); border: 1px solid var(--border-hair); font-family: var(--font-mono); font-size: 12px; cursor: pointer;">
+                  <span>
+                    <strong style="color: var(--ink);">locked_by_user</strong>
+                    <span style="color: var(--ash); margin-left: 6px;">Audit 덮어쓰기 차단</span>
+                  </span>
+                  <span style="display: inline-flex; align-items: center; gap: 8px;">
+                    <input id="chk-ux-lock" type="checkbox" checked style="width: 15px; height: 15px; accent-color: #141413; cursor: pointer;" />
+                    <span id="chk-ux-lock-text" class="badge badge-pass">✓ 보호됨</span>
+                  </span>
+                </label>
+
+                <!-- Live ux_overrides.config_json -->
+                <div class="sub-surface" style="background: var(--surface);">
+                  <div class="sub-header" style="padding: 8px 12px; font-size: 10.5px;">
+                    <span style="color: var(--graphite);">ux_overrides.config_json (LIVE)</span>
+                    <span style="color: var(--ash);">DECLARATIVE</span>
+                  </div>
+                  <pre id="ux-json-preview" class="code-paper" style="padding: 12px; font-size: 11px; background: var(--surface);"></pre>
+                </div>
+              </div>
+
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- SECTION D: WISPR-STYLE EDITORIAL CLOSING CTA & MINIMAL FOOTER -->
+    <section class="closing-section">
+      <div class="section-wrap">
+        <div class="closing-card">
+          <div class="eyebrow" style="justify-content: center;">
+            <span>AUTONOMOUS · DETERMINISTIC · QUIET</span>
+          </div>
+          <h2 class="closing-heading">명세에서 배포까지,<br /><em>가장 조용한 자율 파이프라인.</em></h2>
+          <p class="editorial-sub" style="max-width: 560px; margin: 0 auto;">
+            변경이 잦은 그래프는 JSON으로, 신뢰와 예산은 관계형 DB로.<br />
+            이제 불필요한 토큰과 반복 지시 없이 결정적인 순간에만 개입하세요.
+          </p>
+          <div class="closing-actions">
+            <button id="btn-back-top" type="button" class="btn-ink-pill">맨 위로 올라가 파티클 보기 ↑</button>
+            <a href="#interactive-lab" class="btn-hair-pill">아키텍처 랩 다시 보기</a>
+          </div>
+        </div>
+
+        <footer class="site-footer">
+          <span>GraphSpec — Autonomous Graph-Driven Development &amp; RDB Token Optimization</span>
+          <span>Warm Monochrome Paper &amp; Ink Edition · Reversible Sand-Wind Engine</span>
+        </footer>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ==================== 5. FLOATING WISPR-STYLE PILL HUD ==================== -->
+  <div id="bottom-hud">
+    <div class="hud-pill">
+      <div class="hud-ch-wrap">
+        <div class="hud-ch-row" role="group" aria-label="챕터 이동">
+          <button type="button" class="hud-ch-btn active" data-jump="0" title="01 · AGDD">01</button>
+          <button type="button" class="hud-ch-btn" data-jump="1" title="02 · -90% 토큰">02</button>
+          <button type="button" class="hud-ch-btn" data-jump="2" title="03 · 5-Node 파이프라인">03</button>
+          <button type="button" class="hud-ch-btn" data-jump="3" title="04 · 인메모리 RDB">04</button>
+          <button type="button" class="hud-ch-btn" data-jump="4" title="05 · AST 의미 검증">05</button>
+          <button type="button" class="hud-ch-btn" data-jump="5" title="06 · 리서치 & UX">06</button>
+        </div>
+        <div class="hud-ch-progress" aria-hidden="true">
+          <div id="hud-ch-fill"></div>
+        </div>
+      </div>
+
+      <span class="hud-sep"></span>
+
+      <form id="hud-morph-form" class="hud-form">
+        <input id="hud-morph-input" class="hud-input" type="text" maxlength="8" placeholder="글자 입력 (최대 8자)" aria-label="파티클 글자 입력" />
+        <button type="submit" class="hud-btn">변형</button>
+        <button id="hud-restore-btn" type="button" class="hud-btn active hidden">스크롤 복귀</button>
+      </form>
+
+      <span class="hud-sep"></span>
+
+      <button id="hud-scatter-btn" type="button" class="hud-btn">흩뿌리기</button>
+      <button id="hud-focus-btn" type="button" class="hud-btn">입자 집중</button>
+    </div>
+  </div>
+
+  <!-- ==================== ZERO-DEPENDENCY APPLICATION SCRIPT ==================== -->
+  <script>
+    (function () {
+      'use strict';
+
+      /* =========================================================================
+       * SHARED MATH & DETERMINISTIC RANDOM UTILITIES
+       * ========================================================================= */
+      function clamp(v, min, max) {
+        return v < min ? min : (v > max ? max : v);
+      }
+
+      function lerp(a, b, t) {
+        return a + (b - a) * t;
+      }
+
+      function smoothstep(edge0, edge1, x) {
+        const t = clamp((x - edge0) / (edge1 - edge0), 0, 1);
+        return t * t * (3 - 2 * t);
+      }
+
+      function mulberry32(seed) {
+        let a = seed >>> 0;
+        return function () {
+          a |= 0;
+          a = (a + 0x6D2B79F5) | 0;
+          let t = Math.imul(a ^ (a >>> 15), 1 | a);
+          t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+          return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+        };
+      }
+
+      /* =========================================================================
+       * 1. REVERSIBLE SCROLL-SCRUBBED INK-SAND WIND PARTICLE ENGINE
+       * ========================================================================= */
+      const canvas = document.getElementById('sand-canvas');
+      const ctx = canvas.getContext('2d');
+      const scrollTrackEl = document.getElementById('scroll-track');
+      const washEl = document.getElementById('stage-wash');
+      const chapterPanels = Array.from(document.querySelectorAll('.chapter-panel'));
+      const hudChapterBtns = Array.from(document.querySelectorAll('.hud-ch-btn'));
+
+      // Strict Warm Monochrome Ink-Sand Palette on #FAF9F6 Paper
+      const INK_TONES = [
+        { r: 20,  g: 20,  b: 19  }, // #141413 Primary Deep Ink
+        { r: 46,  g: 45,  b: 42  }, // #2E2D2A Soft Ink
+        { r: 94,  g: 92,  b: 86  }, // #5E5C56 Graphite Dust
+        { r: 150, g: 146, b: 136 }, // #969288 Warm Ash Sand
+      ];
+
+      const CHAPTER_META = [
+        { cxRatio: 0.72, textSide: 'left'  }, // 01: AGDD + orbital ring w/ 5 nodes
+        { cxRatio: 0.28, textSide: 'right' }, // 02: -90% + concentric wave rings
+        { cxRatio: 0.72, textSide: 'left'  }, // 03: 5-node pentagonal graph + feedback arc
+        { cxRatio: 0.28, textSide: 'right' }, // 04: 3D isometric DB cylinder + check badge
+        { cxRatio: 0.72, textSide: 'left'  }, // 05: AST + hexagonal shield & tree
+        { cxRatio: 0.28, textSide: 'right' }, // 06: DOCS + sweeping radar grid
+      ];
+
+      let vw = Math.max(300, window.innerWidth || 1024);
+      let vh = Math.max(300, window.innerHeight || 768);
+      let dpr = Math.min(window.devicePixelRatio || 1, 2);
+
+      let sandParticles = [];
+      let dustSpecks = [];
+      let shapes = [];
+      let shapeAnchors = [];
+      let labField = [];
+      let customShape = null;
+
+      // Clean vector guides layered gently behind ink particles for Graph (Ch 03) & Radar (Ch 06)
+      let geoGraphNodes = [];
+      let geoRadar = null;
+
+      // Reversible continuous scroll scrubbing timeline: p in [0.0 .. 5.8]
+      // 0.0..5.0 = 6 Chapters, 5.0..5.8 = gentle dispersion into calm paper-dust field
+      const TOTAL_UNITS = 5.8;
+      let targetP = 0;
+      let smoothedP = 0;
+      let customBlendTarget = 0;
+      let customBlend = 0;
+      let customText = null;
+      let focusView = false;
+
+      let lastScrollY = window.scrollY || 0;
+      let scrollVel = 0;
+      let smoothDir = 1;
+      let scatterGust = 0;
+      let scatterDirX = 1;
+
+      const pointer = { x: -9999, y: -9999, active: false, radius: 118 };
+
+      function getParticleCount(width) {
+        return width >= 900 ? 2200 : 1050;
+      }
+
+      function pickInkTone(rng, darkBias) {
+        const roll = rng();
+        if (roll < darkBias) return INK_TONES[0];
+        if (roll < darkBias + 0.34) return INK_TONES[1];
+        if (roll < darkBias + 0.72) return INK_TONES[2];
+        return INK_TONES[3];
+      }
+
+      function getAnchorForChapter(idx) {
+        const cfg = CHAPTER_META[idx] || CHAPTER_META[0];
+        if (vw >= 900) {
+          return {
+            cx: vw * cfg.cxRatio,
+            cy: vh * 0.52,
+            scale: Math.min(vw * 0.40, vh * 0.58, 440),
+          };
+        }
+        return {
+          cx: vw * 0.50,
+          cy: vh * 0.31,
+          scale: Math.min(vw * 0.78, vh * 0.32, 260),
+        };
+      }
+
+      /**
+       * Consistently sort target coordinates by spatial layer + polar angle
+       * so particle k glides cohesively between chapters with zero chaotic teleporting.
+       */
+      function sortCohesively(points, anchor, seed) {
+        const rng = mulberry32(seed);
+        const invS = 1 / Math.max(1, anchor.scale);
+        for (let i = 0; i < points.length; i++) {
+          const pt = points[i];
+          const nx = (pt.x - anchor.cx) * invS;
+          const ny = (pt.y - anchor.cy) * invS;
+          const ang = Math.atan2(ny, nx);
+          pt._sortKey = ny * 2.0 + nx * 0.45 + ang * 0.16 + (rng() - 0.5) * 0.12;
+        }
+        points.sort((a, b) => a._sortKey - b._sortKey);
+        return points;
+      }
+
+      /**
+       * Offscreen Canvas Editorial Serif / Sans Typography Sampler
+       */
+      function sampleTextShape(text, count, anchor, ringMode, seed, useSerif) {
+        const rng = mulberry32(seed);
+        const { cx, cy, scale } = anchor;
+        const pts = [];
+
+        try {
+          const off = document.createElement('canvas');
+          const octx = off.getContext('2d');
+          const boxW = Math.max(240, Math.floor(scale * 1.46));
+          const boxH = Math.max(120, Math.floor(scale * 0.64));
+          off.width = boxW;
+          off.height = boxH;
+
+          const len = Math.max(1, text.length);
+          let fontSize = Math.floor(boxW / (len * 0.62));
+          fontSize = Math.min(fontSize, Math.floor(boxH * 0.78), 156);
+          fontSize = Math.max(fontSize, 26);
+
+          const fontStack = useSerif
+            ? '700 ' + fontSize + 'px "Iowan Old Style", "Palatino Linotype", "Book Antiqua", "Nanum Myeongjo", Georgia, serif'
+            : '800 ' + fontSize + 'px -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Malgun Gothic", "Segoe UI", sans-serif';
+
+          octx.clearRect(0, 0, boxW, boxH);
+          octx.fillStyle = '#141413';
+          octx.textAlign = 'center';
+          octx.textBaseline = 'middle';
+          octx.font = fontStack;
+
+          while (octx.measureText(text).width > boxW * 0.86 && fontSize > 18) {
+            fontSize -= 3;
+            octx.font = useSerif
+              ? '700 ' + fontSize + 'px "Iowan Old Style", "Palatino Linotype", "Book Antiqua", "Nanum Myeongjo", Georgia, serif'
+              : '800 ' + fontSize + 'px -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Malgun Gothic", "Segoe UI", sans-serif';
+          }
+          octx.fillText(text, boxW / 2, boxH / 2);
+
+          const img = octx.getImageData(0, 0, boxW, boxH).data;
+          const step = 3;
+          for (let y = 0; y < boxH; y += step) {
+            for (let x = 0; x < boxW; x += step) {
+              if (img[(y * boxW + x) * 4 + 3] > 110) {
+                pts.push({
+                  x: cx - boxW / 2 + x + (rng() - 0.5) * 1.15,
+                  y: cy - boxH / 2 + y + (rng() - 0.5) * 1.15,
+                });
+              }
+            }
+          }
+        } catch (_err) {
+          for (let i = 0; i < 360; i++) {
+            const a = (i / 360) * Math.PI * 2;
+            pts.push({ x: cx + Math.cos(a) * scale * 0.34, y: cy + Math.sin(a) * scale * 0.34 });
+          }
+        }
+
+        // Deterministic Fisher-Yates shuffle for even glyph coverage
+        for (let i = pts.length - 1; i > 0; i--) {
+          const j = Math.floor(rng() * (i + 1));
+          const tmp = pts[i];
+          pts[i] = pts[j];
+          pts[j] = tmp;
+        }
+
+        const targets = [];
+        const auxRatio = ringMode === 'vortex' ? 0.36 : (ringMode === 'orbitNodes' ? 0.32 : 0.14);
+        const auxCount = Math.floor(count * auxRatio);
+        const mainCount = count - auxCount;
+
+        for (let i = 0; i < mainCount; i++) {
+          const p = pts.length > 0 ? pts[i % pts.length] : { x: cx, y: cy };
+          const tone = pickInkTone(rng, 0.62);
+          targets.push({
+            x: p.x, y: p.y,
+            size: 1.0 + rng() * 1.15,
+            r: tone.r, g: tone.g, b: tone.b, alpha: 0.88,
+            role: 'text',
+          });
+        }
+
+        for (let i = 0; i < auxCount; i++) {
+          if (ringMode === 'orbitNodes') {
+            // 5 rotating orbital node dots + crisp elliptical orbital ring
+            const dotBudget = Math.floor(auxCount * 0.24);
+            const rx = scale * 0.60;
+            const ry = scale * 0.30;
+            const tilt = -0.22;
+            if (i < dotBudget) {
+              const nodeIdx = i % 5;
+              const baseAngle = (nodeIdx / 5) * Math.PI * 2;
+              const jx = (rng() - 0.5) * 10;
+              const jy = (rng() - 0.5) * 10;
+              const ox = Math.cos(baseAngle) * rx + jx;
+              const oy = Math.sin(baseAngle) * ry + jy;
+              targets.push({
+                x: cx + ox * Math.cos(tilt) - oy * Math.sin(tilt),
+                y: cy + ox * Math.sin(tilt) + oy * Math.cos(tilt),
+                size: 1.35 + rng() * 0.8,
+                r: 20, g: 20, b: 19, alpha: 0.92,
+                role: 'orbitDot',
+                cx, cy, angle: baseAngle, rx, ry, tilt, jx, jy,
+              });
+            } else {
+              const a = ((i - dotBudget) / Math.max(1, auxCount - dotBudget)) * Math.PI * 2 + rng() * 0.06;
+              const tier = i % 2;
+              const rrx = scale * (0.60 + tier * 0.11);
+              const rry = scale * (0.30 + tier * 0.07);
+              const tTilt = tier === 0 ? -0.22 : 0.20;
+              const ox = Math.cos(a) * rrx;
+              const oy = Math.sin(a) * rry;
+              const tone = pickInkTone(rng, tier === 0 ? 0.35 : 0.14);
+              targets.push({
+                x: cx + ox * Math.cos(tTilt) - oy * Math.sin(tTilt),
+                y: cy + ox * Math.sin(tTilt) + oy * Math.cos(tTilt),
+                size: 0.8 + rng() * 0.85,
+                r: tone.r, g: tone.g, b: tone.b, alpha: tier === 0 ? 0.62 : 0.40,
+                role: 'orbit',
+                cx, cy, angle: a, rx: rrx, ry: rry, tilt: tTilt, tier,
+              });
+            }
+          } else if (ringMode === 'vortex') {
+            const tier = i % 3;
+            const a = (i / auxCount) * Math.PI * 2 * 3 + rng() * 0.08;
+            const rad = scale * (0.45 + tier * 0.115) + (rng() - 0.5) * 7;
+            const tone = pickInkTone(rng, tier === 0 ? 0.50 : 0.18);
+            targets.push({
+              x: cx + Math.cos(a) * rad,
+              y: cy + Math.sin(a) * rad * 0.88,
+              size: 0.85 + rng() * 0.95,
+              r: tone.r, g: tone.g, b: tone.b, alpha: 0.72 - tier * 0.14,
+              role: 'vortex',
+              cx, cy, angle: a, rx: rad, ry: rad * 0.88, tier,
+            });
+          } else {
+            const a = rng() * Math.PI * 2;
+            const rad = scale * (0.50 + rng() * 0.34);
+            targets.push({
+              x: cx + Math.cos(a) * rad,
+              y: cy + Math.sin(a) * rad * 0.72,
+              size: 0.75 + rng() * 0.7,
+              r: 150, g: 146, b: 136, alpha: 0.32,
+              role: 'ambient',
+            });
+          }
+        }
+        return sortCohesively(targets, anchor, seed + 17);
+      }
+
+      /**
+       * Ch 03: 5-Node Pentagonal Directed Graph + Animated Dotted Flow Arcs + Lower Feedback Loop
+       */
+      function samplePentagonGraphShape(count, anchor, seed) {
+        const rng = mulberry32(seed);
+        const { cx, cy, scale } = anchor;
+        const labels = ['UPSTREAM', 'SPEC', 'DEV', 'VERIFY', 'AUDIT'];
+        const ringR = scale * 0.38;
+        const nodeR = Math.max(14, Math.min(24, scale * 0.064));
+
+        const nodes = [];
+        for (let i = 0; i < 5; i++) {
+          const ang = -Math.PI / 2 + (i * Math.PI * 2) / 5;
+          nodes.push({
+            x: cx + Math.cos(ang) * ringR,
+            y: cy - scale * 0.04 + Math.sin(ang) * ringR * 0.86,
+            r: nodeR,
+            label: labels[i],
+          });
+        }
+        geoGraphNodes = nodes;
+
+        const targets = [];
+        const perNode = Math.floor((count * 0.48) / 5);
+        const edgeCount = Math.floor(count * 0.26);
+        const feedbackCount = Math.floor(count * 0.18);
+
+        for (let n = 0; n < 5; n++) {
+          const nd = nodes[n];
+          for (let i = 0; i < perNode; i++) {
+            const a = (i / perNode) * Math.PI * 2 + rng() * 0.1;
+            const isCore = i % 5 === 0;
+            const rr = isCore ? rng() * nd.r * 0.42 : nd.r * (0.86 + rng() * 0.20);
+            const tone = pickInkTone(rng, isCore ? 0.85 : 0.48);
+            targets.push({
+              x: nd.x + Math.cos(a) * rr,
+              y: nd.y + Math.sin(a) * rr,
+              size: isCore ? 1.45 : 0.95 + rng() * 0.8,
+              r: tone.r, g: tone.g, b: tone.b, alpha: 0.88,
+              role: 'shape',
+            });
+          }
+        }
+
+        // Directed pentagonal forward edges (0->1->2->3->4->0)
+        for (let i = 0; i < edgeCount; i++) {
+          const seg = i % 5;
+          const a = nodes[seg];
+          const b = nodes[(seg + 1) % 5];
+          const fT = (Math.floor(i / 5) / Math.max(1, edgeCount / 5)) % 1;
+          const tone = pickInkTone(rng, 0.58);
+          targets.push({
+            x: lerp(a.x, b.x, fT),
+            y: lerp(a.y, b.y, fT),
+            size: 1.0 + rng() * 0.7,
+            r: tone.r, g: tone.g, b: tone.b, alpha: 0.76,
+            role: 'edgeFlow',
+            seg, flowT: fT,
+          });
+        }
+
+        // Lower curved Verify -> Dev & Audit -> Spec feedback loop arcs
+        for (let i = 0; i < feedbackCount; i++) {
+          const outer = i % 2 === 0;
+          const sN = outer ? nodes[3] : nodes[2];
+          const eN = outer ? nodes[4] : nodes[1];
+          const p0 = { x: sN.x, y: sN.y + nodeR * 0.8 };
+          const p1 = { x: cx, y: cy + scale * (outer ? 0.58 : 0.42) };
+          const p2 = { x: eN.x, y: eN.y + nodeR * 0.8 };
+          const fT = i / feedbackCount;
+          const inv = 1 - fT;
+          const tone = outer ? INK_TONES[1] : INK_TONES[2];
+          targets.push({
+            x: inv * inv * p0.x + 2 * inv * fT * p1.x + fT * fT * p2.x,
+            y: inv * inv * p0.y + 2 * inv * fT * p1.y + fT * fT * p2.y,
+            size: 0.9 + rng() * 0.75,
+            r: tone.r, g: tone.g, b: tone.b, alpha: outer ? 0.74 : 0.56,
+            role: 'arcFlow',
+            flowT: fT, p0, p1, p2,
+          });
+        }
+
+        while (targets.length < count) {
+          targets.push({
+            x: cx + (rng() - 0.5) * scale * 1.15,
+            y: cy + (rng() - 0.5) * scale * 0.92,
+            size: 0.75 + rng() * 0.65,
+            r: 150, g: 146, b: 136, alpha: 0.28,
+            role: 'ambient',
+          });
+        }
+        return sortCohesively(targets, anchor, seed + 17);
+      }
+
+      /**
+       * Ch 04: 3D Isometric In-Memory RDB Cylinder Stacked w/ Table Rows + Checkmark Badge
+       */
+      function sampleRdbCylinderShape(count, anchor, seed) {
+        const rng = mulberry32(seed);
+        const { cx, cy, scale } = anchor;
+        const targets = [];
+
+        const dbCx = cx - scale * 0.14;
+        const dbCy = cy - scale * 0.02;
+        const rx = scale * 0.29;
+        const ry = rx * 0.34;
+        const cylH = scale * 0.54;
+        const topY = dbCy - cylH / 2;
+
+        const platterCount = Math.floor(count * 0.46);
+        const rowRibCount = Math.floor(count * 0.24);
+        const badgeCount = Math.floor(count * 0.22);
+
+        for (let i = 0; i < platterCount; i++) {
+          const tier = i % 4;
+          let x, y, tone;
+          if (tier === 0) {
+            const a = rng() * Math.PI * 2;
+            const isRim = i % 3 !== 0;
+            const rf = isRim ? (0.95 + rng() * 0.06) : Math.sqrt(rng()) * 0.86;
+            x = dbCx + Math.cos(a) * rx * rf;
+            y = topY + Math.sin(a) * ry * rf;
+            tone = pickInkTone(rng, isRim ? 0.76 : 0.28);
+          } else {
+            const frac = tier / 3;
+            const a = rng() * Math.PI;
+            x = dbCx + Math.cos(a) * rx;
+            y = topY + cylH * frac + Math.sin(a) * ry;
+            tone = pickInkTone(rng, 0.58);
+          }
+          targets.push({ x, y, size: 0.95 + rng() * 0.95, r: tone.r, g: tone.g, b: tone.b, alpha: 0.86, role: 'shape' });
+        }
+
+        // Side cylinder ribs + structured table row dashes
+        const ribPos = [-1.0, -0.5, 0.0, 0.5, 1.0];
+        for (let i = 0; i < rowRibCount; i++) {
+          const rp = ribPos[i % ribPos.length];
+          const isOuter = Math.abs(rp) === 1.0;
+          const x = dbCx + rp * rx + (rng() - 0.5) * 1.5;
+          const yOff = Math.sqrt(Math.max(0, 1 - rp * rp)) * ry;
+          const y = topY + yOff + rng() * cylH;
+          const tone = isOuter ? INK_TONES[0] : INK_TONES[2];
+          targets.push({ x, y, size: isOuter ? 1.2 : 0.85, r: tone.r, g: tone.g, b: tone.b, alpha: isOuter ? 0.86 : 0.52, role: 'shape' });
+        }
+
+        // Crisp circular Checkmark Badge beside cylinder
+        const bx = cx + scale * 0.27;
+        const by = cy + scale * 0.14;
+        const br = scale * 0.17;
+        for (let i = 0; i < badgeCount; i++) {
+          const m = i % 5;
+          let x, y;
+          if (m < 3) {
+            const a = (i / badgeCount) * Math.PI * 2 * 3;
+            const rr = br * (0.94 + rng() * 0.08);
+            x = bx + Math.cos(a) * rr;
+            y = by + Math.sin(a) * rr;
+          } else if (m === 3) {
+            const f = rng();
+            x = bx - br * 0.38 + f * br * 0.28;
+            y = by + br * 0.02 + f * br * 0.28;
+          } else {
+            const f = rng();
+            x = bx - br * 0.10 + f * br * 0.54;
+            y = by + br * 0.30 - f * br * 0.58;
+          }
+          targets.push({ x, y, size: 1.1 + rng() * 0.75, r: 20, g: 20, b: 19, alpha: 0.90, role: 'shape' });
+        }
+
+        while (targets.length < count) {
+          targets.push({
+            x: cx + (rng() - 0.5) * scale * 1.18,
+            y: cy + (rng() - 0.5) * scale * 0.84,
+            size: 0.75 + rng() * 0.65,
+            r: 150, g: 146, b: 136, alpha: 0.28,
+            role: 'ambient',
+          });
+        }
+        return sortCohesively(targets, anchor, seed + 17);
+      }
+
+      /**
+       * Ch 05: Crisp "AST" Inside Geometric Hexagonal Shield w/ Branching Tree Nodes
+       */
+      function sampleAstShieldShape(count, anchor, seed) {
+        const rng = mulberry32(seed);
+        const { cx, cy, scale } = anchor;
+        const targets = [];
+
+        const rawText = sampleTextShape('AST', Math.floor(count * 0.34), {
+          cx, cy: cy - scale * 0.14, scale: scale * 0.52,
+        }, 'none', seed + 3, true);
+        for (let i = 0; i < rawText.length; i++) {
+          if (rawText[i].role === 'text') targets.push(rawText[i]);
+        }
+
+        const hexR = scale * 0.49;
+        const verts = [];
+        for (let k = 0; k < 6; k++) {
+          const a = -Math.PI / 2 + (k * Math.PI) / 3;
+          verts.push({ x: cx + Math.cos(a) * hexR, y: cy + Math.sin(a) * hexR });
+        }
+
+        const hexCount = Math.floor(count * 0.34);
+        for (let i = 0; i < hexCount; i++) {
+          const seg = i % 6;
+          const a = verts[seg];
+          const b = verts[(seg + 1) % 6];
+          const f = rng();
+          const inner = i % 4 === 0 ? 0.88 : 1.0;
+          const px = cx + (lerp(a.x, b.x, f) - cx) * inner;
+          const py = cy + (lerp(a.y, b.y, f) - cy) * inner;
+          const tone = inner === 1.0 ? pickInkTone(rng, 0.70) : INK_TONES[2];
+          targets.push({ x: px, y: py, size: inner === 1.0 ? 1.15 : 0.8, r: tone.r, g: tone.g, b: tone.b, alpha: inner === 1.0 ? 0.86 : 0.48, role: 'shape' });
+        }
+
+        const root = { x: cx, y: cy + scale * 0.04 };
+        const mids = [
+          { x: cx - scale * 0.18, y: cy + scale * 0.18 },
+          { x: cx + scale * 0.18, y: cy + scale * 0.18 },
+        ];
+        const leaves = [
+          { x: cx - scale * 0.28, y: cy + scale * 0.32 },
+          { x: cx - scale * 0.08, y: cy + scale * 0.32 },
+          { x: cx + scale * 0.08, y: cy + scale * 0.32 },
+          { x: cx + scale * 0.28, y: cy + scale * 0.32 },
+        ];
+        const edges = [
+          [root, mids[0]], [root, mids[1]],
+          [mids[0], leaves[0]], [mids[0], leaves[1]],
+          [mids[1], leaves[2]], [mids[1], leaves[3]],
+        ];
+        const allNodes = [root, ...mids, ...leaves];
+
+        const treeCount = Math.floor(count * 0.26);
+        for (let i = 0; i < treeCount; i++) {
+          if (i % 3 === 0) {
+            const nd = allNodes[i % allNodes.length];
+            const a = rng() * Math.PI * 2;
+            const r = rng() * 8.5;
+            targets.push({ x: nd.x + Math.cos(a) * r, y: nd.y + Math.sin(a) * r, size: 1.3, r: 20, g: 20, b: 19, alpha: 0.90, role: 'shape' });
+          } else {
+            const br = edges[i % edges.length];
+            const f = rng();
+            targets.push({
+              x: lerp(br[0].x, br[1].x, f),
+              y: lerp(br[0].y, br[1].y, f),
+              size: 0.95, r: 72, g: 70, b: 64, alpha: 0.76, role: 'shape',
+            });
+          }
+        }
+
+        while (targets.length < count) {
+          const v = verts[targets.length % 6];
+          const a = rng() * Math.PI * 2;
+          const r = 8 + rng() * 24;
+          targets.push({ x: v.x + Math.cos(a) * r, y: v.y + Math.sin(a) * r, size: 0.75, r: 150, g: 146, b: 136, alpha: 0.28, role: 'ambient' });
+        }
+        return sortCohesively(targets, anchor, seed + 17);
+      }
+
+      /**
+       * Ch 06: "DOCS" Centered in Sweeping Radar Grid w/ Pulsing Signal Rings
+       */
+      function sampleDocsRadarShape(count, anchor, seed) {
+        const rng = mulberry32(seed);
+        const { cx, cy, scale } = anchor;
+        const targets = [];
+
+        const rawText = sampleTextShape('DOCS', Math.floor(count * 0.36), {
+          cx, cy, scale: scale * 0.54,
+        }, 'none', seed + 5, true);
+        for (let i = 0; i < rawText.length; i++) {
+          if (rawText[i].role === 'text') targets.push(rawText[i]);
+        }
+
+        const outerR = scale * 0.50;
+        geoRadar = { cx, cy, r: outerR };
+
+        const ringCount = Math.floor(count * 0.44);
+        for (let i = 0; i < ringCount; i++) {
+          const tier = i % 3;
+          const a = (i / ringCount) * Math.PI * 2 * 3;
+          const rad = outerR * (0.60 + tier * 0.20);
+          const tone = pickInkTone(rng, tier === 2 ? 0.56 : 0.24);
+          targets.push({
+            x: cx + Math.cos(a) * rad,
+            y: cy + Math.sin(a) * rad,
+            size: 0.85 + rng() * 0.85,
+            r: tone.r, g: tone.g, b: tone.b, alpha: 0.74 - (2 - tier) * 0.14,
+            role: 'radarRing',
+            cx, cy, angle: a, rx: rad, ry: rad, tier,
+          });
+        }
+
+        // Crosshair compass ticks
+        const tickCount = Math.floor(count * 0.14);
+        for (let i = 0; i < tickCount; i++) {
+          const dir = i % 4;
+          const ang = (dir * Math.PI) / 2;
+          const rad = outerR * (0.92 + rng() * 0.24);
+          targets.push({
+            x: cx + Math.cos(ang) * rad + (rng() - 0.5) * 2.0,
+            y: cy + Math.sin(ang) * rad + (rng() - 0.5) * 2.0,
+            size: 1.05, r: 20, g: 20, b: 19, alpha: 0.82, role: 'shape',
+          });
+        }
+
+        while (targets.length < count) {
+          const a = rng() * Math.PI * 2;
+          const rad = outerR * (1.06 + rng() * 0.28);
+          targets.push({ x: cx + Math.cos(a) * rad, y: cy + Math.sin(a) * rad, size: 0.75, r: 150, g: 146, b: 136, alpha: 0.26, role: 'ambient' });
+        }
+        return sortCohesively(targets, anchor, seed + 17);
+      }
+
+      /**
+       * Calm dispersed paper-dust field when scrolled into below-the-fold sections (p: 5.0 -> 5.8)
+       */
+      function sampleCalmDustField(count, seed) {
+        const rng = mulberry32(seed);
+        const pts = [];
+        for (let i = 0; i < count; i++) {
+          const tone = pickInkTone(rng, 0.18);
+          pts.push({
+            x: rng() * vw,
+            y: rng() * vh,
+            size: 0.75 + rng() * 1.0,
+            r: tone.r, g: tone.g, b: tone.b, alpha: 0.34,
+            role: 'ambient',
+          });
+        }
+        return sortCohesively(pts, { cx: vw * 0.5, cy: vh * 0.5, scale: Math.max(vw, vh) }, seed + 19);
+      }
+
+      function precomputeAllShapes() {
+        const count = sandParticles.length;
+        shapeAnchors = CHAPTER_META.map((_, i) => getAnchorForChapter(i));
+        shapes = [
+          sampleTextShape('AGDD', count, shapeAnchors[0], 'orbitNodes', 101, true),
+          sampleTextShape('-90%', count, shapeAnchors[1], 'vortex', 202, true),
+          samplePentagonGraphShape(count, shapeAnchors[2], 303),
+          sampleRdbCylinderShape(count, shapeAnchors[3], 404),
+          sampleAstShieldShape(count, shapeAnchors[4], 505),
+          sampleDocsRadarShape(count, shapeAnchors[5], 606),
+        ];
+        labField = sampleCalmDustField(count, 707);
+
+        if (customText) {
+          const nearest = clamp(Math.round(smoothedP), 0, 5);
+          const anchor = smoothedP > 5.2
+            ? { cx: vw * 0.5, cy: vh * 0.48, scale: Math.min(vw * 0.48, vh * 0.52, 420) }
+            : shapeAnchors[nearest];
+          customShape = sampleTextShape(customText, count, anchor, 'orbitNodes', 909, true);
+        }
+      }
+
+      function initParticles() {
+        const count = getParticleCount(vw);
+        const rng = mulberry32(2026);
+
+        sandParticles = [];
+        for (let i = 0; i < count; i++) {
+          sandParticles.push({
+            x: vw * 0.72,
+            y: vh * 0.52,
+            px: vw * 0.72,
+            py: vh * 0.52,
+            vx: 0,
+            vy: 0,
+            r: 20, g: 20, b: 19, alpha: 0.85,
+            size: 1.0,
+            phase: rng() * 0.38,                 // deterministic stagger [0..0.38]
+            arcHeight: (rng() * 2 - 1) * 118,    // diagonal sand arc amplitude
+            windAmp: 48 + rng() * 96,            // horizontal sand-wind sweep
+            noiseSeed: rng() * Math.PI * 20,
+            shimmerPhase: rng() * Math.PI * 2,
+          });
+        }
+
+        // 120 ambient drifting paper-dust specks
+        dustSpecks = [];
+        for (let i = 0; i < 120; i++) {
+          dustSpecks.push({
+            x: rng() * vw,
+            y: rng() * vh,
+            vx: 0.12 + rng() * 0.28,
+            vy: (rng() - 0.5) * 0.16,
+            size: 0.6 + rng() * 0.9,
+            alpha: 0.08 + rng() * 0.18,
+            phase: rng() * Math.PI * 2,
+          });
+        }
+
+        precomputeAllShapes();
+
+        // Snap immediately to Chapter 01 ("AGDD" + orbital ring) on frame 1 at y = 0
+        const s0 = shapes[0];
+        for (let i = 0; i < sandParticles.length; i++) {
+          const p = sandParticles[i];
+          const t = s0[i];
+          p.x = t.x; p.y = t.y;
+          p.px = t.x; p.py = t.y;
+          p.r = t.r; p.g = t.g; p.b = t.b;
+          p.size = t.size; p.alpha = t.alpha;
+        }
+      }
+
+      function getMorphSpan() {
+        const trackH = scrollTrackEl ? scrollTrackEl.offsetHeight : vh * 9.2;
+        return Math.max(1, trackH - vh);
+      }
+
+      function readScrollProgress() {
+        const y = window.scrollY || 0;
+        const trackTop = scrollTrackEl ? scrollTrackEl.offsetTop : 0;
+        const morphSpan = getMorphSpan();
+        const relY = y - trackTop;
+
+        const maxDoc = Math.max(1, document.documentElement.scrollHeight - vh);
+        const docPct = clamp((y / maxDoc) * 100, 0, 100);
+        const navFill = document.getElementById('nav-progress-fill');
+        if (navFill) navFill.style.width = `${docPct.toFixed(2)}%`;
+
+        targetP = clamp((relY / morphSpan) * TOTAL_UNITS, 0, TOTAL_UNITS);
+      }
+
+      function resizeCanvasSafely() {
+        vw = Math.max(300, window.innerWidth || 1024);
+        vh = Math.max(300, window.innerHeight || 768);
+        dpr = Math.min(window.devicePixelRatio || 1, 2);
+        canvas.width = Math.floor(vw * dpr);
+        canvas.height = Math.floor(vh * dpr);
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+        if (sandParticles.length !== getParticleCount(vw)) {
+          initParticles();
+        } else {
+          precomputeAllShapes();
+        }
+        readScrollProgress();
+      }
+
+      function evalTargetPoint(pt, tSec) {
+        let x = pt.x;
+        let y = pt.y;
+        if (pt.role === 'orbit') {
+          const dir = pt.tier === 0 ? 1 : -1;
+          const a = pt.angle + tSec * 0.24 * dir;
+          const ox = Math.cos(a) * pt.rx;
+          const oy = Math.sin(a) * pt.ry;
+          x = pt.cx + ox * Math.cos(pt.tilt) - oy * Math.sin(pt.tilt);
+          y = pt.cy + ox * Math.sin(pt.tilt) + oy * Math.cos(pt.tilt);
+        } else if (pt.role === 'orbitDot') {
+          const a = pt.angle + tSec * 0.24;
+          const ox = Math.cos(a) * pt.rx + pt.jx;
+          const oy = Math.sin(a) * pt.ry + pt.jy;
+          x = pt.cx + ox * Math.cos(pt.tilt) - oy * Math.sin(pt.tilt);
+          y = pt.cy + ox * Math.sin(pt.tilt) + oy * Math.cos(pt.tilt);
+        } else if (pt.role === 'vortex') {
+          const pulse = 1 + Math.sin(tSec * 2.0 - pt.tier * 1.0) * 0.055;
+          const a = pt.angle + tSec * (pt.tier % 2 === 0 ? 0.26 : -0.20);
+          x = pt.cx + Math.cos(a) * pt.rx * pulse;
+          y = pt.cy + Math.sin(a) * pt.ry * pulse;
+        } else if (pt.role === 'edgeFlow' && geoGraphNodes.length === 5) {
+          const fT = (pt.flowT + tSec * 0.20) % 1;
+          const a = geoGraphNodes[pt.seg];
+          const b = geoGraphNodes[(pt.seg + 1) % 5];
+          x = lerp(a.x, b.x, fT);
+          y = lerp(a.y, b.y, fT);
+        } else if (pt.role === 'arcFlow' && pt.p0) {
+          const fT = (pt.flowT + tSec * 0.16) % 1;
+          const inv = 1 - fT;
+          x = inv * inv * pt.p0.x + 2 * inv * fT * pt.p1.x + fT * fT * pt.p2.x;
+          y = inv * inv * pt.p0.y + 2 * inv * fT * pt.p1.y + fT * fT * pt.p2.y;
+        } else if (pt.role === 'radarRing') {
+          const pulse = 1 + Math.sin(tSec * 1.8 - pt.tier * 0.9) * 0.03;
+          const a = pt.angle + tSec * (0.15 - pt.tier * 0.035);
+          x = pt.cx + Math.cos(a) * pt.rx * pulse;
+          y = pt.cy + Math.sin(a) * pt.ry * pulse;
+        }
+        return { x, y };
+      }
+
+      function updateEditorialChrome(idxA, idxB, morphT, labBlend) {
+        const chapterVisMult = 1 - smoothstep(0.02, 0.45, labBlend);
+        const isInBelow = labBlend > 0.35;
+        document.body.classList.toggle('in-below', isInBelow);
+
+        // Symmetrical fade/glide of fixed chapter panels based on |smoothedP - i|
+        for (let i = 0; i < chapterPanels.length; i++) {
+          const panel = chapterPanels[i];
+          const delta = smoothedP - i;
+          const dist = Math.abs(delta);
+
+          if (dist > 0.48 || chapterVisMult <= 0.01) {
+            panel.style.opacity = '0';
+            panel.style.visibility = 'hidden';
+            panel.style.pointerEvents = 'none';
+            const yOff = delta > 0 ? -24 : 24;
+            panel.style.transform = vw >= 900
+              ? `translate3d(0, calc(-50% + ${yOff}px), 0)`
+              : `translate3d(0, ${yOff}px, 0)`;
+          } else {
+            const vis = (1 - smoothstep(0.10, 0.48, dist)) * chapterVisMult;
+            const yOff = clamp(-delta * 52, -24, 24);
+            panel.style.opacity = vis.toFixed(3);
+            panel.style.visibility = 'visible';
+            panel.style.pointerEvents = vis > 0.55 && !focusView ? 'auto' : 'none';
+            panel.style.transform = vw >= 900
+              ? `translate3d(0, calc(-50% + ${yOff.toFixed(1)}px), 0)`
+              : `translate3d(0, ${(yOff * 0.5).toFixed(1)}px, 0)`;
+          }
+        }
+
+        // Soft directional paper wash behind editorial copy on desktop
+        if (vw >= 900 && !focusView) {
+          const cosV = Math.cos(clamp(smoothedP, 0, 5) * Math.PI);
+          const leftW = Math.max(0, cosV) * chapterVisMult;
+          const rightW = Math.max(0, -cosV) * chapterVisMult;
+          if (leftW > 0.02) {
+            washEl.style.background = `linear-gradient(90deg, rgba(250,249,246,${(0.92 * leftW).toFixed(2)}) 0%, rgba(250,249,246,${(0.56 * leftW).toFixed(2)}) 40%, rgba(250,249,246,0) 62%)`;
+          } else if (rightW > 0.02) {
+            washEl.style.background = `linear-gradient(270deg, rgba(250,249,246,${(0.92 * rightW).toFixed(2)}) 0%, rgba(250,249,246,${(0.56 * rightW).toFixed(2)}) 40%, rgba(250,249,246,0) 62%)`;
+          } else {
+            washEl.style.background = 'none';
+          }
+        } else {
+          washEl.style.background = 'none';
+        }
+
+        // Nav status pill & bottom HUD continuous progress fill
+        const pad2 = (n) => String(n).padStart(2, '0');
+        const nearest = clamp(Math.round(smoothedP), 0, 5);
+        const chPct = clamp((smoothedP / 5) * 100, 0, 100);
+
+        const navPill = document.getElementById('nav-morph-pill');
+        if (navPill) {
+          if (customBlend > 0.25 && customText) {
+            navPill.textContent = `CUSTOM · "${customText}"`;
+          } else if (isInBelow) {
+            navPill.textContent = 'LAB · AMBIENT';
+          } else if (morphT > 0.02 && morphT < 0.98) {
+            const pct = Math.round(morphT * 100);
+            if (smoothDir < -0.12) {
+              navPill.textContent = `${pad2(idxB + 1)} → ${pad2(idxA + 1)} · ${100 - pct}%`;
+            } else {
+              navPill.textContent = `${pad2(idxA + 1)} → ${pad2(idxB + 1)} · ${pct}%`;
+            }
+          } else {
+            const locked = morphT >= 0.98 ? idxB : idxA;
+            navPill.textContent = `${pad2(locked + 1)} / 06 · LOCKED`;
+          }
+        }
+
+        const hudFill = document.getElementById('hud-ch-fill');
+        if (hudFill) hudFill.style.width = `${chPct.toFixed(1)}%`;
+
+        hudChapterBtns.forEach((btn) => {
+          const idx = Number(btn.dataset.jump);
+          btn.classList.toggle('active', !isInBelow && idx === nearest);
+        });
+      }
+
+      function animate(now) {
+        requestAnimationFrame(animate);
+        const tSec = now * 0.001;
+
+        const currY = window.scrollY || 0;
+        const deltaY = clamp(currY - lastScrollY, -75, 75);
+        lastScrollY = currY;
+        scrollVel = scrollVel * 0.80 + deltaY * 0.26;
+
+        // Smooth damped reversible scrubbing: factor 0.075
+        const pDiff = targetP - smoothedP;
+        smoothedP += pDiff * 0.075;
+        if (Math.abs(pDiff) > 0.0006) {
+          smoothDir = lerp(smoothDir, clamp(pDiff * 24, -1, 1), 0.14);
+        }
+
+        customBlend += (customBlendTarget - customBlend) * 0.075;
+        scatterGust *= 0.93;
+        if (scatterGust < 0.004) scatterGust = 0;
+
+        const clampedChapterP = clamp(smoothedP, 0, 4.9999);
+        const idxA = Math.floor(clampedChapterP);
+        const idxB = Math.min(idxA + 1, 5);
+        const rawT = clampedChapterP - idxA;
+        // Rest plateau near integer chapters for crisp readability
+        const t = smoothstep(0.12, 0.88, rawT);
+
+        // Seamless dispersion when scrolling past Chapter 06 (p: 5.0 -> 5.8)
+        const labBlend = smoothstep(5.04, 5.76, smoothedP);
+
+        const sideSign = idxA % 2 === 0 ? -1 : 1;
+        const dirSign = sideSign * (smoothDir >= 0 ? 1 : -1);
+
+        updateEditorialChrome(idxA, idxB, t, labBlend);
+
+        ctx.clearRect(0, 0, vw, vh);
+
+        // 1. 120 Ambient Drifting Paper-Dust Specks
+        for (let i = 0; i < dustSpecks.length; i++) {
+          const d = dustSpecks[i];
+          const wx = d.vx + dirSign * Math.abs(pDiff) * 24 + scatterDirX * scatterGust * 3.2;
+          const wy = d.vy - scrollVel * 0.13 + Math.sin(tSec * 1.0 + d.phase) * 0.18;
+          d.x = (d.x + wx + vw) % vw;
+          d.y = (d.y + wy + vh) % vh;
+          ctx.fillStyle = `rgba(92, 90, 84, ${d.alpha})`;
+          ctx.beginPath();
+          ctx.arc(d.x, d.y, d.size, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        // 2. Subtle Ink Vector Guides for Ch 03 (Graph) & Ch 06 (Radar)
+        if (customBlend < 0.25) {
+          const cFade = 1 - customBlend * 4;
+          const chFade = 1 - smoothstep(0.02, 0.45, labBlend);
+
+          const graphVis = clamp(1 - Math.abs(smoothedP - 2) * 2.4, 0, 1) * chFade * cFade;
+          if (graphVis > 0.02 && geoGraphNodes.length === 5) {
+            ctx.save();
+            ctx.strokeStyle = `rgba(20, 20, 19, ${(0.14 * graphVis).toFixed(3)})`;
+            ctx.lineWidth = 1;
+            ctx.setLineDash([3, 4]);
+            for (let i = 0; i < 5; i++) {
+              const a = geoGraphNodes[i];
+              const b = geoGraphNodes[(i + 1) % 5];
+              ctx.beginPath();
+              ctx.moveTo(a.x, a.y);
+              ctx.lineTo(b.x, b.y);
+              ctx.stroke();
+            }
+            ctx.setLineDash([]);
+            ctx.font = '600 9.5px ui-monospace, SFMono-Regular, Menlo, monospace';
+            ctx.textAlign = 'center';
+            ctx.fillStyle = `rgba(20, 20, 19, ${(0.72 * graphVis).toFixed(3)})`;
+            for (let i = 0; i < 5; i++) {
+              const nd = geoGraphNodes[i];
+              ctx.fillText(nd.label, nd.x, nd.y - nd.r - 9);
+            }
+            ctx.restore();
+          }
+
+          const radarVis = clamp(1 - Math.abs(smoothedP - 5) * 2.4, 0, 1) * chFade * cFade;
+          if (radarVis > 0.02 && geoRadar) {
+            ctx.save();
+            const sweep = tSec * 1.15;
+            const g = ctx.createRadialGradient(geoRadar.cx, geoRadar.cy, 8, geoRadar.cx, geoRadar.cy, geoRadar.r);
+            g.addColorStop(0, 'rgba(20, 20, 19, 0)');
+            g.addColorStop(1, `rgba(20, 20, 19, ${(0.11 * radarVis).toFixed(3)})`);
+            ctx.fillStyle = g;
+            ctx.beginPath();
+            ctx.moveTo(geoRadar.cx, geoRadar.cy);
+            ctx.arc(geoRadar.cx, geoRadar.cy, geoRadar.r, sweep, sweep + 0.56);
+            ctx.closePath();
+            ctx.fill();
+            ctx.restore();
+          }
+        }
+
+        // 3. Reversible Staggered Ink-Sand Wind Physics & Graphite Streaks (source-over on light paper)
+        const shapeA = shapes[idxA];
+        const shapeB = shapes[idxB];
+        if (!shapeA || !shapeB) return;
+
+        const repR = pointer.radius;
+        const repR2 = repR * repR;
+
+        ctx.save();
+        ctx.lineCap = 'round';
+
+        for (let k = 0; k < sandParticles.length; k++) {
+          const p = sandParticles[k];
+          const ptA = shapeA[k];
+          const ptB = shapeB[k];
+
+          // Per-particle deterministic stagger [0..0.38] -> smoothstep e
+          const u = clamp((t - p.phase) / (1 - 0.38), 0, 1);
+          const e = u * u * (3 - 2 * u);
+          const flight = Math.sin(e * Math.PI);
+
+          const posA = evalTargetPoint(ptA, tSec);
+          const posB = evalTargetPoint(ptB, tSec);
+
+          let bx = lerp(posA.x, posB.x, e);
+          let by = lerp(posA.y, posB.y, e);
+          let tr = lerp(ptA.r, ptB.r, e);
+          let tg = lerp(ptA.g, ptB.g, e);
+          let tb = lerp(ptA.b, ptB.b, e);
+          let tSize = lerp(ptA.size, ptB.size, e);
+          let tAlpha = lerp(ptA.alpha, ptB.alpha, e);
+
+          // Aeolian diagonal sand-wind arc + sine turbulence
+          let swirlX = flight * (Math.cos(p.noiseSeed + tSec * 1.35) * p.windAmp * 0.55 + dirSign * p.windAmp * 0.45);
+          let swirlY = flight * (p.arcHeight + Math.sin(p.noiseSeed * 1.5 + tSec * 1.75) * 44) - scrollVel * flight * 1.35;
+          let totalFlight = flight;
+
+          // Reversible dispersion into calm ambient paper dust (p: 5.0 -> 5.8)
+          if (labBlend > 0.002 && labField[k]) {
+            const lu = clamp((labBlend - p.phase * 0.62) / 0.76, 0, 1);
+            const le = lu * lu * (3 - 2 * lu);
+            const lf = Math.sin(le * Math.PI);
+            const lp = labField[k];
+            bx = lerp(bx, lp.x + Math.sin(tSec * 0.42 + p.noiseSeed) * 18, le);
+            by = lerp(by, lp.y + Math.cos(tSec * 0.35 + p.shimmerPhase) * 14, le);
+            swirlX += lf * Math.cos(p.noiseSeed + tSec * 1.3) * 64;
+            swirlY += lf * p.arcHeight * 0.65;
+            tr = lerp(tr, lp.r, le);
+            tg = lerp(tg, lp.g, le);
+            tb = lerp(tb, lp.b, le);
+            tAlpha = lerp(tAlpha, lp.alpha, le);
+            totalFlight = Math.max(totalFlight, lf);
+          }
+
+          // Reversible custom user text morph
+          if (customBlend > 0.002 && customShape && customShape[k]) {
+            const cu = clamp((customBlend - p.phase * 0.5) / 0.81, 0, 1);
+            const ce = cu * cu * (3 - 2 * cu);
+            const cf = Math.sin(ce * Math.PI);
+            const cp = evalTargetPoint(customShape[k], tSec);
+            bx = lerp(bx, cp.x, ce);
+            by = lerp(by, cp.y, ce);
+            swirlX += cf * Math.cos(p.noiseSeed + tSec * 1.4) * 66;
+            swirlY += cf * p.arcHeight * 0.68;
+            tr = lerp(tr, customShape[k].r, ce);
+            tg = lerp(tg, customShape[k].g, ce);
+            tb = lerp(tb, customShape[k].b, ce);
+            tAlpha = lerp(tAlpha, customShape[k].alpha, ce);
+            totalFlight = Math.max(totalFlight, cf);
+          }
+
+          const idleAmp = (1 - totalFlight) * 0.95;
+          const tx = bx + swirlX + Math.sin(tSec * 1.25 + p.shimmerPhase) * idleAmp;
+          const ty = by + swirlY + Math.cos(tSec * 1.05 + p.shimmerPhase) * idleAmp;
+
+          p.px = p.x;
+          p.py = p.y;
+
+          const stiffness = lerp(0.064, 0.038, totalFlight) * Math.max(0.28, 1 - scatterGust * 0.55);
+          p.vx += (tx - p.x) * stiffness;
+          p.vy += (ty - p.y) * stiffness;
+
+          // Subtle pointer repulsion ripple
+          if (pointer.active) {
+            const dx = p.x - pointer.x;
+            const dy = p.y - pointer.y;
+            const d2 = dx * dx + dy * dy;
+            if (d2 < repR2 && d2 > 0.01) {
+              const dist = Math.sqrt(d2);
+              const f = ((repR - dist) / repR) * 3.6;
+              const nx = dx / dist;
+              const ny = dy / dist;
+              p.vx += (nx * 0.88 - ny * 0.28) * f;
+              p.vy += (ny * 0.88 + nx * 0.28) * f;
+            }
+          }
+
+          p.vx *= 0.835;
+          p.vy *= 0.835;
+          p.x += p.vx;
+          p.y += p.vy;
+
+          p.r += (tr - p.r) * 0.14;
+          p.g += (tg - p.g) * 0.14;
+          p.b += (tb - p.b) * 0.14;
+          p.size += (tSize - p.size) * 0.14;
+          p.alpha += (tAlpha - p.alpha) * 0.14;
+
+          const speed = Math.hypot(p.x - p.px, p.y - p.py);
+          if (speed > 1.85) {
+            const stretch = Math.min(3.3, 1.3 + speed * 0.12);
+            ctx.strokeStyle = `rgba(${p.r | 0}, ${p.g | 0}, ${p.b | 0}, ${Math.min(0.88, p.alpha * 0.9)})`;
+            ctx.lineWidth = Math.max(0.75, p.size * 0.84);
+            ctx.beginPath();
+            ctx.moveTo(p.x, p.y);
+            ctx.lineTo(p.x - (p.x - p.px) * stretch, p.y - (p.y - p.py) * stretch);
+            ctx.stroke();
+          } else {
+            ctx.fillStyle = `rgba(${p.r | 0}, ${p.g | 0}, ${p.b | 0}, ${p.alpha})`;
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        }
+        ctx.restore();
+      }
+
+      function triggerWindScatter() {
+        scatterDirX = scatterDirX >= 0 ? -1 : 1;
+        scatterGust = 1.5;
+        for (let i = 0; i < sandParticles.length; i++) {
+          const p = sandParticles[i];
+          const f = 11 + (p.windAmp / 145) * 15;
+          p.vx += scatterDirX * f;
+          p.vy += Math.sin(p.y * 0.014 + p.noiseSeed) * 7.5 - 2.0;
+        }
+      }
+
+      function jumpToChapter(chIdx) {
+        const idx = clamp(chIdx, 0, 5);
+        const destY = scrollTrackEl.offsetTop + (idx / TOTAL_UNITS) * getMorphSpan();
+        exitCustomText();
+        window.scrollTo({ top: destY, behavior: 'smooth' });
+      }
+
+      function exitCustomText() {
+        customText = null;
+        customBlendTarget = 0;
+        document.getElementById('hud-morph-input').value = '';
+        document.getElementById('hud-restore-btn').classList.add('hidden');
+      }
+
+      // Scroll & Pointer Listeners
+      window.addEventListener('scroll', readScrollProgress, { passive: true });
+      window.addEventListener('mousemove', (e) => {
+        pointer.x = e.clientX;
+        pointer.y = e.clientY;
+        pointer.active = true;
+      }, { passive: true });
+      window.addEventListener('mouseout', (e) => {
+        if (!e.relatedTarget) pointer.active = false;
+      });
+      window.addEventListener('touchstart', (e) => {
+        if (e.touches.length) {
+          pointer.x = e.touches[0].clientX;
+          pointer.y = e.touches[0].clientY;
+          pointer.active = true;
+        }
+      }, { passive: true });
+      window.addEventListener('touchmove', (e) => {
+        if (e.touches.length) {
+          pointer.x = e.touches[0].clientX;
+          pointer.y = e.touches[0].clientY;
+          pointer.active = true;
+        }
+      }, { passive: true });
+      window.addEventListener('touchend', () => { pointer.active = false; }, { passive: true });
+
+      /* =========================================================================
+       * 2. TOP NAV & FLOATING WISPR PILL HUD CONTROLS
+       * ========================================================================= */
+      document.querySelectorAll('[data-jump]').forEach((btn) => {
+        btn.addEventListener('click', () => jumpToChapter(Number(btn.dataset.jump)));
+      });
+
+      document.getElementById('brand-top-link').addEventListener('click', (e) => {
+        e.preventDefault();
+        jumpToChapter(0);
+      });
+      document.getElementById('nav-how-link').addEventListener('click', (e) => {
+        e.preventDefault();
+        jumpToChapter(0);
+      });
+      document.getElementById('btn-back-top').addEventListener('click', () => jumpToChapter(0));
+
+      document.getElementById('hud-morph-form').addEventListener('submit', (e) => {
+        e.preventDefault();
+        const val = document.getElementById('hud-morph-input').value.trim().slice(0, 8);
+        if (!val) return;
+        customText = val;
+        const nearest = clamp(Math.round(smoothedP), 0, 5);
+        const anchor = smoothedP > 5.2
+          ? { cx: vw * 0.5, cy: vh * 0.48, scale: Math.min(vw * 0.48, vh * 0.52, 420) }
+          : shapeAnchors[nearest];
+        customShape = sampleTextShape(val, sandParticles.length, anchor, 'orbitNodes', 909 + val.length * 19, true);
+        customBlendTarget = 1;
+        document.getElementById('hud-restore-btn').classList.remove('hidden');
+      });
+
+      document.getElementById('hud-restore-btn').addEventListener('click', exitCustomText);
+      document.getElementById('hud-scatter-btn').addEventListener('click', triggerWindScatter);
+
+      const focusBtn = document.getElementById('hud-focus-btn');
+      const focusExitPill = document.getElementById('focus-exit-pill');
+      function setFocusView(enabled) {
+        focusView = enabled;
+        document.body.classList.toggle('focus-view', focusView);
+        focusBtn.textContent = focusView ? '● 집중 ON' : '입자 집중';
+        focusBtn.classList.toggle('active', focusView);
+      }
+      focusBtn.addEventListener('click', () => setFocusView(!focusView));
+      focusExitPill.addEventListener('click', () => setFocusView(false));
+      window.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && focusView) setFocusView(false);
+      });
+
+      /* =========================================================================
+       * 3. SECTION B: WISPR "CLEANING UP..." BEFORE VS AFTER INTERACTIVE FILTER
+       * ========================================================================= */
+      const BASE_RAW_TOKENS = 179000;
+      const FILTER_SAVINGS = {
+        file: 68400,
+        log: 44200,
+        symbol: 32800,
+        clear: 26500,
+      };
+      const cleanState = {
+        file: true,
+        log: true,
+        symbol: true,
+        clear: true,
+      };
+
+      const cleanBtns = Array.from(document.querySelectorAll('.clean-toggle'));
+      const noiseChunks = Array.from(document.querySelectorAll('.noise-chunk'));
+
+      function renderCompareShowcase() {
+        let saved = 0;
+        Object.keys(FILTER_SAVINGS).forEach((k) => {
+          if (cleanState[k]) saved += FILTER_SAVINGS[k];
+        });
+        const remaining = BASE_RAW_TOKENS - saved;
+        const pctLeft = (remaining / BASE_RAW_TOKENS) * 100;
+        const pctSaved = 100 - pctLeft;
+
+        // Toggle strikethrough on raw noise chunks
+        noiseChunks.forEach((chunk) => {
+          const grp = chunk.dataset.cleanGroup;
+          chunk.classList.toggle('cleaned', Boolean(cleanState[grp]));
+        });
+
+        // Update badge, meter, and distilled JSON output
+        const kLabel = (remaining / 1000).toFixed(1);
+        document.getElementById('compare-after-badge').textContent =
+          `✓ ${kLabel}k tok / turn · -${pctSaved.toFixed(1)}%`;
+        document.getElementById('compare-meter-text').textContent =
+          `${remaining.toLocaleString()} tok (${pctLeft.toFixed(1)}%)`;
+        document.getElementById('compare-meter-fill').style.width = `${Math.max(3.5, pctLeft).toFixed(1)}%`;
+
+        const distilledObj = {
+          handoff_schema: 'spec_v1',
+          target_symbol: cleanState.file
+            ? 'src/auth/auth.service.ts:L84-L104 (부분 읽기)'
+            : 'src/auth/auth.service.ts + 6 files (전체 840줄 덤프 포함)',
+          test_summary: cleanState.log
+            ? 'EXIT 0 | pytest: 54 passed, 0 failed (1줄 요약, 원본 SQLite FTS5 보관)'
+            : 'raw stdout 1,600줄 직접 주입 (+44.2k tok)',
+          unchanged_symbols: cleanState.symbol
+            ? '14개 미변경 심볼 ast_hash 캐시 적중 (0 tok)'
+            : '14개 미변경 심볼 매 턴 상위 모델 재검토 (+32.8k tok)',
+          tool_history: cleanState.clear
+            ? '[BATCH CLEARED] 최근 2턴 유지 · 과거 1,000tok 초과 결과 스텁 치환'
+            : '과거 12턴 API 응답 & 미사용 MCP 스키마 누적 (+26.5k tok)',
+          effective_context_tokens: remaining,
+        };
+        document.getElementById('compare-distilled-json').textContent = JSON.stringify(distilledObj, null, 2);
+      }
+
+      cleanBtns.forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const key = btn.dataset.clean;
+          cleanState[key] = !cleanState[key];
+          btn.classList.toggle('active', cleanState[key]);
+          const rawLabel = btn.textContent.replace(/^[✓○]\s*/, '');
+          btn.textContent = (cleanState[key] ? '✓ ' : '○ ') + rawLabel;
+          renderCompareShowcase();
+        });
+      });
+
+      renderCompareShowcase();
+
+      /* =========================================================================
+       * 4. SECTION C: 4-TAB INTERACTIVE SANDBOX LAB
+       * ========================================================================= */
+      const tabBtns = Array.from(document.querySelectorAll('.lab-tab-btn'));
+      const tabPanels = Array.from(document.querySelectorAll('.lab-panel'));
+      tabBtns.forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const target = btn.dataset.tab;
+          tabBtns.forEach((b) => b.classList.toggle('active', b === btn));
+          tabPanels.forEach((p) => p.classList.toggle('active', p.id === target));
+        });
+      });
+
+      /* -------------------- TAB 1: IN-MEMORY SPEC & CONFLICT CHECK -------------------- */
+      const STATUS_CYCLE = ['ACCEPT_NOW', 'DEFER', 'REJECT'];
+      let srsRows = [];
+      let arcRows = [];
+      let schRows = [];
+
+      function resetSpecTables() {
+        srsRows = [
+          { id: 'REQ-001', text: 'JSON 그래프 리셋 & 100ms 무중단 자동 실행', depArc: 'ARC-001', depSch: 'SCH-001', status: 'ACCEPT_NOW' },
+          { id: 'REQ-002', text: 'Tree-sitter 심볼 부분 읽기 (FTS5 오프로딩)', depArc: 'ARC-001', depSch: 'SCH-001', status: 'ACCEPT_NOW' },
+          { id: 'REQ-003', text: '함수·메서드 단위 AST 의미론적 검증', depArc: 'ARC-003', depSch: 'SCH-001', status: 'ACCEPT_NOW' },
+          { id: 'REQ-004', text: 'Interactive UX Workbench 직접 조절 & 잠금', depArc: 'ARC-004', depSch: 'SCH-004', status: 'ACCEPT_NOW' },
+        ];
+        arcRows = [
+          { id: 'ARC-001', role: 'In-Memory SQLite (현재 모든 쓰기 사전 HITL 대기)', status: 'ACCEPT_NOW', hitlClash: true },
+          { id: 'ARC-003', role: 'Semantic Verifier (저렴 모델 선언형 변환)', status: 'ACCEPT_NOW' },
+          { id: 'ARC-004', role: 'UX Workbench 양방향 동기화 엔진', status: 'DEFER' },
+        ];
+        schRows = [
+          { id: 'SCH-001', role: 'Hot State RDB (workflow_runs · job_queue)', status: 'ACCEPT_NOW' },
+          { id: 'SCH-004', role: 'ux_overrides (locked_by_user JSONB)', status: 'DEFER' },
+        ];
+      }
+
+      function badgeClassFor(st) {
+        if (st === 'ACCEPT_NOW') return 'badge badge-pass';
+        if (st === 'DEFER') return 'badge badge-neutral';
+        return 'badge badge-reject';
+      }
+
+      function badgeLabelFor(st) {
+        if (st === 'ACCEPT_NOW') return '✓ ACCEPT_NOW';
+        if (st === 'DEFER') return '○ DEFER';
+        return '✕ REJECT';
+      }
+
+      function renderSpecTables() {
+        document.getElementById('tbody-srs').innerHTML = srsRows.map((r, i) => `
+          <tr>
+            <td class="mono" style="color: var(--ink); font-weight: 700; white-space: nowrap;">${r.id}</td>
+            <td>${r.text}</td>
+            <td class="mono" style="font-size: 11px; color: var(--ash); white-space: nowrap;">${r.depArc}·${r.depSch}</td>
+            <td style="text-align: right; white-space: nowrap;">
+              <button type="button" data-cycle="srs:${i}" class="${badgeClassFor(r.status)}">${badgeLabelFor(r.status)}</button>
+            </td>
+          </tr>
+        `).join('');
+
+        document.getElementById('tbody-arc').innerHTML = arcRows.map((a, i) => `
+          <tr>
+            <td class="mono" style="color: var(--ink); font-weight: 700; white-space: nowrap;">${a.id}</td>
+            <td>${a.role}</td>
+            <td style="text-align: right; white-space: nowrap;">
+              <button type="button" data-cycle="arc:${i}" class="${badgeClassFor(a.status)}">${badgeLabelFor(a.status)}</button>
+            </td>
+          </tr>
+        `).join('');
+
+        document.getElementById('tbody-sch').innerHTML = schRows.map((s, i) => `
+          <tr>
+            <td class="mono" style="color: var(--ink); font-weight: 700; white-space: nowrap;">${s.id}</td>
+            <td>${s.role}</td>
+            <td style="text-align: right; white-space: nowrap;">
+              <button type="button" data-cycle="sch:${i}" class="${badgeClassFor(s.status)}">${badgeLabelFor(s.status)}</button>
+            </td>
+          </tr>
+        `).join('');
+
+        document.querySelectorAll('[data-cycle]').forEach((btn) => {
+          btn.addEventListener('click', () => {
+            const [kind, idxStr] = btn.dataset.cycle.split(':');
+            const list = kind === 'srs' ? srsRows : (kind === 'arc' ? arcRows : schRows);
+            const idx = Number(idxStr);
+            list[idx].status = STATUS_CYCLE[(STATUS_CYCLE.indexOf(list[idx].status) + 1) % STATUS_CYCLE.length];
+            renderSpecTables();
+            runSpecCheck('both');
+          });
+        });
+      }
+
+      function runSpecCheck(mode) {
+        const acceptedReqs = srsRows.filter((r) => r.status === 'ACCEPT_NOW').map((r) => r.id);
+        document.getElementById('spec-sql-live').innerHTML =
+          `<strong>SELECT</strong> id <strong>FROM</strong> in_memory_spec <strong>WHERE</strong> adoption_status = 'ACCEPT_NOW'; → <span style="color:var(--graphite);">[${acceptedReqs.join(', ') || '없음'}] (${acceptedReqs.length}건 활성)</span>`;
+
+        // Stage 1: Deterministic SQL integrity (0 tokens)
+        const sqlConflicts = [];
+        srsRows.forEach((req) => {
+          if (req.status !== 'ACCEPT_NOW') return;
+          const arc = arcRows.find((a) => a.id === req.depArc);
+          const sch = schRows.find((s) => s.id === req.depSch);
+          if (arc && arc.status !== 'ACCEPT_NOW') sqlConflicts.push({ req, dep: arc });
+          if (sch && sch.status !== 'ACCEPT_NOW') sqlConflicts.push({ req, dep: sch });
+        });
+
+        // Stage 2: Cheap model semantic conflict (REQ-001 vs ARC-001)
+        const req1 = srsRows.find((r) => r.id === 'REQ-001');
+        const arc1 = arcRows.find((a) => a.id === 'ARC-001');
+        const semClash = Boolean(
+          req1 && req1.status === 'ACCEPT_NOW' &&
+          arc1 && arc1.status === 'ACCEPT_NOW' &&
+          arc1.hitlClash
+        );
+
+        const totalCritical = sqlConflicts.length + (semClash ? 1 : 0);
+        const banner = document.getElementById('spec-gate-banner');
+        const gBadge = document.getElementById('spec-gate-badge');
+
+        if (totalCritical > 0) {
+          banner.className = 'alert-striped';
+          banner.style.padding = '13px 18px';
+          banner.style.display = 'flex';
+          banner.style.flexWrap = 'wrap';
+          banner.style.alignItems = 'center';
+          banner.style.justifyContent = 'space-between';
+          banner.style.gap = '10px';
+          gBadge.className = 'badge badge-warn';
+          gBadge.textContent = `▲ BLOCKED · CRITICAL ${totalCritical}건`;
+        } else {
+          banner.className = 'toolbar-box';
+          banner.style.padding = '13px 18px';
+          gBadge.className = 'badge badge-pass';
+          gBadge.textContent = '✓ CRITICAL 0건 · 실행 가능';
+        }
+
+        if (mode === 'stage1' || mode === 'both') {
+          const card1 = document.getElementById('report-stage1');
+          const b1 = document.getElementById('badge-stage1');
+          const body1 = document.getElementById('body-stage1');
+
+          if (sqlConflicts.length > 0) {
+            card1.className = 'alert-striped';
+            card1.style.padding = '18px';
+            b1.className = 'badge badge-warn';
+            b1.textContent = `▲ ADOPTION_MISMATCH (${sqlConflicts.length}건)`;
+            body1.innerHTML = sqlConflicts.map((c) =>
+              `<div class="mono" style="font-size: 11.5px; color: var(--ink); margin-bottom: 5px;">▲ ${c.req.id} (ACCEPT_NOW) → ${c.dep.id} (${c.dep.status}) 참조 불일치</div>`
+            ).join('') + `<div class="mono" style="font-size: 11px; color: var(--ash); margin-top: 8px;">In-Memory SQLite: 0.08ms · 소모 토큰: 0 tok</div>`;
+          } else {
+            card1.className = 'sub-surface';
+            card1.style.padding = '18px';
+            b1.className = 'badge badge-pass';
+            b1.textContent = '✓ SQL PASS (0 tok)';
+            body1.innerHTML = `<div style="color: var(--ink);">모든 <code>ACCEPT_NOW</code> 요구사항의 <code>ARC · SCH</code> 외래 키 정합성이 일치합니다.</div><div class="mono" style="font-size: 11px; color: var(--ash); margin-top: 6px;">Latency: 0.07ms · Tokens: 0 tok</div>`;
+          }
+        }
+
+        if (mode === 'stage2' || mode === 'both') {
+          const card2 = document.getElementById('report-stage2');
+          const b2 = document.getElementById('badge-stage2');
+          const body2 = document.getElementById('body-stage2');
+
+          if (semClash) {
+            card2.className = 'alert-striped';
+            card2.style.padding = '18px';
+            b2.className = 'badge badge-warn';
+            b2.textContent = '▲ REQ_VS_ARC 모순';
+            body2.innerHTML = `
+              <div style="color: var(--ink);">
+                <strong>의미 충돌 (REQ-001 ↔ ARC-001):</strong> <code>REQ-001</code>의 "100ms 무중단 자동 실행"과
+                <code>ARC-001</code>의 "모든 쓰기 사전 HITL 대기"가 양립할 수 없습니다.
+              </div>
+              <div class="mono" style="font-size: 11px; color: var(--ash); margin-top: 8px;">Cheap Model (thinking=none) · 소모 토큰: 380 tok</div>
+            `;
+          } else {
+            card2.className = 'sub-surface';
+            card2.style.padding = '18px';
+            b2.className = 'badge badge-pass';
+            b2.textContent = '✓ SEMANTIC PASS (380 tok)';
+            body2.innerHTML = `<div style="color: var(--ink);">저렴 모델 교차 검증 통과 — <code>REQ_VS_REQ</code>, <code>REQ_VS_ARC</code>, 암묵적 범위 충돌 0건.</div><div class="mono" style="font-size: 11px; color: var(--ash); margin-top: 6px;">In-Memory 스냅샷 확정 · DEV 진입 허용</div>`;
+          }
+        }
+      }
+
+      document.getElementById('btn-sql-check').addEventListener('click', () => runSpecCheck('stage1'));
+      document.getElementById('btn-llm-check').addEventListener('click', () => runSpecCheck('stage2'));
+      document.getElementById('btn-auto-resolve').addEventListener('click', () => {
+        // Resolve SQL mismatches by promoting needed dependencies & refine ARC-001 HITL policy
+        srsRows.forEach((req) => {
+          if (req.status !== 'ACCEPT_NOW') return;
+          const arc = arcRows.find((a) => a.id === req.depArc);
+          const sch = schRows.find((s) => s.id === req.depSch);
+          if (arc && arc.status !== 'ACCEPT_NOW') arc.status = 'ACCEPT_NOW';
+          if (sch && sch.status !== 'ACCEPT_NOW') sch.status = 'ACCEPT_NOW';
+        });
+        const arc1 = arcRows.find((a) => a.id === 'ARC-001');
+        if (arc1) {
+          arc1.hitlClash = false;
+          arc1.role = 'In-Memory SQLite (비가역 DDL만 HITL, 가역은 자동)';
+        }
+        renderSpecTables();
+        runSpecCheck('both');
+      });
+      document.getElementById('btn-spec-reset').addEventListener('click', () => {
+        resetSpecTables();
+        renderSpecTables();
+        runSpecCheck('both');
+      });
+
+      resetSpecTables();
+      renderSpecTables();
+      runSpecCheck('both');
+
+      /* -------------------- TAB 2: FUNCTION-LEVEL SEMANTIC LIFTING -------------------- */
+      let astDriftMode = false;
+
+      function renderAstCode() {
+        const view = document.getElementById('ast-code-view');
+        const hashLine = document.getElementById('ast-hash-line');
+
+        if (!astDriftMode) {
+          hashLine.textContent = 'ast_hash: 9f4a2c → b82e19';
+          view.innerHTML = `async rotateRefreshToken(rawToken: string) {
+  return this.db.transaction(async (tx) =&gt; {
+    const cur = await tx.refreshTokens.findUnique(rawToken);
+    if (!cur) throw new UnauthorizedException('INVALID');
+<span class="code-line-ok">    if (cur.graceUntil &amp;&amp; cur.graceUntil &lt; new Date()) {
+      await tx.refreshTokens.revokeFamily(cur.familyId);
+      throw new UnauthorizedException('TOKEN_REUSE_401');
+    }</span>    await tx.refreshTokens.setGraceWindow(cur.id, 10_000);
+    return tx.refreshTokens.issueNext(cur.familyId);
+  });
+}`;
+        } else {
+          hashLine.textContent = 'ast_hash: 9f4a2c → f109de [DRIFT]';
+          view.innerHTML = `async rotateRefreshToken(rawToken: string) {
+  return this.db.transaction(async (tx) =&gt; {
+    const cur = await tx.refreshTokens.findUnique(rawToken);
+    if (!cur) throw new UnauthorizedException('INVALID');
+<span class="code-line-bug">    // ▲ L88-L91 누락: graceUntil 만료 재사용 시 401 예외 &amp; family 폐기 없음</span>    await tx.refreshTokens.setGraceWindow(cur.id, 10_000);
+    return tx.refreshTokens.issueNext(cur.familyId);
+  });
+}`;
+        }
+      }
+
+      function executeAstVerify() {
+        const vBadge = document.getElementById('ast-verdict-badge');
+        const vNote = document.getElementById('ast-verdict-note');
+        const jView = document.getElementById('ast-json-view');
+
+        vBadge.className = 'badge badge-neutral';
+        vBadge.textContent = '● LIFTING...';
+        jView.innerHTML = '<div style="color: var(--graphite);" class="pulse-ink">Tree-sitter 변경 심볼 1건(640 tok) 선언형 명세로 변환 중...</div>';
+
+        setTimeout(() => {
+          if (!astDriftMode) {
+            vBadge.className = 'badge badge-pass';
+            vBadge.textContent = '✓ MATCHED';
+            vNote.textContent = '선언형 계약 4개 항목 모두 일치. VERIFY 노드로 진행합니다.';
+            jView.innerHTML = `
+              <div class="sub-surface" style="padding: 10px 12px; background: var(--surface);"><span style="color: var(--ash);">"preconditions":</span> <span style="color: var(--ink);">["token 존재", "유효한 familyId"]</span></div>
+              <div class="sub-surface" style="padding: 10px 12px; background: var(--surface);"><span style="color: var(--ash);">"state_transitions":</span> <span style="color: var(--ink);">["10s grace_until 설정", "신규 토큰 INSERT"]</span></div>
+              <div class="sub-surface" style="padding: 10px 12px; background: var(--surface); border-color: var(--border-strong);">
+                <div style="display: flex; justify-content: space-between; margin-bottom: 4px;"><strong style="color: var(--ink);">"failure_contracts"</strong><span class="badge badge-pass" style="font-size: 10px;">✓ MATCHED</span></div>
+                <div style="color: var(--graphite);">["grace_until 초과 재사용 시 401 반환 &amp; family 전체 무효화"]</div>
+              </div>
+              <div class="sub-surface" style="padding: 10px 12px; background: var(--surface);"><span style="color: var(--ash);">"invariants":</span> <span style="color: var(--ink);">["단일 DB 트랜잭션 원자 실행"]</span></div>
+            `;
+          } else {
+            vBadge.className = 'badge badge-warn';
+            vBadge.textContent = '▲ DRIFT (L88-L91)';
+            vNote.textContent = 'failure_contracts 위반 감지 — E2E 전 L88-L91만 DEV 노드로 환류합니다.';
+            jView.innerHTML = `
+              <div class="sub-surface" style="padding: 10px 12px; background: var(--surface);"><span style="color: var(--ash);">"preconditions":</span> <span style="color: var(--graphite);">["token 존재 여부만 확인"]</span></div>
+              <div class="sub-surface" style="padding: 10px 12px; background: var(--surface);"><span style="color: var(--ash);">"state_transitions":</span> <span style="color: var(--graphite);">["10s grace_until 설정", "신규 토큰 INSERT"]</span></div>
+              <div class="alert-striped" style="padding: 12px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                  <strong style="color: var(--ink);">▲ "failure_contracts" · DRIFT (L88–L91)</strong>
+                  <span class="badge badge-warn" style="font-size: 10px;">DEV 환류</span>
+                </div>
+                <div style="color: var(--ink);">- Contract: ["grace_until 만료 재사용 시 401 + family 폐기"]</div>
+                <div style="color: var(--graphite);">+ Projected: ["만료 재사용 분기 누락 — 탈취 토큰 무한 재발급 위험"]</div>
+              </div>
+              <div class="sub-surface" style="padding: 10px 12px; background: var(--surface);"><span style="color: var(--ash);">"invariants":</span> <span style="color: var(--graphite);">["재사용 방어 불변식 위반"]</span></div>
+            `;
+          }
+        }, 260);
+      }
+
+      document.getElementById('sem-btn-ok').addEventListener('click', () => {
+        astDriftMode = false;
+        document.getElementById('sem-btn-ok').classList.add('active');
+        document.getElementById('sem-btn-bug').classList.remove('active');
+        renderAstCode();
+        executeAstVerify();
+      });
+      document.getElementById('sem-btn-bug').addEventListener('click', () => {
+        astDriftMode = true;
+        document.getElementById('sem-btn-bug').classList.add('active');
+        document.getElementById('sem-btn-ok').classList.remove('active');
+        renderAstCode();
+        executeAstVerify();
+      });
+      document.getElementById('btn-run-ast').addEventListener('click', executeAstVerify);
+
+      renderAstCode();
+      executeAstVerify();
+
+      /* -------------------- TAB 3: JSON GRAPH EXECUTION SIMULATOR -------------------- */
+      let simMode = 'full';
+      let simTimers = [];
+      let simRunning = false;
+      let simPaused = false;
+      const SIM_NODES = Array.from(document.querySelectorAll('.sim-node'));
+
+      const FULL_TRACE = [
+        { idx: 0, delay: 120,  cost: 0.08, resets: 0, msg: '[ENTRY_ROUTER · cheap] 변경 74줄 + DDL 감지 → Full AGDD 6단계 파이프라인 진입' },
+        { idx: 1, delay: 700,  cost: 0.24, resets: 1, msg: '[AMBIGUITY_GATE · cheap] 권한·폴백·동시성 4대 체크리스트 통과 (객관식 미결 0건)' },
+        { idx: 2, delay: 1350, cost: 1.20, resets: 2, msg: '[SPEC_DRIVE · mid] Context Reset #2 — In-Memory SQLite ACCEPT_NOW 행만 주입, 계약 확정' },
+        { idx: 3, delay: 2050, cost: 3.15, resets: 3, msg: '[DEV · mid] Context Reset #3 — 심볼 부분 읽기 + Diff 패치 완료 (tests/** Read-Only 잠금)' },
+        { idx: 4, delay: 2700, cost: 3.38, resets: 4, msg: '[SEMANTIC_VERIFY · cheap] 변경 심볼 1건(640 tok) 선언형 계약 ✓ MATCHED' },
+        { idx: 5, delay: 3350, cost: 4.18, resets: 4, msg: '[VERIFY / AUDIT] E2E 54 passed · 예산 80%($4.00) 돌파 → 자동 저가 폴백 활성 · DROP COLUMN 감지 → HITL 일시 정지!', fallback: true, pauseHitl: true },
+      ];
+
+      const FAST_TRACE = [
+        { idx: 0, delay: 120,  cost: 0.05, resets: 0, msg: '[ENTRY_ROUTER · cheap] 변경 16줄 · 단일 파일 · DDL 없음 → Fast-Track 우회 결정!' },
+        { idx: 3, delay: 750,  cost: 0.34, resets: 1, msg: '[DEV · Fast-Track] AMBIGUITY/SPEC/SEMANTIC 생략 → 대상 함수 16줄 즉시 Diff 패치' },
+        { idx: 5, delay: 1450, cost: 0.42, resets: 1, msg: '[VERIFY · Existing CI] 단위 테스트 통과 · SQLite FTS5 요약 1줄(EXIT 0) 반환 → 배포 완료!' },
+      ];
+
+      function appendTrace(text, bold) {
+        const el = document.getElementById('sim-log');
+        const row = document.createElement('div');
+        row.style.color = bold ? 'var(--ink)' : 'var(--graphite)';
+        if (bold) row.style.fontWeight = '700';
+        row.textContent = text;
+        el.appendChild(row);
+        el.scrollTop = el.scrollHeight;
+      }
+
+      function updateBudgetUI(cost, fallbackActive) {
+        const pct = clamp((cost / 5.0) * 100, 0, 100);
+        document.getElementById('sim-budget-text').textContent = `$${cost.toFixed(2)} / $5.00`;
+        document.getElementById('sim-budget-fill').style.width = `${pct.toFixed(1)}%`;
+        const fb = document.getElementById('sim-fallback-badge');
+        if (fallbackActive) {
+          fb.className = 'badge badge-warn';
+          fb.textContent = '▲ 80% 돌파 · 저가 모델 폴백 중';
+        } else {
+          fb.className = 'badge badge-neutral';
+          fb.textContent = '○ 80% ($4.00) 저가 폴백 기준';
+        }
+      }
+
+      function resetSim() {
+        simTimers.forEach((id) => clearTimeout(id));
+        simTimers = [];
+        simRunning = false;
+        simPaused = false;
+        SIM_NODES.forEach((n) => { n.className = 'sim-node'; });
+        document.getElementById('sim-hitl-card').classList.add('hidden');
+        document.getElementById('sim-status-label').textContent = 'READY';
+        document.getElementById('sim-reset-count').textContent = 'Context Reset: 0회';
+        updateBudgetUI(0, false);
+        document.getElementById('sim-log').innerHTML =
+          '<div style="color: var(--ash);">$ 실행 모드를 선택하고 "파이프라인 실행" 버튼을 눌러 주세요.</div>';
+      }
+
+      document.getElementById('sim-mode-fast').addEventListener('click', () => {
+        simMode = 'fast';
+        document.getElementById('sim-mode-fast').classList.add('active');
+        document.getElementById('sim-mode-full').classList.remove('active');
+        resetSim();
+      });
+
+      document.getElementById('sim-mode-full').addEventListener('click', () => {
+        simMode = 'full';
+        document.getElementById('sim-mode-full').classList.add('active');
+        document.getElementById('sim-mode-fast').classList.remove('active');
+        resetSim();
+      });
+
+      document.getElementById('btn-sim-run').addEventListener('click', () => {
+        if (simRunning) return;
+        resetSim();
+        simRunning = true;
+        document.getElementById('sim-log').innerHTML = '';
+        document.getElementById('sim-status-label').textContent = 'RUNNING';
+
+        const steps = simMode === 'full' ? FULL_TRACE : FAST_TRACE;
+        const used = new Set(steps.map((s) => s.idx));
+        if (simMode === 'fast') {
+          SIM_NODES.forEach((n, i) => { if (!used.has(i)) n.classList.add('skipped'); });
+        }
+
+        steps.forEach((st, i) => {
+          const tid = setTimeout(() => {
+            if (i > 0) {
+              const prev = SIM_NODES[steps[i - 1].idx];
+              if (prev) prev.className = 'sim-node done';
+            }
+            const cur = SIM_NODES[st.idx];
+            if (cur) cur.className = st.pauseHitl ? 'sim-node paused' : 'sim-node running';
+
+            document.getElementById('sim-reset-count').textContent = `Context Reset: ${st.resets}회`;
+            updateBudgetUI(st.cost, Boolean(st.fallback));
+            appendTrace(st.msg, Boolean(st.pauseHitl || st.fallback));
+
+            if (st.pauseHitl) {
+              simPaused = true;
+              document.getElementById('sim-status-label').textContent = 'WAITING_HITL';
+              document.getElementById('sim-hitl-card').classList.remove('hidden');
+            } else if (i === steps.length - 1) {
+              setTimeout(() => {
+                if (cur) cur.className = 'sim-node done';
+                document.getElementById('sim-status-label').textContent = 'COMPLETED';
+                simRunning = false;
+              }, 350);
+            }
+          }, st.delay);
+          simTimers.push(tid);
+        });
+      });
+
+      document.getElementById('btn-sim-approve').addEventListener('click', () => {
+        if (!simPaused) return;
+        simPaused = false;
+        document.getElementById('sim-hitl-card').classList.add('hidden');
+        SIM_NODES[5].className = 'sim-node done';
+        updateBudgetUI(4.32, true);
+        appendTrace('[HITL APPROVED] ✓ Expand-Contract 2단계 마이그레이션 승인 → PostgreSQL ACID 커밋 & CI/CD 무중단 배포 완료!', true);
+        document.getElementById('sim-status-label').textContent = 'COMPLETED';
+        simRunning = false;
+      });
+
+      document.getElementById('btn-sim-reset').addEventListener('click', resetSim);
+
+      /* -------------------- TAB 4: ON-DEMAND RESEARCH & UX WORKBENCH -------------------- */
+      let researchBusy = false;
+
+      document.getElementById('btn-run-research').addEventListener('click', () => {
+        if (researchBusy) return;
+        researchBusy = true;
+
+        const s1 = document.getElementById('res-step-1');
+        const s2 = document.getElementById('res-step-2');
+        const s3 = document.getElementById('res-step-3');
+        const b1 = document.getElementById('res-b1');
+        const b2 = document.getElementById('res-b2');
+        const b3 = document.getElementById('res-b3');
+        const t1 = document.getElementById('res-t1');
+        const t2 = document.getElementById('res-t2');
+        const t3 = document.getElementById('res-t3');
+
+        [s1, s2, s3].forEach((el) => el.classList.remove('active'));
+        b2.className = 'badge badge-neutral'; b2.textContent = '○ 대기';
+        b3.className = 'badge badge-neutral'; b3.textContent = '○ 대기';
+
+        // Step 1: Query Sanitization
+        s1.classList.add('active');
+        b1.className = 'badge badge-pass';
+        b1.textContent = '✓ PII·시크릿 0건';
+        t1.innerHTML = `<span style="color: var(--ash);">// stripped: [REPO_NAME], [INTERNAL_SCHEMA], [DB_SECRET]</span><br /><span style="color: var(--ink);">Query: "PostgreSQL 15" "PgBouncer transaction pooling" "SQLSTATE 26000" "SKIP LOCKED"</span>`;
+
+        // Step 2: Parallel Search & SQLite FTS5
+        setTimeout(() => {
+          s2.classList.add('active');
+          b2.className = 'badge badge-pass';
+          b2.textContent = '✓ 42KB → 740 tok';
+          t2.innerHTML = 'arXiv · PostgreSQL Protocol Spec · PgBouncer 1.21 Docs 병렬 검색 완료. 원본은 S3에 보관하고 로컬 <strong>SQLite FTS5 BM25</strong>로 핵심 3문단만 발췌했습니다.';
+        }, 420);
+
+        // Step 3: Insight Brief (<1,000 tok)
+        setTimeout(() => {
+          s3.classList.add('active');
+          b3.className = 'badge badge-pass';
+          b3.textContent = '✓ 740 / 1,000 tok';
+          t3.innerHTML = `
+            <div style="margin-bottom: 6px;"><strong style="color: var(--ink);">[원인]</strong> PgBouncer Transaction Pooling은 트랜잭션 종료마다 백엔드 세션을 교체하므로 드라이버의 Named Prepared Statement 재호출 시 <code>SQLSTATE 26000</code>이 발생합니다.</div>
+            <div style="margin-bottom: 6px;"><strong style="color: var(--ink);">[논문·문서 해법]</strong> Protocol §55.2.3 Unnamed Statement 패턴 적용 또는 PgBouncer 1.21+ <code>max_prepared_statements</code> 활성화.</div>
+            <div style="margin-bottom: 10px;"><strong style="color: var(--ink);">[트레이드오프]</strong> 워커 드라이버에 <code>prepare: false</code> 지정 시 인프라 무변경으로 즉시 해결(파싱 오버헤드 &lt;0.2ms).</div>
+            <div style="display: flex; flex-wrap: wrap; gap: 6px;">
+              <span class="badge badge-neutral">arXiv:2408.11402</span>
+              <span class="badge badge-neutral">PG Protocol §55.2.3</span>
+              <span class="badge badge-neutral">PgBouncer 1.21 Spec</span>
+            </div>
+          `;
+          researchBusy = false;
+        }, 900);
+      });
+
+      // Live Interactive UX Workbench
+      const uxState = {
+        padding: 20,
+        radius: 16,
+        typeScale: 1.00,
+        contrast: 22,
+        locked: true,
+      };
+
+      const slPadding = document.getElementById('sl-padding');
+      const slRadius = document.getElementById('sl-radius');
+      const slType = document.getElementById('sl-type');
+      const slContrast = document.getElementById('sl-contrast');
+      const chkLock = document.getElementById('chk-ux-lock');
+
+      function renderUxWorkbench() {
+        document.getElementById('val-padding').textContent = `${uxState.padding}px`;
+        document.getElementById('val-radius').textContent = `${uxState.radius}px`;
+        document.getElementById('val-type').textContent = `${uxState.typeScale.toFixed(2)}x`;
+        document.getElementById('val-contrast').textContent = `${uxState.contrast}%`;
+
+        const card = document.getElementById('ux-live-card');
+        const bAlpha = (0.08 + uxState.contrast * 0.012).toFixed(2);
+        const shade = Math.round(255 - (uxState.contrast - 6) * 0.35);
+        card.style.backgroundColor = `rgb(${shade}, ${shade}, ${Math.max(238, shade - 2)})`;
+        card.style.borderColor = `rgba(20, 20, 19, ${bAlpha})`;
+        card.style.borderRadius = `${uxState.radius}px`;
+        card.style.padding = `${uxState.padding}px`;
+
+        document.getElementById('ux-live-title').style.fontSize = `${(19 * uxState.typeScale).toFixed(1)}px`;
+        document.getElementById('ux-live-desc').style.fontSize = `${(12.5 * uxState.typeScale).toFixed(1)}px`;
+        document.getElementById('ux-live-cta').style.borderRadius = `${Math.max(6, Math.round(uxState.radius * 0.65))}px`;
+
+        const lockBadge = document.getElementById('chk-ux-lock-text');
+        const stageLbl = document.getElementById('ux-stage-lock-lbl');
+        if (uxState.locked) {
+          lockBadge.className = 'badge badge-pass';
+          lockBadge.textContent = '✓ 보호됨';
+          stageLbl.textContent = '✓ LOCKED_BY_USER';
+          stageLbl.style.color = 'var(--ink)';
+        } else {
+          lockBadge.className = 'badge badge-neutral';
+          lockBadge.textContent = '○ 잠금 해제';
+          stageLbl.textContent = '○ AGENT_EDITABLE';
+          stageLbl.style.color = 'var(--ash)';
+        }
+
+        document.getElementById('ux-json-preview').textContent = JSON.stringify({
+          table: 'ux_overrides',
+          view_key: 'hitl_decision_card',
+          locked_by_user: uxState.locked,
+          config_json: {
+            paddingDensity: `${uxState.padding}px`,
+            borderRadius: `${uxState.radius}px`,
+            typographyScale: Number(uxState.typeScale.toFixed(2)),
+            contrastStrength: `${uxState.contrast}%`,
+          },
+        }, null, 2);
+      }
+
+      slPadding.addEventListener('input', (e) => { uxState.padding = Number(e.target.value); renderUxWorkbench(); });
+      slRadius.addEventListener('input', (e) => { uxState.radius = Number(e.target.value); renderUxWorkbench(); });
+      slType.addEventListener('input', (e) => { uxState.typeScale = Number(e.target.value) / 100; renderUxWorkbench(); });
+      slContrast.addEventListener('input', (e) => { uxState.contrast = Number(e.target.value); renderUxWorkbench(); });
+      chkLock.addEventListener('change', (e) => {
+        uxState.locked = e.target.checked;
+        document.getElementById('ux-audit-msg').classList.add('hidden');
+        renderUxWorkbench();
+      });
+
+      document.getElementById('btn-ux-overwrite').addEventListener('click', () => {
+        const msg = document.getElementById('ux-audit-msg');
+        msg.classList.remove('hidden');
+        if (uxState.locked) {
+          msg.className = 'sub-surface';
+          msg.style.padding = '10px 12px';
+          msg.style.borderColor = 'var(--ink)';
+          msg.style.color = 'var(--ink)';
+          msg.textContent = '✓ 보호됨 (AUDIT BLOCKED): locked_by_user=true — 에이전트의 임의 UI 덮어쓰기가 차단되었습니다.';
+        } else {
+          uxState.padding = 12;
+          uxState.radius = 4;
+          uxState.typeScale = 0.88;
+          uxState.contrast = 8;
+          slPadding.value = 12;
+          slRadius.value = 4;
+          slType.value = 88;
+          slContrast.value = 8;
+          renderUxWorkbench();
+          msg.className = 'alert-striped';
+          msg.style.padding = '10px 12px';
+          msg.style.color = 'var(--ink)';
+          msg.textContent = '▲ 덮어쓰기 발생: 잠금이 해제되어 에이전트가 UX 설정을 임의 변경했습니다. 보호하려면 locked_by_user를 켜세요.';
+        }
+      });
+
+      renderUxWorkbench();
+
+      /* =========================================================================
+       * 5. SAFE BOOTSTRAP & RESIZE OBSERVER
+       * ========================================================================= */
+      let booted = false;
+      function boot() {
+        if (booted) return;
+        booted = true;
+        resizeCanvasSafely();
+        readScrollProgress();
+        smoothedP = targetP;
+        requestAnimationFrame(animate);
+      }
+
+      let resizeTimer = null;
+      function scheduleResize() {
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(resizeCanvasSafely, 120);
+      }
+
+      window.addEventListener('resize', scheduleResize);
+      if (typeof ResizeObserver !== 'undefined') {
+        try {
+          const ro = new ResizeObserver(scheduleResize);
+          ro.observe(document.documentElement);
+        } catch (_e) {
+          // Fallback handled by window resize listener
+        }
+      }
+
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', boot);
+      } else {
+        boot();
+      }
+    })();
+  </script>
+</body>
+</html>
