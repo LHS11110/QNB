@@ -168,10 +168,11 @@ def headers(response):
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Referrer-Policy"] = "same-origin"
     # Automerge WASM uses wasm-unsafe-eval; home scroll stage and xterm use inline styles.
-    response.headers["Content-Security-Policy"] = (
+    response.headers["Content-Security-Policy"] = g.get("response_csp") or (
         "default-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; "
         "script-src 'self' 'wasm-unsafe-eval'; "
-        "img-src 'self' data: blob:; media-src 'self' blob:; frame-src 'self' blob:; "
+        "img-src 'self' data: blob: https://i.ytimg.com; media-src 'self' blob:; "
+        "frame-src 'self' blob: https://www.youtube-nocookie.com; "
         "worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; "
         "connect-src 'self' https://api.open-meteo.com"
     )
@@ -184,7 +185,7 @@ def headers(response):
         )
         response.headers["Access-Control-Expose-Headers"] = "Mcp-Session-Id, MCP-Protocol-Version"
         response.headers.setdefault("Cache-Control", "no-cache, no-store")
-    elif request.path.startswith("/api/"):
+    elif request.path.startswith("/api/") and not g.get("response_csp"):
         response.headers["Cache-Control"] = "no-store"
     return response
 
@@ -1108,6 +1109,40 @@ def serve_collab_connection(ws):
         collab.staging.unregister_client(owner_id, session_id)
 
 
+@app.post("/api/channels/files")
+def channel_file_upload():
+    """Chunked chat attachment upload (JSON + base64 keeps each request under the proxy body limit)."""
+    data = payload()
+    owner_id, account_id = g.workspace["owner_id"], g.account["id"]
+    operation = data.get("operation")
+    if operation == "start":
+        result = channels.start_upload(owner_id, account_id, data.get("name"), data.get("size"), data.get("mime"))
+    elif operation == "chunk":
+        result = channels.upload_chunk(owner_id, account_id, data.get("id"), data.get("offset"), data.get("data"))
+    elif operation == "finish":
+        result = channels.finish_upload(owner_id, account_id, data.get("id"))
+    else:
+        raise RequestError("지원하지 않는 업로드 명령입니다.")
+    return jsonify(result)
+
+
+@app.get("/api/channels/files/<file_id>")
+def channel_file(file_id):
+    from flask import send_file
+    from urllib.parse import quote
+
+    path, meta = channels.stored_file(g.workspace["owner_id"], file_id)
+    inline = meta["kind"] != "file" and request.args.get("download") != "1"
+    response = send_file(path, mimetype=meta["mime"] if inline else "application/octet-stream",
+                         conditional=True, max_age=0)
+    disposition = "inline" if inline else "attachment"
+    response.headers["Content-Disposition"] = f"{disposition}; filename*=UTF-8''{quote(meta['name'])}"
+    response.headers["Cache-Control"] = "private, max-age=86400"
+    # Served on its own origin path: no scripts, and only this site may frame it (PDF viewer).
+    g.response_csp = "default-src 'none'; img-src 'self' data:; media-src 'self'; style-src 'unsafe-inline'; frame-ancestors 'self'"
+    return response
+
+
 @sock.route("/api/channels/ws")
 def channels_socket(ws):
     if not vm_connections.acquire(blocking=False):
@@ -1176,9 +1211,22 @@ def serve_channels_connection(ws):
                     res = {"channel": data.get("channel"),
                            "messages": hub.history(owner_id, data.get("channel"), data.get("before"))}
                 elif kind == "send":
-                    res = hub.send_message(owner_id, client, data.get("channel"), data.get("text"))
+                    res = hub.send_message(owner_id, client, data.get("channel"), data.get("text"),
+                                           data.get("attachments"))
                 elif kind == "create_channel":
-                    res = hub.create_channel(owner_id, data.get("name"), data.get("kind"))
+                    res = hub.create_channel(owner_id, data.get("name"), data.get("kind"), data.get("category"))
+                elif kind == "rename_channel":
+                    res = hub.rename_channel(owner_id, data.get("channel"), data.get("name"))
+                elif kind == "move_channel":
+                    res = hub.move_channel(owner_id, data.get("channel"), data.get("category"), data.get("index"))
+                elif kind == "create_category":
+                    res = hub.create_category(owner_id, data.get("name"))
+                elif kind == "rename_category":
+                    res = hub.rename_category(owner_id, data.get("category"), data.get("name"))
+                elif kind == "move_category":
+                    res = hub.move_category(owner_id, data.get("category"), data.get("index"))
+                elif kind == "delete_category":
+                    res = hub.delete_category(owner_id, actor, data.get("category"))
                 elif kind == "delete_channel":
                     res = hub.delete_channel(owner_id, actor, data.get("channel"))
                 elif kind == "voice_join":

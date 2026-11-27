@@ -35,6 +35,9 @@ window.QNBVisualizer = (() => {
   let flowTimer = null;
   let runtimeCallEdges = [];
 
+  let structView = null;
+  let structMode = "structure";
+
   let activeExampleFilter = "all";
   let lastCodeCursorKey = null;
 
@@ -566,6 +569,152 @@ window.QNBVisualizer = (() => {
         ].join("\n"),
       },
     },
+    {
+      id: "plot-2d",
+      langGroup: "plot",
+      badge: "좌표계 · 2D",
+      title: "Desmos처럼 식을 바로 그리는 2차원 좌표계",
+      description: "함수·음함수·부등식·극좌표·매개변수 곡선, 배열과 반복문, 조건부 함수를 .plot 파일에 쓰고 슬라이더로 값을 바꿔 보며 그래프가 변하는 모습을 관찰합니다.",
+      entryPath: "/examples/graphs/tour_2d.plot",
+      runMode: "plain",
+      files: { "/examples/graphs/tour_2d.plot": window.QNBPlot?.TEMPLATE || "y = x^2\n" },
+    },
+    {
+      id: "plot-3d",
+      langGroup: "plot",
+      badge: "좌표계 · 3D",
+      title: "세 변수 관계식이 만드는 3차원 곡면",
+      description: "x² + y² + z² = 9 같은 3변수 음함수, z = f(x, y) 곡면, 공간 곡선을 3차원 좌표계에 그리고 마우스로 돌려 봅니다.",
+      entryPath: "/examples/graphs/tour_3d.plot",
+      runMode: "plain",
+      files: { "/examples/graphs/tour_3d.plot": window.QNBPlot?.TEMPLATE_3D || "z = x y\n" },
+    },
+    {
+      id: "py-bfs-graph",
+      langGroup: "python",
+      badge: "Python · 그래프",
+      title: "너비 우선 탐색(BFS)을 그래프 위에서",
+      description: "인접 리스트 그래프에서 visited·queue·현재 정점(node)이 바뀌며 탐색 트리가 자라는 과정을 '그래프' 보기로 한 단계씩 봅니다.",
+      entryPath: "/examples/python_bfs_graph.py",
+      runMode: "plain",
+      files: { "/examples/python_bfs_graph.py": [
+          "from collections import deque",
+          "",
+          "# 무방향 그래프 (인접 리스트) — 오른쪽 '구조 시각화'의 그래프 보기에서 탐색 과정을 봅니다.",
+          "graph = {",
+          "    \"A\": [\"B\", \"C\"],",
+          "    \"B\": [\"A\", \"D\", \"E\"],",
+          "    \"C\": [\"A\", \"F\"],",
+          "    \"D\": [\"B\"],",
+          "    \"E\": [\"B\", \"F\"],",
+          "    \"F\": [\"C\", \"E\"],",
+          "}",
+          "",
+          "def bfs(start):",
+          "    visited = {start}",
+          "    queue = deque([start])",
+          "    parent = {start: None}",
+          "    order = []",
+          "    while queue:",
+          "        node = queue.popleft()",
+          "        order.append(node)",
+          "        for nb in graph[node]:",
+          "            if nb not in visited:",
+          "                visited.add(nb)",
+          "                parent[nb] = node",
+          "                queue.append(nb)",
+          "    return order",
+          "",
+          "print(bfs(\"A\"))",
+          "",
+        ].join("\n") },
+    },
+    {
+      id: "py-dijkstra-network",
+      langGroup: "python",
+      badge: "Python · 네트워크",
+      title: "다익스트라 최단 경로와 가중치 네트워크",
+      description: "도시 간 거리 네트워크에서 dist 값이 줄어들고 prev 간선이 최단 경로 트리를 이루는 과정을 '네트워크' 보기로 봅니다.",
+      entryPath: "/examples/python_dijkstra_network.py",
+      runMode: "plain",
+      files: { "/examples/python_dijkstra_network.py": [
+          "import heapq",
+          "",
+          "# 가중치 네트워크 (dict of dict) — '네트워크' 보기에서 간선 굵기 = 가중치, dist 값이 정점 아래에 표시됩니다.",
+          "net = {",
+          "    \"서울\": {\"대전\": 2, \"강릉\": 3},",
+          "    \"대전\": {\"서울\": 2, \"대구\": 2, \"광주\": 3},",
+          "    \"강릉\": {\"서울\": 3, \"대구\": 4},",
+          "    \"대구\": {\"대전\": 2, \"강릉\": 4, \"부산\": 1},",
+          "    \"광주\": {\"대전\": 3, \"부산\": 4},",
+          "    \"부산\": {\"대구\": 1, \"광주\": 4},",
+          "}",
+          "",
+          "def dijkstra(src):",
+          "    dist = {v: float(\"inf\") for v in net}",
+          "    dist[src] = 0",
+          "    prev = {}",
+          "    pq = [(0, src)]",
+          "    done = set()",
+          "    while pq:",
+          "        d, u = heapq.heappop(pq)",
+          "        if u in done:",
+          "            continue",
+          "        done.add(u)",
+          "        for v, w in net[u].items():",
+          "            if d + w < dist[v]:",
+          "                dist[v] = d + w",
+          "                prev[v] = u",
+          "                heapq.heappush(pq, (dist[v], v))",
+          "    return dist",
+          "",
+          "print(dijkstra(\"서울\"))",
+          "",
+        ].join("\n") },
+    },
+    {
+      id: "py-linked-tree",
+      langGroup: "python",
+      badge: "Python · 자료구조",
+      title: "연결 리스트와 이진 탐색 트리의 포인터",
+      description: "노드가 만들어지고 next·left·right 포인터가 이어지는 모습을 '자료구조' 보기의 상자와 화살표로 봅니다.",
+      entryPath: "/examples/python_linked_tree.py",
+      runMode: "plain",
+      files: { "/examples/python_linked_tree.py": [
+          "# 연결 리스트와 이진 탐색 트리 — '자료구조' 보기에서 포인터가 이어지는 모습을 봅니다.",
+          "class ListNode:",
+          "    def __init__(self, val, next=None):",
+          "        self.val = val",
+          "        self.next = next",
+          "",
+          "class TreeNode:",
+          "    def __init__(self, val):",
+          "        self.val = val",
+          "        self.left = None",
+          "        self.right = None",
+          "",
+          "def insert(root, val):",
+          "    if root is None:",
+          "        return TreeNode(val)",
+          "    if val < root.val:",
+          "        root.left = insert(root.left, val)",
+          "    else:",
+          "        root.right = insert(root.right, val)",
+          "    return root",
+          "",
+          "head = None",
+          "for v in [4, 3, 2, 1]:",
+          "    head = ListNode(v, head)",
+          "",
+          "root = None",
+          "for v in [8, 3, 10, 1, 6, 14, 4]:",
+          "    root = insert(root, v)",
+          "",
+          "grid = [[0, 1, 0], [1, 0, 1], [0, 1, 0]]",
+          "print(head.val, root.val)",
+          "",
+        ].join("\n") },
+    },
   ];
 
   function el(tag, text, className) {
@@ -589,7 +738,7 @@ window.QNBVisualizer = (() => {
   function switchPane(pane) {
     activePane = pane;
     if (!studioOpen) setStudioVisible(true);
-    for (const key of ["lean", "python", "category", "project"]) {
+    for (const key of ["lean", "python", "category", "project", "plot"]) {
       $("viz-tab-" + key)?.classList.toggle("active", key === pane);
       $("viz-tab-" + key)?.setAttribute("aria-selected", String(key === pane));
       const box = $("viz-pane-" + key);
@@ -598,6 +747,8 @@ window.QNBVisualizer = (() => {
     if (pane === "category" && catViz) {
       setTimeout(() => drawCategoryCanvas(), 20);
     }
+    if (pane === "plot") setTimeout(() => window.QNBPlot?.redraw(), 20);
+    if (pane === "python") setTimeout(() => structView?.draw(), 20);
     if (pane === "project") {
       if (!projectData) analyzeProject();
       else setTimeout(() => projectGraph?.fit(), 20);
@@ -1157,6 +1308,35 @@ window.QNBVisualizer = (() => {
     }
 
     $("viz-py-stdout").textContent = step.stdout || "(아직 출력 없음)";
+    renderStruct();
+  }
+
+  /* Data structure / graph / network view of the current execution step. */
+  function renderStruct() {
+    if (!structView) return;
+    const step = pyViz?.steps?.[pyStepIdx] || null;
+    const prev = pyStepIdx > 0 ? pyViz.steps[pyStepIdx - 1] : null;
+    const graphs = step ? QNBStructViz.detectAll(step) : [];
+    // A graph-shaped variable switches the default view to 그래프 the first time it appears.
+    const clearlyGraph = graphs.find((g) => /adjacency|objects/.test(g.kind) || /^(g|graph|adj|net|network)$/i.test(g.name));
+    if (clearlyGraph && !renderStruct.autoSwitched && structMode === "structure") {
+      renderStruct.autoSwitched = true;
+      structMode = clearlyGraph.weighted ? "network" : "graph";
+    }
+    for (const mode of ["structure", "graph", "network"]) {
+      $("viz-struct-mode-" + mode).setAttribute("aria-pressed", String(mode === structMode));
+    }
+    const select = $("viz-struct-target");
+    select.hidden = structMode === "structure" || graphs.length < 2;
+    const names = graphs.map((g) => g.name);
+    if (select.dataset.names !== names.join("\u0000")) {
+      select.dataset.names = names.join("\u0000");
+      select.replaceChildren(...graphs.map((g) => new Option(`${g.name} (정점 ${g.nodes.length})`, g.name)));
+    }
+    if (!names.includes(structView.target)) structView.target = names[0] || null;
+    select.value = structView.target || "";
+    structView.mode = structMode;
+    structView.set(step, prev);
   }
 
   function renderPythonViz(viz, context = {}) {
@@ -1180,6 +1360,8 @@ window.QNBVisualizer = (() => {
     slider.max = String(Math.max(0, (viz.steps?.length || 1) - 1));
     slider.disabled = !hasSteps;
 
+    renderStruct.autoSwitched = false;
+    structMode = "structure";
     if (hasSteps) {
       renderPyStep(0);
     } else {
@@ -1422,6 +1604,7 @@ window.QNBVisualizer = (() => {
       ["python", "Python"],
       ["cpp", "C++"],
       ["java", "Java"],
+      ["plot", "좌표계"],
     ];
     const renderFilters = (bar) => {
       if (!bar) return;
@@ -1526,6 +1709,15 @@ window.QNBVisualizer = (() => {
     $("viz-tab-python").onclick = () => switchPane("python");
     $("viz-tab-category").onclick = () => switchPane("category");
     $("viz-tab-project").onclick = () => switchPane("project");
+    $("viz-tab-plot").onclick = () => switchPane("plot");
+    window.QNBPlot?.mount(host);
+    if (window.QNBStructViz && $("viz-struct-canvas")) {
+      structView = new QNBStructViz.View($("viz-struct-canvas"));
+      for (const mode of ["structure", "graph", "network"]) {
+        $("viz-struct-mode-" + mode).onclick = () => { structMode = mode; renderStruct.autoSwitched = true; renderStruct(); };
+      }
+      $("viz-struct-target").onchange = (event) => { structView.target = event.target.value; structView.draw(); };
+    }
     $("viz-close").onclick = () => setStudioVisible(false);
     $("viz-toggle").onclick = () => setStudioVisible(!studioOpen);
 
@@ -2401,8 +2593,20 @@ window.QNBVisualizer = (() => {
     }
   }
 
+  /* .plot files: coordinate systems drawn entirely in the browser. */
+  function showPlot(text, context = {}, { focus = true } = {}) {
+    window.QNBPlot?.show(text, context);
+    if (focus && activePane !== "plot") switchPane("plot");
+  }
+
+  function syncPlotCursor(path, line) {
+    window.QNBPlot?.highlightLine(path, line);
+  }
+
   return {
     init,
+    showPlot,
+    syncPlotCursor,
     showExecutionResult,
     syncLeanCursor,
     syncCategoryCursor,

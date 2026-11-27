@@ -209,6 +209,7 @@
     ml: () => tile("#EE6A1A", "ML"), ex: () => tile("#6E4A7E", "EX"), exs: () => tile("#6E4A7E", "EX"),
     zig: () => tile("#F7A41D", "ZIG", "#1A1A1A"), nim: () => tile("#FFE953", "NIM", "#1A1A1A"),
     vim: () => tile("#019733", "VIM"), pl: () => tile("#39457E", "PL"), asm: () => tile("#6E4C13", "ASM"), s: () => tile("#6E4C13", "ASM"),
+    plot: () => tile("#0E7490", "∠"), cat: () => tile("#7C3AED", "𝒞"),
     lean: lambda, olean: lambda, agda: () => tile("#3E6F8E", "AG"), v: () => tile("#BE9B66", "V"),
     md: markdown, markdown: markdown, mdx: markdown, rst: () => lines("#5C5A54"), tex: () => tile("#008080", "TeX"), bib: () => tile("#008080", "BIB"),
     json: () => braces("#C49A06"), jsonc: () => braces("#C49A06"), json5: () => braces("#C49A06"),

@@ -15,6 +15,9 @@
   <script src="/static/vendor/editor.js" defer></script>
   <script src="/static/vendor/graph.js" defer></script>
   <script src="/static/particles.js" defer></script>
+  <script src="/static/plotlang.js" defer></script>
+  <script src="/static/plotview.js" defer></script>
+  <script src="/static/structviz.js" defer></script>
   <script src="/static/visualizer.js" defer></script>
   <script src="/static/fileicons.js" defer></script>
   <script src="/static/app.js" defer></script>
@@ -1163,6 +1166,7 @@
               <button id="viz-tab-python" type="button" role="tab" aria-selected="false" class="viz-tab">⚡ 코드 실행</button>
               <button id="viz-tab-category" type="button" role="tab" aria-selected="false" class="viz-tab">𝒞 범주론</button>
               <button id="viz-tab-project" type="button" role="tab" aria-selected="false" class="viz-tab">⇄ 프로젝트 흐름</button>
+              <button id="viz-tab-plot" type="button" role="tab" aria-selected="false" class="viz-tab">📐 좌표계</button>
             </div>
             <span id="viz-parallel-badge" class="viz-parallel-badge" hidden></span>
             <button id="viz-examples-shortcut" type="button" class="quiet viz-head-btn" title="학습 예제">✦ 예제</button>
@@ -1225,6 +1229,19 @@
               <div id="viz-py-line-bar" class="viz-line-visits" hidden></div>
               <div id="viz-py-compile-errors" class="viz-compile-errors" hidden></div>
               <div id="viz-py-explain" class="viz-explain-card"></div>
+              <div class="viz-section viz-struct">
+                <div class="viz-struct-head">
+                  <h4>구조 시각화</h4>
+                  <div class="viz-struct-modes" role="group" aria-label="구조 시각화 방식">
+                    <button id="viz-struct-mode-structure" type="button" aria-pressed="true" title="변수 → 배열·딕셔너리·객체, 연결 리스트, 이진 트리를 상자와 화살표로">자료구조</button>
+                    <button id="viz-struct-mode-graph" type="button" aria-pressed="false" title="인접 리스트·행렬·간선 목록을 정점과 간선으로 (방문·큐·현재 정점 표시)">그래프</button>
+                    <button id="viz-struct-mode-network" type="button" aria-pressed="false" title="가중치 간선, 연결 수(차수)에 따른 정점 크기, 거리 값">네트워크</button>
+                  </div>
+                  <select id="viz-struct-target" aria-label="그래프로 볼 변수" hidden></select>
+                </div>
+                <div class="viz-struct-canvas-wrap"><canvas id="viz-struct-canvas" aria-label="자료구조·그래프 시각화"></canvas></div>
+                <p class="viz-struct-hint">끌어서 이동 · 휠로 확대 · 더블클릭으로 원래대로 · 그래프의 정점은 끌어서 배치할 수 있습니다. 편집기에서 커서를 옮기면 그 줄의 실행 단계가 표시됩니다.</p>
+              </div>
               <div class="viz-section">
                 <h4>호출 스택 &amp; 지역 변수</h4>
                 <div id="viz-py-stack" class="viz-stack"></div>
@@ -1275,6 +1292,43 @@
               <div id="viz-cat-step-box" class="viz-explain-card"></div>
               <div id="viz-cat-calc" class="viz-prop-calc" hidden></div>
               <div id="viz-cat-summary" class="viz-decls"></div>
+            </div>
+          </section>
+
+          <section id="viz-pane-plot" class="viz-pane" hidden>
+            <div id="viz-plot-empty" class="viz-empty">
+              <div class="viz-empty-icon">📐</div>
+              <h3>식을 쓰면 바로 그려지는 좌표계</h3>
+              <p><code>.plot</code> 파일을 열면 각 줄의 방정식·부등식·점·배열·반복문·조건부 함수가 2차원 또는 3차원 좌표계에 그려집니다. 숫자만 대입한 변수는 슬라이더가 되어 값을 바꿔 보며 직관을 얻을 수 있습니다.</p>
+              <div class="viz-plot-empty-actions">
+                <button id="viz-plot-new" type="button" class="primary">＋ 2D 좌표계 파일</button>
+                <button id="viz-plot-new-3d" type="button">＋ 3D 좌표계 파일</button>
+              </div>
+            </div>
+            <div id="viz-plot-content" class="viz-plot" hidden>
+              <div class="viz-plot-bar">
+                <strong id="viz-plot-file" class="viz-plot-file"></strong>
+                <div class="viz-plot-seg" role="group" aria-label="차원">
+                  <button id="viz-plot-mode-auto" type="button" aria-pressed="true">자동</button>
+                  <button id="viz-plot-mode-2d" type="button" aria-pressed="false">2D</button>
+                  <button id="viz-plot-mode-3d" type="button" aria-pressed="false">3D</button>
+                </div>
+                <span class="spacer"></span>
+                <button id="viz-plot-zoom-in" type="button" title="확대" aria-label="확대">＋</button>
+                <button id="viz-plot-zoom-out" type="button" title="축소" aria-label="축소">－</button>
+                <button id="viz-plot-reset" type="button" title="보기 초기화 (더블클릭)">⟲</button>
+                <button id="viz-plot-spin" type="button" aria-pressed="false" title="3D 자동 회전" hidden>⟳ 회전</button>
+                <button id="viz-plot-png" type="button" title="PNG 이미지로 저장">PNG</button>
+              </div>
+              <div id="viz-plot-stage" class="viz-plot-stage">
+                <canvas id="viz-plot-canvas" aria-label="2차원 좌표계"></canvas>
+                <canvas id="viz-plot-gl" aria-label="3차원 좌표계" hidden></canvas>
+                <canvas id="viz-plot-overlay" aria-hidden="true" hidden></canvas>
+                <div id="viz-plot-readout" class="viz-plot-readout"></div>
+                <div id="viz-plot-tip" class="viz-plot-tip" hidden></div>
+              </div>
+              <div id="viz-plot-sliders" class="viz-plot-sliders" hidden></div>
+              <div id="viz-plot-list" class="viz-plot-list"></div>
             </div>
           </section>
 
@@ -1456,6 +1510,16 @@
           <div id="terminal-tabs" class="terminal-tabs" role="tablist" aria-label="열린 터미널"></div>
           <button id="terminal-new" type="button" title="새 터미널 (Ctrl+Shift+`)" aria-label="새 터미널">＋</button>
           <span id="terminal-status" role="status"></span>
+          <div class="terminal-layout" role="group" aria-label="터미널 배치">
+            <button id="terminal-layout-tabs" type="button" title="탭으로 하나씩 보기" aria-label="탭 보기" aria-pressed="true"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M2 6h12M6 3v3"/></svg></button>
+            <button id="terminal-layout-grid" type="button" title="여러 터미널을 격자로 동시에 보기 (머리글을 끌어서 배치)" aria-label="격자 보기" aria-pressed="false"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><rect x="2" y="2.5" width="5.2" height="5" rx="1"/><rect x="8.8" y="2.5" width="5.2" height="5" rx="1"/><rect x="2" y="8.5" width="5.2" height="5" rx="1"/><rect x="8.8" y="8.5" width="5.2" height="5" rx="1"/></svg></button>
+            <select id="terminal-grid-cols" title="격자 열 수" aria-label="격자 열 수" hidden>
+              <option value="0">자동</option>
+              <option value="1">1열</option>
+              <option value="2">2열</option>
+              <option value="3">3열</option>
+            </select>
+          </div>
           <button id="terminal-hide" type="button" title="패널 숨기기 (세션 유지 · Ctrl+`)" aria-label="터미널 패널 숨기기">⌄</button>
           <button id="terminal-close" type="button" title="모든 터미널 종료" aria-label="모든 터미널 종료">×</button>
         </div>
@@ -1487,21 +1551,27 @@
     </div>
     <div class="channels-body">
       <nav class="channels-list" aria-label="채널 목록">
-        <div class="channels-group-head"><span>텍스트 채널</span><button id="channels-add-text" type="button" title="텍스트 채널 추가" aria-label="텍스트 채널 추가">＋</button></div>
-        <div id="channels-text-list"></div>
-        <div class="channels-group-head"><span>음성 채널</span><button id="channels-add-voice" type="button" title="음성 채널 추가" aria-label="음성 채널 추가">＋</button></div>
-        <div id="channels-voice-list"></div>
-        <p class="channels-hint">음성은 서버가 중계합니다 (P2P 아님). 에코를 막으려면 헤드폰을 사용하세요.</p>
+        <div class="channels-tree-tools">
+          <button id="channels-add-category" type="button" title="새 카테고리" aria-label="새 카테고리">＋ 카테고리</button>
+          <button id="channels-add-text" type="button" title="카테고리 없이 텍스트 채널 추가" aria-label="텍스트 채널 추가"># ＋</button>
+          <button id="channels-add-voice" type="button" title="카테고리 없이 음성 채널 추가" aria-label="음성 채널 추가">🔊 ＋</button>
+        </div>
+        <div id="channels-tree" class="channels-tree"></div>
+        <p class="channels-hint">채널·카테고리는 끌어서 옮기고, 더블클릭으로 이름을 바꿉니다. 음성은 서버가 중계합니다 (P2P 아님). 에코를 막으려면 헤드폰을 사용하세요.</p>
       </nav>
       <div id="channels-split-resizer" class="split-resizer channels-split-resizer" role="separator" aria-orientation="vertical" tabindex="0" aria-label="채널 목록 · 채팅 너비 조절" title="드래그해서 채널 목록 너비 조절 (더블클릭 초기화)"></div>
       <section class="channels-chat">
         <div id="channels-title" class="channels-title">채팅</div>
         <div id="channels-notice" class="channels-notice" role="alert" hidden></div>
         <div id="channels-messages" class="channels-messages" aria-live="polite"></div>
+        <div id="channels-attachments" class="channels-attachments" hidden></div>
         <div class="channels-composer">
+          <button id="channels-attach" type="button" class="channels-attach" title="파일 첨부 (이미지 · 동영상 · PDF 등, 끌어다 놓기 · 붙여넣기 가능)" aria-label="파일 첨부">📎</button>
+          <input id="channels-file" type="file" multiple hidden>
           <textarea id="channels-input" rows="1" maxlength="2000" placeholder="메시지 보내기"></textarea>
           <button id="channels-send" type="button" class="primary">전송</button>
         </div>
+        <div id="channels-drop" class="channels-drop" hidden><span>여기에 놓아 파일 첨부</span></div>
       </section>
     </div>
     <div id="voice-bar" class="voice-bar" hidden>

@@ -140,6 +140,84 @@ class ChannelHubTests(unittest.TestCase):
             left = db.execute("SELECT COUNT(*) FROM chat_messages WHERE channel_id = ?", (created["id"],)).fetchone()[0]
         self.assertEqual(left, 0)
 
+    def test_categories_group_and_reorder_channels(self):
+        a = self.hub.connect(1, self.owner)
+        layout = self.hub.layout(1)
+        self.assertEqual([c["name"] for c in layout["categories"]], ["텍스트 채널", "음성 채널"])
+        self.assertEqual({c["id"]: c["category"] for c in layout["channels"]},
+                         {"general": "cat-text", "voice": "cat-voice"})
+
+        project = self.hub.create_category(1, "프로젝트")
+        with self.assertRaises(RequestError):
+            self.hub.create_category(1, "프로젝트")
+        spec = self.hub.create_channel(1, "스펙", "text", project["id"])
+        call = self.hub.create_channel(1, "회의", "voice", project["id"])
+        drain(a)
+
+        # Drag "general" to the top of the project category.
+        self.hub.move_channel(1, "general", project["id"], 0)
+        event = [e for e in drain(a) if isinstance(e, dict) and e["type"] == "channels"][-1]
+        ordered = [c["id"] for c in event["channels"] if c["category"] == project["id"]]
+        self.assertEqual(ordered, ["general", spec["id"], call["id"]])
+
+        self.hub.move_category(1, project["id"], 0)
+        self.assertEqual(self.hub.layout(1)["categories"][0]["id"], project["id"])
+        self.hub.rename_category(1, project["id"], "프로젝트 A")
+        self.hub.rename_channel(1, spec["id"], "명세")
+
+        with self.assertRaises(RequestError) as forbidden:
+            self.hub.delete_category(1, self.guest, project["id"])
+        self.assertEqual(forbidden.exception.status, 403)
+        self.hub.delete_category(1, self.owner, project["id"])
+        self.hub.delete_category(1, self.owner, "cat-text")
+        self.hub.delete_category(1, self.owner, "cat-voice")
+        # Deleting every category keeps the channels, uncategorised, and never re-seeds defaults.
+        layout = self.hub.layout(1)
+        self.assertEqual(layout["categories"], [])
+        self.assertTrue(all(c["category"] is None for c in layout["channels"]))
+        self.assertIn("명세", [c["name"] for c in layout["channels"]])
+
+    def test_attachments_are_sniffed_scoped_and_cleaned_up(self):
+        import base64
+        files = Path(self.tmp.name) / "files"
+        with patch.dict(os.environ, {"QNB_CHAT_FILES": str(files)}):
+            png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 600_000
+            started = channels.start_upload(1, 2, "그림.png", len(png), "image/png")
+            step = started["chunkSize"]
+            with self.assertRaises(RequestError):  # out-of-order chunk
+                channels.upload_chunk(1, 2, started["id"], step, base64.b64encode(png[step:]).decode())
+            with self.assertRaises(RequestError):  # someone else's upload
+                channels.upload_chunk(1, 1, started["id"], 0, base64.b64encode(png[:step]).decode())
+            for offset in range(0, len(png), step):
+                channels.upload_chunk(1, 2, started["id"], offset, base64.b64encode(png[offset:offset + step]).decode())
+            meta = channels.finish_upload(1, 2, started["id"])
+            self.assertEqual((meta["mime"], meta["kind"]), ("image/png", "image"))
+
+            # A file that claims to be an image but is HTML is served as a plain download.
+            html = b"<script>alert(1)</script>"
+            fake = channels.start_upload(1, 2, "x.png", len(html), "image/png")
+            channels.upload_chunk(1, 2, fake["id"], 0, base64.b64encode(html).decode())
+            self.assertEqual(channels.finish_upload(1, 2, fake["id"])["kind"], "file")
+
+            with self.assertRaises(RequestError):
+                channels.start_upload(1, 2, "big.bin", channels.FILE_LIMIT + 1, "")
+            with self.assertRaises(RequestError):
+                channels.stored_file(3, started["id"])  # other workspace
+
+            guest = self.hub.connect(1, self.guest)
+            owner = self.hub.connect(1, self.owner)
+            room = self.hub.create_channel(1, "자료", "text")
+            sent = self.hub.send_message(1, guest, room["id"], "", [started["id"]])
+            self.assertEqual(sent["attachments"][0]["name"], "그림.png")
+            self.assertEqual(self.hub.history(1, room["id"])[0]["attachments"][0]["kind"], "image")
+            with self.assertRaises(RequestError):  # cannot attach another member's upload
+                self.hub.send_message(1, owner, room["id"], "", [started["id"]])
+
+            path, _ = channels.stored_file(1, started["id"])
+            self.assertEqual(path.read_bytes(), png)
+            self.hub.delete_channel(1, self.owner, room["id"])
+            self.assertFalse(path.exists())
+
 
 class GitStatusTests(unittest.TestCase):
     def test_parse_handles_branch_header_renames_and_outside_paths(self):
@@ -290,3 +368,55 @@ class UploadRouteTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(HAS_FLASK, "Flask is required to test the attachment endpoints")
+class ChannelFileEndpointTests(unittest.TestCase):
+    def test_upload_and_serve_with_safe_headers(self):
+        import base64
+        from qnb.app import app
+
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
+            "QNB_DATABASE": str(Path(directory) / "qnb.sqlite3"),
+            "QNB_CHAT_FILES": str(Path(directory) / "files"),
+        }):
+            store.initialize()
+            channels.initialize()
+            owner, outsider = app.test_client(), app.test_client()
+            for client, email in ((owner, "owner@example.test"), (outsider, "outsider@example.test")):
+                self.assertEqual(client.post("/api/signup", json={"email": email, "password": "password123"}).status_code, 200)
+            with store.database() as db:
+                db.execute("UPDATE accounts SET email_verified = 1")
+
+            pdf = b"%PDF-1.4\n" + b"0" * 1000
+
+            def upload(client, name, data):
+                started = client.post("/api/channels/files", json={"operation": "start", "name": name, "size": len(data), "mime": ""}).get_json()
+                client.post("/api/channels/files", json={"operation": "chunk", "id": started["id"], "offset": 0,
+                                                         "data": base64.b64encode(data).decode()})
+                return client.post("/api/channels/files", json={"operation": "finish", "id": started["id"]}).get_json()
+
+            meta = upload(owner, "논문.pdf", pdf)
+            self.assertEqual(meta["kind"], "pdf")
+            served = owner.get(f"/api/channels/files/{meta['id']}")
+            self.assertEqual(served.status_code, 200)
+            self.assertEqual(served.mimetype, "application/pdf")
+            self.assertEqual(served.data, pdf)
+            self.assertIn("inline", served.headers["Content-Disposition"])
+            self.assertIn("frame-ancestors 'self'", served.headers["Content-Security-Policy"])
+            self.assertIn("default-src 'none'", served.headers["Content-Security-Policy"])
+            ranged = owner.get(f"/api/channels/files/{meta['id']}", headers={"Range": "bytes=0-4"})
+            self.assertEqual((ranged.status_code, ranged.data), (206, b"%PDF-"))
+            download = owner.get(f"/api/channels/files/{meta['id']}?download=1")
+            self.assertEqual(download.mimetype, "application/octet-stream")
+            self.assertIn("attachment", download.headers["Content-Disposition"])
+
+            page = upload(owner, "page.html", b"<html><script>alert(1)</script>")
+            risky = owner.get(f"/api/channels/files/{page['id']}")
+            self.assertEqual(risky.mimetype, "application/octet-stream")
+            self.assertIn("attachment", risky.headers["Content-Disposition"])
+
+            self.assertEqual(outsider.get(f"/api/channels/files/{meta['id']}").status_code, 404)
+            self.assertEqual(app.test_client().get(f"/api/channels/files/{meta['id']}").status_code, 401)
+            for response in (served, ranged, download, risky):
+                response.close()

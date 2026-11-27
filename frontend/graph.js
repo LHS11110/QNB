@@ -288,9 +288,15 @@ export class ProofGraph {
     this.draw();
   }
 
+  /* Pointer position in the graph's layout pixels. The canvas may be displayed at a different
+   * size than the one it was laid out for (no CSS size on the canvas, CSS transforms, or a
+   * resize that has not been observed yet), so scale by the rendered box instead of assuming
+   * 1 CSS px = 1 layout px. */
   pointer(event) {
     const bounds = this.canvas.getBoundingClientRect();
-    return { x: event.clientX - bounds.left, y: event.clientY - bounds.top };
+    const sx = bounds.width ? (this.width || bounds.width) / bounds.width : 1;
+    const sy = bounds.height ? (this.height || bounds.height) / bounds.height : 1;
+    return { x: (event.clientX - bounds.left) * sx, y: (event.clientY - bounds.top) * sy };
   }
 
   hit(point) {

@@ -133,7 +133,7 @@ def fmt(val, heap, depth=0, ptr_seen=None, addr_names=None):
                 if hint == "string" and len(text) >= 2 and text[0] == text[-1] == '"':
                     return {"kind": "prim", "type": "str", "value": clip(text[1:-1])}
                 return {"kind": "repr", "type": name, "text": clip(text)}
-            if depth >= 3:
+            if depth >= 4 or len(heap) >= 60:
                 return {"kind": "repr", "type": name, "text": "…"}
             header = str(viz.to_string() or "")
             length = re.search(r"(?:length|with) (\d+)", header)
@@ -176,7 +176,7 @@ def fmt(val, heap, depth=0, ptr_seen=None, addr_names=None):
                     return {"kind": "prim", "type": "str", "value": clip(val.string(length=200))}
                 except (gdb.error, gdb.MemoryError):
                     pass
-            if depth >= 3:
+            if depth >= 8 or len(heap) >= 60:  # linked lists / trees follow pointers deeper
                 return {"kind": "repr", "type": "pointer", "text": hex(addr)}
             if target.code in (gdb.TYPE_CODE_STRUCT, gdb.TYPE_CODE_UNION):
                 if addr in ptr_seen:
@@ -217,7 +217,7 @@ def fmt(val, heap, depth=0, ptr_seen=None, addr_names=None):
             if addr in addr_names:
                 return {"kind": "repr", "type": "pointer", "text": "&" + addr_names[addr]}
             return {"kind": "repr", "type": "pointer", "text": hex(addr)}
-        if depth >= 3:
+        if depth >= 6 or len(heap) >= 60:
             return {"kind": "repr", "type": name, "text": "…"}
         if code == gdb.TYPE_CODE_ARRAY:
             low, high = t.range()
@@ -703,7 +703,7 @@ public class QnbJdi {
     }
     String known = seen.get(obj);
     if (known != null) return "{\"kind\":\"ref\",\"id\":\"" + known + "\"}";
-    if (depth >= 3) return repr(type, "…");
+    if (depth >= 7 || seen.size() >= 60) return repr(type, "…");
     String id = "obj_" + (++seq); seen.put(obj, id);
     StringBuilder items = new StringBuilder(); int n = 0, len; boolean fields = false;
     if (obj instanceof ArrayReference) {

@@ -647,11 +647,12 @@ import json as _qnb_json
 import os as _qnb_os
 import sys as _qnb_sys
 import types as _qnb_types
+import collections as _qnb_collections
 
 _QNB_MAX_STEPS = 300
 _QNB_MAX_STACK = 16
 _QNB_MAX_ITEMS = 12
-_QNB_MAX_HEAP = 40
+_QNB_MAX_HEAP = 60
 _QNB_MAX_STR = 120
 _QNB_MAX_STDOUT = 8192
 _QNB_SKIP_VARS = {
@@ -672,7 +673,8 @@ def _qnb_serialize(val, heap, seen, depth=0):
         return {"kind": "prim", "type": type(val).__name__, "value": val}
     if isinstance(val, str):
         return {"kind": "prim", "type": "str", "value": _qnb_clip(val)}
-    if depth >= 3:
+    # containers stay shallow; objects (linked lists, trees, graph nodes) may nest deeper
+    if depth >= (7 if hasattr(val, "__dict__") else 4):
         return {"kind": "repr", "type": type(val).__name__, "text": _qnb_clip(repr(val))}
 
     oid = id(val)
@@ -682,8 +684,10 @@ def _qnb_serialize(val, heap, seen, depth=0):
         return {"kind": "repr", "type": type(val).__name__, "text": _qnb_clip(repr(val))}
 
     ref_id = f"obj_{len(heap) + 1}"
-    if isinstance(val, (list, tuple, set)):
+    # Reserve the id before serialising children, otherwise nested objects get the same id.
+    if isinstance(val, (list, tuple, set, frozenset, _qnb_collections.deque)):
         seen[oid] = ref_id
+        heap[ref_id] = {"id": ref_id}
         seq = list(val)
         entry = {
             "id": ref_id,
@@ -696,10 +700,11 @@ def _qnb_serialize(val, heap, seen, depth=0):
         return {"kind": "ref", "id": ref_id}
     if isinstance(val, dict):
         seen[oid] = ref_id
+        heap[ref_id] = {"id": ref_id}
         pairs = list(val.items())[:_QNB_MAX_ITEMS]
         entry = {
             "id": ref_id,
-            "type": "dict",
+            "type": type(val).__name__ if type(val).__name__ in ("defaultdict", "OrderedDict", "Counter") else "dict",
             "length": len(val),
             "fields": [[_qnb_clip(str(k), 40), _qnb_serialize(v, heap, seen, depth + 1)] for k, v in pairs],
             "truncated": len(val) > _QNB_MAX_ITEMS,
@@ -708,6 +713,7 @@ def _qnb_serialize(val, heap, seen, depth=0):
         return {"kind": "ref", "id": ref_id}
     if hasattr(val, "__dict__") and not isinstance(val, (type, _qnb_types.ModuleType, _qnb_types.FunctionType)):
         seen[oid] = ref_id
+        heap[ref_id] = {"id": ref_id}
         raw_fields = [(k, v) for k, v in vars(val).items() if not k.startswith("__") and not callable(v)]
         entry = {
             "id": ref_id,

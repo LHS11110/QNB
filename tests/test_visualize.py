@@ -104,6 +104,40 @@ class PythonTracerTests(unittest.TestCase):
         self.assertEqual(last["heap"][ref_id]["type"], "list")
         self.assertEqual(last["heap"][ref_id]["length"], 2)
 
+    def test_nested_objects_get_distinct_heap_ids_and_deep_links(self):
+        code = (
+            "from collections import deque\n"
+            "class Node:\n"
+            "    def __init__(self, val, next=None):\n"
+            "        self.val = val\n"
+            "        self.next = next\n"
+            "graph = {'A': ['B', 'C'], 'B': ['A'], 'C': ['A']}\n"
+            "queue = deque(['A'])\n"
+            "head = None\n"
+            "for v in [5, 4, 3, 2, 1]:\n"
+            "    head = Node(v, head)\n"
+            "done = True\n"
+        )
+        viz = self._run_tracer(code)
+        last = viz["steps"][-1]
+        heap = last["heap"]
+        local = last["stack"][0]["locals"]
+        graph = heap[local["graph"]["id"]]
+        children = [heap[v["id"]] for _, v in graph["fields"]]
+        # each adjacency list is its own object, not a reference back to the dict
+        self.assertTrue(all(c["type"] == "list" for c in children))
+        self.assertEqual([[i["value"] for i in c["items"]] for c in children], [["B", "C"], ["A"], ["A"]])
+        self.assertEqual(heap[local["queue"]["id"]]["type"], "deque")
+        # a five-node linked list is followed to the end
+        node, values = heap[local["head"]["id"]], []
+        while True:
+            fields = dict(node["fields"])
+            values.append(fields["val"]["value"])
+            if fields["next"].get("kind") != "ref":
+                break
+            node = heap[fields["next"]["id"]]
+        self.assertEqual(values, [1, 2, 3, 4, 5])
+
     def test_caps_steps_at_max_limit(self):
         code = "total = 0\nfor i in range(500):\n    total += i\n"
         viz = self._run_tracer(code)

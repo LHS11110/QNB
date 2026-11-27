@@ -1740,7 +1740,7 @@ function fileLanguage(path) {
     lean: "lean4", cat: "category", py: "python", md: "markdown", markdown: "markdown", json: "json",
     ipynb: "json", js: "javascript", jsx: "javascript", ts: "typescript", tsx: "typescript",
     cpp: "cpp", cc: "cpp", cxx: "cpp", "c++": "cpp", hpp: "cpp", hh: "cpp", hxx: "cpp", h: "cpp", c: "cpp",
-    java: "java", html: "html", htm: "html", tex: "latex", ltx: "latex",
+    java: "java", html: "html", htm: "html", tex: "latex", ltx: "latex", plot: "plot",
   }[path.split(".").at(-1).toLowerCase()] || "";
 }
 
@@ -1749,7 +1749,7 @@ function runLanguage(path) {
   const ext = path.split(".").at(-1).toLowerCase();
   if (["cpp", "cc", "cxx", "c++"].includes(ext)) return "cpp";
   const language = fileLanguage(path);
-  return ["lean4", "python", "java", "category"].includes(language) ? language : "";
+  return ["lean4", "python", "java", "category", "plot"].includes(language) ? language : "";
 }
 
 const RENDERABLE = { markdown: "Markdown", html: "HTML", latex: "LaTeX" };
@@ -1787,6 +1787,8 @@ function renderPlainFile(tab, minimalDiff = false) {
   previewButton.textContent = markdownFile ? `${RENDERABLE[language]} 미리 보기` : "미리 보기";
   if (!preview.hidden) renderFilePreview(tab, preview, tab.text);
   renderPlainOutput(tab);
+  // .plot files draw live in the 좌표계 pane; opening one brings the pane forward.
+  if (language === "plot") window.QNBVisualizer?.showPlot(tab.text, { path: tab.path }, { focus: !minimalDiff });
   mountEditor(tab, $("file-content"), {
     text: tab.text, language, label: "파일 내용", readOnly: busy, minimalDiff,
     onChange(text) {
@@ -1796,6 +1798,10 @@ function renderPlainFile(tab, minimalDiff = false) {
       if (!preview.hidden) {
         clearTimeout(tab.previewTimer);
         tab.previewTimer = setTimeout(() => renderFilePreview(tab, preview, tab.text), language === "markdown" ? 0 : 250);
+      }
+      if (language === "plot") {
+        clearTimeout(tab.plotTimer);
+        tab.plotTimer = setTimeout(() => window.QNBVisualizer?.showPlot(tab.text, { path: tab.path }, { focus: false }), 120);
       }
     },
     onRun() {
@@ -1807,6 +1813,7 @@ function renderPlainFile(tab, minimalDiff = false) {
       if (language === "lean4") window.QNBVisualizer?.syncLeanCursor(tab.path, null, line, col, isUserClick);
       else if (language === "category") window.QNBVisualizer?.syncCategoryCursor(tab.path, null, line, col, isUserClick);
       else if (["python", "cpp", "java"].includes(language)) window.QNBVisualizer?.syncCodeCursor(tab.path, null, line, col, isUserClick);
+      else if (language === "plot") window.QNBVisualizer?.syncPlotCursor(tab.path, line);
       collabRequest("cursor", { path: tab.path, cursorLine: line }).catch(() => {});
     },
   });
@@ -1863,6 +1870,12 @@ async function runPlainFile(targetPath = active) {
   if (!tab) return;
   const language = runLanguage(tab.path);
   if (!language || runningFiles.has(tab.path)) return;
+  if (language === "plot") {
+    // Plots are evaluated in the browser; "run" just redraws and shows the pane.
+    window.QNBVisualizer?.showPlot(tab.text, { path: tab.path });
+    status("좌표계를 다시 그렸습니다.");
+    return;
+  }
   runningFiles.add(tab.path);
   updateRunButtonState();
   const jobId = beginParallelJob(`${tab.path.split("/").pop()} (${language})`);
@@ -2902,6 +2915,18 @@ window.QNBVisualizer?.init({
     if (tab) editors.get(tab)?.setHighlightLine(line, kind, scroll);
   },
   runPlainFile,
+  /* Replace one line of an open file (used by the 좌표계 sliders' "save value"). */
+  replaceLine(filePath, line, text) {
+    const norm = filePath.startsWith("/") ? filePath : "/" + filePath;
+    const tab = tabs.get(norm);
+    const view = tab && editors.get(tab)?.view;
+    if (!view) return false;
+    const doc = view.state.doc;
+    if (line < 1 || line > doc.lines) return false;
+    const target = doc.line(line);
+    view.dispatch({ changes: { from: target.from, to: target.to, insert: text } });
+    return true;
+  },
   async runFirstCodeCell(nbPath) {
     const tab = tabs.get(nbPath);
     if (!tab) return;
