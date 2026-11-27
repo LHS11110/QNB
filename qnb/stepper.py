@@ -133,7 +133,7 @@ def fmt(val, heap, depth=0, ptr_seen=None, addr_names=None):
                 if hint == "string" and len(text) >= 2 and text[0] == text[-1] == '"':
                     return {"kind": "prim", "type": "str", "value": clip(text[1:-1])}
                 return {"kind": "repr", "type": name, "text": clip(text)}
-            if depth >= 4 or len(heap) >= 60:
+            if depth >= 6 or len(heap) >= 90:
                 return {"kind": "repr", "type": name, "text": "…"}
             header = str(viz.to_string() or "")
             length = re.search(r"(?:length|with) (\d+)", header)
@@ -176,11 +176,13 @@ def fmt(val, heap, depth=0, ptr_seen=None, addr_names=None):
                     return {"kind": "prim", "type": "str", "value": clip(val.string(length=200))}
                 except (gdb.error, gdb.MemoryError):
                     pass
-            if depth >= 8 or len(heap) >= 60:  # linked lists / trees follow pointers deeper
+            if depth >= 8 or len(heap) >= 90:  # linked lists / trees follow pointers deeper
                 return {"kind": "repr", "type": "pointer", "text": hex(addr)}
             if target.code in (gdb.TYPE_CODE_STRUCT, gdb.TYPE_CODE_UNION):
                 if addr in ptr_seen:
                     return {"kind": "ref", "id": ptr_seen[addr], "ptr": True}
+                if (addr, str(target)) in ptr_seen:  # a local struct this pointer points at (&n1)
+                    return {"kind": "ref", "id": ptr_seen[(addr, str(target))], "ptr": True}
                 try:
                     target_val = val.dereference()
                     # Probe memory readability before allocating heap entry
@@ -189,6 +191,7 @@ def fmt(val, heap, depth=0, ptr_seen=None, addr_names=None):
                     return {"kind": "repr", "type": "pointer", "text": "%s (접근 불가)" % hex(addr)}
                 oid = new_id()
                 ptr_seen[addr] = oid
+                ptr_seen[(addr, str(target))] = oid
                 fields = []
                 readable = True
                 for field in target.fields():
@@ -203,6 +206,7 @@ def fmt(val, heap, depth=0, ptr_seen=None, addr_names=None):
                         break
                 if not readable and not fields:
                     ptr_seen.pop(addr, None)
+                    ptr_seen.pop((addr, str(target)), None)
                     return {"kind": "repr", "type": "pointer", "text": "%s (접근 불가)" % hex(addr)}
                 heap[oid] = {"id": oid, "type": str(target), "length": len(fields), "fields": fields, "truncated": False, "addr": hex(addr)}
                 return {"kind": "ref", "id": oid, "ptr": True}
@@ -217,7 +221,7 @@ def fmt(val, heap, depth=0, ptr_seen=None, addr_names=None):
             if addr in addr_names:
                 return {"kind": "repr", "type": "pointer", "text": "&" + addr_names[addr]}
             return {"kind": "repr", "type": "pointer", "text": hex(addr)}
-        if depth >= 6 or len(heap) >= 60:
+        if depth >= 6 or len(heap) >= 90:
             return {"kind": "repr", "type": name, "text": "…"}
         if code == gdb.TYPE_CODE_ARRAY:
             low, high = t.range()
@@ -233,7 +237,17 @@ def fmt(val, heap, depth=0, ptr_seen=None, addr_names=None):
                          "items": [fmt(val[low + i], heap, depth + 1, ptr_seen, addr_names) for i in range(min(count, 12))], "truncated": count > 12}
             return {"kind": "ref", "id": oid}
         if code in (gdb.TYPE_CODE_STRUCT, gdb.TYPE_CODE_UNION):
+            # A struct and a pointer to it (Node n1; … &n1) must be one object, so graphs built from
+            # local nodes connect. Keyed by (address, type): a first member shares its parent's address.
+            try:
+                saddr = int(val.address) if val.address is not None else None
+            except (gdb.error, RuntimeError, ValueError):
+                saddr = None
+            if saddr is not None and (saddr, name) in ptr_seen:
+                return {"kind": "ref", "id": ptr_seen[(saddr, name)]}
             oid = new_id()
+            if saddr is not None:
+                ptr_seen[(saddr, name)] = oid
             fields = []
             for field in t.fields():
                 if getattr(field, "is_base_class", False) or not field.name or not hasattr(field, "bitpos"):
@@ -279,7 +293,7 @@ def frame_locals(frame, depth_idx, fname, line, heap, ptr_seen, addr_names):
                 out[sym.name] = fmt(sym.value(frame), heap, 0, ptr_seen, addr_names)
             except (gdb.error, RuntimeError):
                 continue
-            if len(out) >= 24:
+            if len(out) >= 32:
                 return out
     return out
 
@@ -703,7 +717,7 @@ public class QnbJdi {
     }
     String known = seen.get(obj);
     if (known != null) return "{\"kind\":\"ref\",\"id\":\"" + known + "\"}";
-    if (depth >= 7 || seen.size() >= 60) return repr(type, "…");
+    if (depth >= 7 || seen.size() >= 90) return repr(type, "…");
     String id = "obj_" + (++seq); seen.put(obj, id);
     StringBuilder items = new StringBuilder(); int n = 0, len; boolean fields = false;
     if (obj instanceof ArrayReference) {

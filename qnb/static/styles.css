@@ -2181,3 +2181,23 @@ body[data-view="ide"] .weather-switch input[type="checkbox"]:not(.native-check):
 .viz-struct-canvas-wrap { position: relative; height: 320px; border-radius: .7rem; border: 1px solid var(--line); background: var(--panel); overflow: hidden; resize: vertical; min-height: 180px; }
 #viz-struct-canvas { position: absolute; inset: 0; display: block; width: 100%; height: 100%; touch-action: none; }
 .viz-struct-hint { margin: .35rem 0 0; font-size: .7rem; color: var(--soft); }
+
+/* ===================== Example gallery grouped by category ===================== */
+.welcome-examples-grid, .examples-list { display: grid; grid-template-columns: 1fr !important; gap: 1rem; }
+.example-group { display: grid; gap: .5rem; }
+.example-group-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: .2rem .5rem; padding-bottom: .3rem; border-bottom: 1px solid var(--line); }
+.example-group-icon { display: inline-grid; place-items: center; width: 1.5rem; height: 1.5rem; border-radius: .45rem; background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent); font-size: .82rem; align-self: center; }
+.example-group-head h4 { margin: 0; font-size: .88rem; }
+.example-group-count { font-size: .72rem; color: var(--soft); }
+.example-group-hint { flex-basis: 100%; margin-left: 2rem; font-size: .74rem; color: var(--muted); }
+.example-group-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .65rem; }
+.example-card-top { display: flex; align-items: center; justify-content: space-between; gap: .4rem; }
+.example-lang { flex-shrink: 0; padding: .05rem .45rem; border-radius: 999px; border: 1px solid var(--line); font: 600 .66rem var(--mono); color: var(--muted); }
+.example-lang.lang-lean4 { color: #7c3aed; border-color: color-mix(in srgb, #7c3aed 35%, transparent); }
+.example-lang.lang-category { color: #9333ea; border-color: color-mix(in srgb, #9333ea 35%, transparent); }
+.example-lang.lang-python { color: #2563eb; border-color: color-mix(in srgb, #2563eb 35%, transparent); }
+.example-lang.lang-cpp { color: #0369a1; border-color: color-mix(in srgb, #0369a1 35%, transparent); }
+.example-lang.lang-java { color: #c2410c; border-color: color-mix(in srgb, #c2410c 35%, transparent); }
+.example-lang.lang-plot { color: #0e7490; border-color: color-mix(in srgb, #0e7490 35%, transparent); }
+.examples-filter-count { margin-left: .3rem; padding: 0 .35rem; border-radius: 999px; background: color-mix(in srgb, currentColor 14%, transparent); font-size: .66rem; }
+@media (max-width: 720px) { .example-group-grid { grid-template-columns: 1fr; } }

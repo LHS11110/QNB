@@ -12,3 +12,8 @@ class PlotLanguageTests(unittest.TestCase):
         result = subprocess.run(["node", str(ROOT / "tests/js/plotlang.test.cjs")], capture_output=True, text=True, timeout=60)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("all checks passed", result.stdout)
+
+    def test_structure_detection_on_cpp_java_python_traces(self):
+        result = subprocess.run(["node", str(ROOT / "tests/js/structviz.test.cjs")], capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("all checks passed", result.stdout)

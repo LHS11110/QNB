@@ -122,6 +122,80 @@ window.QNBStructViz = (() => {
     return { name, kind, nodes: [...nodeMap.values()], edges: shown, directed, weighted };
   }
 
+  /* ---------------- standard library normalisation ----------------
+   * The tracers hand us the same ideas in different clothes:
+   *   C++   vector/deque/list/set/queue/stack/priority_queue → items; map/unordered_map → fields;
+   *         pair/tuple → items; std::array → {_M_elems: [...]}; structs → fields; T* → ref (ptr)
+   *   Java  ArrayList/LinkedList/ArrayDeque/PriorityQueue/HashSet/TreeSet/Stack/arrays → items;
+   *         HashMap/TreeMap/LinkedHashMap → fields; List.of/Map.of → List12/ListN/Map1/MapN;
+   *         records & classes → fields
+   *   Python list/tuple/set/frozenset/deque/namedtuple → items; dict/defaultdict/OrderedDict/Counter → fields
+   * normalise() renames the oddities and unwraps wrappers so detection sees one shape. */
+  const JAVA_ALIASES = [
+    [/^(List12|ListN|SubList|ArrayList\$SubList|UnmodifiableRandomAccessList|UnmodifiableList|SynchronizedRandomAccessList|SynchronizedList|CopyOnWriteArrayList)$/, "List"],
+    [/^(Set12|SetN|UnmodifiableSet|SynchronizedSet|KeySet|EntrySetView)$/, "Set"],
+    [/^(Map1|MapN|UnmodifiableMap|SynchronizedMap)$/, "Map"],
+  ];
+  const normalised = new WeakMap();
+
+  function normalise(step) {
+    if (!step?.heap) return step;
+    if (normalised.has(step)) return normalised.get(step);
+    const heap = {};
+    for (const [id, obj] of Object.entries(step.heap)) {
+      let entry = obj;
+      const alias = JAVA_ALIASES.find(([re]) => re.test(obj.type || ""));
+      if (alias) entry = { ...entry, type: alias[1] };
+      // std::array<T, N> is a struct around a C array
+      const f = Array.isArray(obj.fields) ? obj.fields : null;
+      if (f && f.length === 1 && f[0][0] === "_M_elems" && isRef(f[0][1]) && step.heap[f[0][1].id]?.items) {
+        const inner = step.heap[f[0][1].id];
+        entry = { ...entry, items: inner.items, fields: undefined, length: inner.length, truncated: inner.truncated };
+      }
+      heap[id] = entry;
+    }
+    const out = { ...step, heap };
+    normalised.set(step, out);
+    return out;
+  }
+
+  const SRC_RE = /^(u|from|src|source|start|a|first|x|tail)$/i;
+  const DST_RE = /^(v|to|dst|dest|destination|target|end|b|second|node|vertex|nb|nei|neighbor|neighbour|y|head|id)$/i;
+  const W_RE = /^(w|weight|wt|cost|dist|distance|d|len|length|c|cap|capacity|time|price|third|value|val)$/i;
+
+  /* Pair / tuple / edge-record view of a value: {items, src?, dst?, w?} or null. */
+  function tupleOf(v, heap) {
+    if (!isRef(v)) return null;
+    const o = heap[v.id];
+    if (!o) return null;
+    if (Array.isArray(o.items)) return o.items.length >= 2 && o.items.length <= 4 && !/set/i.test(o.type) ? { items: o.items } : null;
+    const f = fieldsOf(o);
+    if (!f.length || f.length > 4) return null;
+    const named = Object.fromEntries(f);
+    if (named.first && named.second) return { items: [named.first, named.second, ...(named.third ? [named.third] : [])] };
+    if (named.key && named.value && f.length === 2) return { items: [named.key, named.value], dst: named.key, w: named.value };
+    if (f.length >= 2 && f.every(([, x]) => !isRef(x))) {
+      const pick = (re, skip) => f.find(([k, x]) => re.test(k) && x !== skip)?.[1];
+      const dst = pick(DST_RE);
+      return { items: f.map(([, x]) => x), src: pick(SRC_RE, dst), dst, w: pick(W_RE, dst) };
+    }
+    return null;
+  }
+
+  /* (vertex, weight) of one adjacency entry: 3, (3, w), pair{3, w}, Edge{to: 3, w}. */
+  function adjacencyEntry(x, heap) {
+    if (!isRef(x)) return isNullish(x) ? null : { to: keyOf(x) };
+    const t = tupleOf(x, heap);
+    if (!t) return null;
+    const to = t.dst ?? t.items[0];
+    if (isRef(to)) return null;
+    const w = t.w ?? t.items.find((item, i) => i > 0 && item !== to);
+    return { to: keyOf(to), w: numberOf(w) };
+  }
+
+  const sameKind = (a, b) => isPrim(a) && isPrim(b) && typeof a.value === typeof b.value;
+  const MAP_TYPE = /dict|map|Map|Hashtable|Properties|Counter/;
+
   function detectGraph(name, value, heap) {
     if (!isRef(value)) return null;
     const obj = heap[value.id];
@@ -129,8 +203,8 @@ window.QNBStructViz = (() => {
     const fields = fieldsOf(obj);
     const items = itemsOf(obj);
 
-    // dict: vertex → list/set of vertices, or vertex → {vertex: weight}
-    if (fields.length && /dict|map|Map|defaultdict|HashMap|TreeMap|OrderedDict|unordered_map/.test(obj.type) || (fields.length && !items && fields.every(([, v]) => isRef(v)) && fields.length > 1)) {
+    // map: vertex → list/set of vertices | vertex → [(vertex, w)] | vertex → {vertex: w}
+    if (fields.length && (MAP_TYPE.test(obj.type) || (!items && fields.length > 1 && fields.every(([, v]) => isRef(v))))) {
       const nodes = [], edges = [];
       let ok = 0, weighted = 0;
       for (const [k, v] of fields) {
@@ -139,17 +213,15 @@ window.QNBStructViz = (() => {
         const inner = heap[v.id];
         if (!inner) continue;
         const list = itemsOf(inner);
-        if (list && list.every((x) => !isRef(x) || (heap[x.id] && itemsOf(heap[x.id])?.length >= 2))) {
-          for (const x of list) {
-            if (isRef(x)) {
-              // [(v, w), …] adjacency with weights
-              const pair = itemsOf(heap[x.id]);
-              addEdge(edges, k, keyOf(pair[0]), numberOf(pair[1]));
-              weighted++;
-            } else addEdge(edges, k, keyOf(x));
+        if (list) {
+          const entries = list.map((x) => adjacencyEntry(x, heap));
+          if (entries.every(Boolean)) {
+            for (const e of entries) { addEdge(edges, k, e.to, e.w); if (Number.isFinite(e.w)) weighted++; }
+            ok++;
           }
-          ok++;
-        } else if (fieldsOf(inner).length || /dict|map/i.test(inner.type)) {
+        } else if (fieldsOf(inner).length && fieldsOf(inner).every(([, w]) => !isRef(w)) &&
+                   (MAP_TYPE.test(inner.type) || fieldsOf(inner).every(([k2]) => fields.some(([k1]) => k1 === k2)))) {
+          // {vertex: weight}; a plain struct only counts when its field names are vertices
           for (const [k2, w] of fieldsOf(inner)) addEdge(edges, k, k2, numberOf(w));
           weighted++;
           ok++;
@@ -160,63 +232,66 @@ window.QNBStructViz = (() => {
 
     if (items && items.length) {
       const sub = items.map((x) => (isRef(x) ? heap[x.id] : null));
-      const rows = sub.map((o) => itemsOf(o));
-      // edge list [(u, v)] or [(u, v, w)]
-      // both endpoints must be the same kind of value: (0, "서울") is a priority-queue entry, not an edge
-      const sameKind = (r) => isPrim(r[0]) && isPrim(r[1]) && typeof r[0].value === typeof r[1].value;
-      if (rows.every((r) => r && (r.length === 2 || r.length === 3) && r.every((x) => !isRef(x)) && sameKind(r)) && items.length >= 1) {
-        const looksLikeMatrix = rows.length === rows[0].length && rows.every((r) => r.every((x) => [0, 1].includes(numberOf(x))));
-        if (!looksLikeMatrix) {
+      // edge list: [(u, v)], [(u, v, w)], vector<pair>, vector<tuple>, Edge{u, v, w}, int[][] {{u, v}}
+      const tuples = items.map((x) => tupleOf(x, heap));
+      // queues / heaps / stacks of (dist, v) pairs are work lists, not edge lists
+      const workList = /queue|heap|stack|deque/i.test(obj.type) || FRONTIER_RE.test(name);
+      if (!workList && tuples.every((t) => t && t.items.every((x) => !isRef(x)))) {
+        const ends = tuples.map((t) => (t.src && t.dst ? [t.src, t.dst, t.w] : [t.items[0], t.items[1], t.items[2]]));
+        const rows = tuples.map((t) => t.items);
+        const square = rows.length === rows[0].length && rows.every((r) => r.length === rows.length);
+        const looksLikeMatrix = square && rows.every((r) => r.every((x) => [0, 1].includes(numberOf(x))));
+        if (!looksLikeMatrix && ends.every(([a, b]) => sameKind(a, b))) {
           const edges = [];
-          for (const r of rows) addEdge(edges, keyOf(r[0]), keyOf(r[1]), r.length === 3 ? numberOf(r[2]) : undefined);
-          return finishGraph(name, [], edges, rows.some((r) => r.length === 3) ? "weighted-edges" : "edges");
+          for (const [a, b, w] of ends) addEdge(edges, keyOf(a), keyOf(b), w ? numberOf(w) : undefined);
+          return finishGraph(name, [], edges, ends.some(([, , w]) => w && Number.isFinite(numberOf(w))) ? "weighted-edges" : "edges");
         }
       }
-      // adjacency matrix (square, numeric)
+      const rows = sub.map((o) => itemsOf(o));
+      // adjacency matrix (square, numeric; 0 / INF / null = no edge)
       const n = items.length;
       if (n >= 2 && n <= 40 && rows.every((r) => r && r.length === n && r.every((x) => !isRef(x) && (Number.isFinite(numberOf(x)) || isNullish(x) || /inf/i.test(primText(x)))))) {
         const edges = [];
         const binary = rows.every((r) => r.every((x) => [0, 1].includes(numberOf(x))));
         rows.forEach((r, i) => r.forEach((x, j) => {
           const w = numberOf(x);
-          if (i === j && (w === 0 || !Number.isFinite(w))) return;
-          if (!Number.isFinite(w) || w === 0) return;
+          if (!Number.isFinite(w) || w === 0 || isInfinite(w)) return;
           addEdge(edges, String(i), String(j), binary ? undefined : w);
         }));
         return finishGraph(name, Array.from({ length: n }, (_, i) => ({ id: String(i), label: String(i) })), edges, binary ? "matrix" : "weight-matrix");
       }
-      // adjacency list by index: [[1, 2], [0], …] or [[(1, w)], …]
+      // adjacency list by index: [[1, 2], [0], …], vector<vector<pair<int,int>>>, List<List<Edge>>
       if (rows.every((r) => r) && rows.some((r) => r.length)) {
         const edges = [];
         let fits = true;
         rows.forEach((r, i) => r.forEach((x) => {
-          if (isRef(x)) {
-            const pair = itemsOf(heap[x.id]);
-            if (!pair || pair.length < 2) { fits = false; return; }
-            const j = numberOf(pair[0]);
-            if (!(Number.isInteger(j) && j >= 0 && j < n)) fits = false;
-            addEdge(edges, String(i), String(j), numberOf(pair[1]));
-          } else {
-            const j = numberOf(x);
-            if (!(Number.isInteger(j) && j >= 0 && j < n)) fits = false;
-            addEdge(edges, String(i), String(j));
-          }
+          const e = adjacencyEntry(x, heap);
+          const j = e ? Number(e.to) : NaN;
+          if (!(Number.isInteger(j) && j >= 0 && j < n)) { fits = false; return; }
+          addEdge(edges, String(i), String(j), e.w);
         }));
         if (fits) return finishGraph(name, Array.from({ length: n }, (_, i) => ({ id: String(i), label: String(i) })), edges, "adjacency-list");
       }
-      // list of node objects with neighbour lists
+      // list of node objects with neighbour lists (Node* / Node / node objects)
       if (sub.every((o) => o && field(o, NEIGHBOR_KEYS))) return objectGraph(name, sub.map((o) => ({ kind: "ref", id: o.id })), heap);
     }
 
-    // a single node object: walk its neighbours / children / next pointers
-    if (field(obj, NEIGHBOR_KEYS) || field(obj, CHILD_LIST_KEYS)) return objectGraph(name, [value], heap);
+    // a single node object whose neighbour/children list holds other node objects
+    const nb = field(obj, NEIGHBOR_KEYS) || field(obj, CHILD_LIST_KEYS);
+    const nbItems = isRef(nb) ? itemsOf(heap[nb.id]) : null;
+    if (nbItems && nbItems.some((x) => isRef(x) && heap[x.id] && !itemsOf(heap[x.id]) && fieldsOf(heap[x.id]).length && !MAP_TYPE.test(heap[x.id].type))) {
+      return objectGraph(name, [value], heap);
+    }
     return null;
   }
+
+  const isInfinite = (w) => !Number.isFinite(w) || Math.abs(w) >= 1e9 || w === 2147483647 || w === 9223372036854775807;
 
   function objectGraph(name, roots, heap) {
     const nodes = [], edges = [];
     const seen = new Set();
     const queue = [...roots];
+    const isNode = (o) => o && !itemsOf(o) && fieldsOf(o).length;
     while (queue.length && seen.size < 80) {
       const ref = queue.shift();
       if (!isRef(ref) || seen.has(ref.id)) continue;
@@ -229,10 +304,17 @@ window.QNBStructViz = (() => {
         if (!v) continue;
         const targets = isRef(v) && itemsOf(heap[v.id]) ? itemsOf(heap[v.id]) : [v];
         for (const t of targets) {
-          if (isRef(t) && heap[t.id] && !itemsOf(heap[t.id])) { addEdge(edges, "@" + obj.id, "@" + t.id); queue.push(t); }
-          else if (isRef(t) && itemsOf(heap[t.id])) {
-            const pair = itemsOf(heap[t.id]);
-            if (isRef(pair[0])) { addEdge(edges, "@" + obj.id, "@" + pair[0].id, numberOf(pair[1])); queue.push(pair[0]); }
+          if (!isRef(t) || !heap[t.id]) continue;
+          // same class as this node (Vertex → Vertex) is always a neighbour, even a leaf whose
+          // fields are all plain values; other small records may be (node, weight) entries
+          if (isNode(heap[t.id]) && (heap[t.id].type === obj.type || !tupleOf(t, heap))) { addEdge(edges, "@" + obj.id, "@" + t.id); queue.push(t); continue; }
+          // (Node*, weight) pairs and Edge{node, w} records
+          const tu = tupleOf(t, heap) || { items: fieldsOf(heap[t.id]).map(([, x]) => x) };
+          const target = tu.items.find((x) => isRef(x) && isNode(heap[x.id]));
+          if (target) {
+            const w = tu.items.find((x) => !isRef(x) && Number.isFinite(numberOf(x)));
+            addEdge(edges, "@" + obj.id, "@" + target.id, w ? numberOf(w) : undefined);
+            queue.push(target);
           }
         }
       }
@@ -242,60 +324,105 @@ window.QNBStructViz = (() => {
 
   const KIND_RANK = { "weighted-adjacency": 4, adjacency: 4, objects: 4, "weight-matrix": 3, matrix: 3, "adjacency-list": 3, "weighted-edges": 2, edges: 1 };
   const GRAPH_NAME_RE = /^(g|graph|adj|adjacency|net|network|edges|tree|neighbors|nbrs|links|roads|map)$/i;
+  const GRAPH_FIELD_RE = /^(adj|adjacency|adjlist|adj_list|graph|g|edges|edge|edgelist|neighbors|neighbours|nbrs|links|matrix|mat|nodes|vertices)$/i;
 
-  function detectAll(step) {
+  function detectAll(rawStep) {
+    const step = normalise(rawStep);
     const heap = step?.heap || {};
     const vars = variables(step);
     const out = [];
     const used = new Set();
+    const consider = (name, value) => {
+      if (!isRef(value) || used.has(value.id)) return;
+      const g = detectGraph(name, value, heap);
+      if (g && g.nodes.length >= 2 && g.edges.length >= 1) { out.push(g); used.add(value.id); }
+    };
     for (const v of vars) {
-      if (!isRef(v.value) || used.has(v.value.id)) continue;
-      const g = detectGraph(v.name, v.value, heap);
-      if (g && g.nodes.length >= 2 && g.edges.length >= 1) { out.push(g); used.add(v.value.id); }
+      consider(v.name, v.value);
+      // graphs kept inside an object: Graph{adj}, this.adj in Java / C++ member functions
+      const obj = isRef(v.value) ? heap[v.value.id] : null;
+      if (obj && !itemsOf(obj) && !MAP_TYPE.test(obj.type)) {
+        for (const [k, fv] of fieldsOf(obj)) if (GRAPH_FIELD_RE.test(k)) consider(`${v.name}.${k}`, fv);
+      }
+    }
+    // A node-object graph reached from n0 already contains the ones reached from n1 or n0.adj.
+    const objectGraphs = out.filter((g) => g.kind === "objects");
+    for (const g of objectGraphs) {
+      const ids = new Set(g.nodes.map((n) => n.id));
+      const bigger = objectGraphs.find((o) => o !== g && o.nodes.length > g.nodes.length && [...ids].every((id) => o.nodes.some((n) => n.id === id)));
+      if (bigger) out.splice(out.indexOf(g), 1);
     }
     // Most graph-like first: real adjacency structures and graph-ish names beat incidental pairs.
-    const score = (g) => (KIND_RANK[g.kind] || 0) * 10 + (GRAPH_NAME_RE.test(g.name) ? 15 : 0) + Math.min(9, g.edges.length / 3);
+    const score = (g) => (KIND_RANK[g.kind] || 0) * 10 + (GRAPH_NAME_RE.test(g.name.split(".").pop()) ? 15 : 0) + Math.min(9, g.edges.length / 3);
     return out.sort((a, b) => score(b) - score(a));
   }
 
+  const distText = (v) => {
+    const n = numberOf(v);
+    if (/^-?inf/i.test(primText(v)) || (Number.isFinite(n) && isInfinite(n))) return "∞";
+    return primText(v);
+  };
+
   /* Traversal state for a graph, read from the other variables of the step. */
-  function traversal(step, graph) {
+  function traversal(rawStep, graph) {
+    const step = normalise(rawStep);
     const heap = step?.heap || {};
     const ids = new Set(graph.nodes.map((n) => n.id));
-    const objKey = (v) => (isRef(v) && heap[v.id] && !itemsOf(heap[v.id]) && !fieldsOf(heap[v.id]).length ? null : isRef(v) ? "@" + v.id : keyOf(v));
     const state = { visited: new Set(), frontier: new Map(), current: new Map(), dist: new Map(), distName: "", parentEdges: new Set() };
+    const markCurrent = (k, name) => state.current.set(k, [...(state.current.get(k) || []), name]);
+    // a queue / stack / heap entry → the vertex it stands for: 3, (dist, 3), pair{dist, "B"}, int[]{d, v}, Node*
+    const vertexOf = (x) => {
+      if (!isRef(x)) return keyOf(x);
+      if (graph.kind === "objects") return ids.has("@" + x.id) ? "@" + x.id : null;
+      const t = tupleOf(x, heap);
+      if (!t) return null;
+      // (priority, vertex): the vertex is the named target or the last component
+      const cand = t.dst ?? t.items.at(-1);
+      return cand && !isRef(cand) ? keyOf(cand) : null;
+    };
+    const graphRoot = graph.name.split(".")[0];
     for (const { name, value } of variables(step)) {
-      if (name === graph.name) continue;
+      if (name === graph.name || (name === graphRoot && graph.name.includes("."))) continue;
       if (!isRef(value)) {
         const k = keyOf(value);
-        if (k !== null && ids.has(k) && CURRENT_RE.test(name)) state.current.set(k, [...(state.current.get(k) || []), name]);
+        if (k !== null && ids.has(k) && CURRENT_RE.test(name)) markCurrent(k, name);
         continue;
       }
       const obj = heap[value.id];
       if (!obj) continue;
       if (graph.kind === "objects" && !itemsOf(obj) && ids.has("@" + obj.id) && CURRENT_RE.test(name)) {
-        state.current.set("@" + obj.id, [...(state.current.get("@" + obj.id) || []), name]);
+        markCurrent("@" + obj.id, name);
         continue;
+      }
+      // a pair/record variable naming a vertex: auto [d, u] = pq.top(); Edge e
+      if (!itemsOf(obj) && CURRENT_RE.test(name)) {
+        const k = vertexOf(value);
+        if (k !== null && ids.has(k)) { markCurrent(k, name); continue; }
       }
       const items = itemsOf(obj);
       const fields = fieldsOf(obj);
       if (items) {
-        const keys = items.map((x) => (isRef(x) && graph.kind === "objects" ? "@" + x.id : isRef(x) && itemsOf(heap[x.id]) ? keyOf(itemsOf(heap[x.id]).at(-1)) : keyOf(x)));
+        const keys = items.map(vertexOf);
         const hits = keys.filter((k) => k !== null && ids.has(k));
         if (!hits.length || hits.length < keys.length * 0.5) {
-          // visited as a boolean list indexed by vertex: [True, False, …]
-          if (VISITED_RE.test(name) && items.every((x) => isPrim(x) && typeof x.value === "boolean")) {
-            items.forEach((x, i) => { if (x.value && ids.has(String(i))) state.visited.add(String(i)); });
-          } else if (DIST_RE.test(name) && items.length === graph.nodes.length && items.every((x) => !isRef(x))) {
-            items.forEach((x, i) => { if (ids.has(String(i))) state.dist.set(String(i), primText(x)); });
+          // arrays indexed by vertex: visited[], dist[], parent[]
+          const prims = items.every((x) => !isRef(x));
+          if (VISITED_RE.test(name) && prims && items.every((x) => typeof x.value === "boolean" || [0, 1].includes(numberOf(x)))) {
+            items.forEach((x, i) => { if ((x.value === true || numberOf(x) === 1) && ids.has(String(i))) state.visited.add(String(i)); });
+          } else if (DIST_RE.test(name) && prims && items.length >= graph.nodes.length * 0.8 && items.some((x, i) => ids.has(String(i)))) {
+            state.dist.clear();
+            items.forEach((x, i) => { if (ids.has(String(i))) state.dist.set(String(i), distText(x)); });
             state.distName = name;
-          } else if (PARENT_RE.test(name) && items.every((x) => !isRef(x))) {
+          } else if (PARENT_RE.test(name) && prims) {
             items.forEach((x, i) => { const p = keyOf(x); if (p !== null && ids.has(p) && ids.has(String(i))) state.parentEdges.add(p + "\u0000" + String(i)); });
           }
           continue;
         }
-        if (VISITED_RE.test(name) || /set/i.test(obj.type) && !FRONTIER_RE.test(name)) hits.forEach((k) => state.visited.add(k));
-        else if (FRONTIER_RE.test(name) || /deque|queue|stack/i.test(obj.type)) hits.forEach((k, i) => { if (!state.frontier.has(k)) state.frontier.set(k, { name, order: i + 1 }); });
+        const isSet = /set/i.test(obj.type);
+        if (VISITED_RE.test(name) || (isSet && !FRONTIER_RE.test(name))) hits.forEach((k) => state.visited.add(k));
+        else if (FRONTIER_RE.test(name) || /deque|queue|stack|heap/i.test(obj.type)) {
+          keys.forEach((k, i) => { if (k !== null && ids.has(k) && !state.frontier.has(k)) state.frontier.set(k, { name, order: i + 1 }); });
+        }
       } else if (fields.length) {
         const entries = fields.filter(([k]) => ids.has(k));
         if (entries.length < fields.length * 0.5) continue;
@@ -306,7 +433,7 @@ window.QNBStructViz = (() => {
         } else if (entries.every(([, v]) => !isRef(v))) {
           if (!state.distName || DIST_RE.test(name)) {
             state.dist.clear();
-            for (const [k, v] of entries) state.dist.set(k, primText(v));
+            for (const [k, v] of entries) state.dist.set(k, distText(v));
             state.distName = name;
           }
         }
@@ -424,6 +551,34 @@ window.QNBStructViz = (() => {
 
   const clip = (s, n = 14) => (s.length > n ? s.slice(0, n - 1) + "…" : s);
 
+  /* pair / tuple / Map.Entry values are shown inside their cell as (a, b) instead of as a box. */
+  const INLINE_TYPE = /^(pair|tuple)(<|$)|^tuple$|Entry$|^Pair(<|$)/;
+  function inlineText(v, heap) {
+    if (!isRef(v)) return null;
+    const o = heap[v.id];
+    if (!o || !INLINE_TYPE.test(o.type || "")) return null;
+    const parts = itemsOf(o) || fieldsOf(o).map(([, x]) => x);
+    if (parts.length > 4 || parts.some((x) => isRef(x))) return null;
+    return "(" + parts.map((x) => primText(x)).join(", ") + ")";
+  }
+
+  /* queue<int, deque<int>> → queue<int>; very long template names are clipped. */
+  function displayType(type) {
+    let t = String(type || "");
+    const m = /^(queue|stack|priority_queue)<(.+)>$/.exec(t);
+    if (m) {
+      let depth = 0, cut = m[2].length;
+      for (let i = 0; i < m[2].length; i++) {
+        const c = m[2][i];
+        if (c === "<") depth++;
+        else if (c === ">") depth--;
+        else if (c === "," && depth === 0) { cut = i; break; }
+      }
+      t = `${m[1]}<${m[2].slice(0, cut).trim()}>`;
+    }
+    return t.length > 34 ? t.slice(0, 33) + "…" : t;
+  }
+
   /* ------------------------------ view ------------------------------ */
 
   class View {
@@ -497,8 +652,8 @@ window.QNBStructViz = (() => {
     up() { this.drag = null; }
 
     set(step, prev) {
-      this.step = step;
-      this.prev = prev;
+      this.step = normalise(step);
+      this.prev = normalise(prev);
       this.draw();
     }
 
@@ -725,8 +880,8 @@ window.QNBStructViz = (() => {
 
     childRefs(obj, heap) {
       const out = [];
-      for (const v of itemsOf(obj) || []) if (isRef(v)) out.push(v.id);
-      for (const [, v] of fieldsOf(obj)) if (isRef(v)) out.push(v.id);
+      for (const v of itemsOf(obj) || []) if (isRef(v) && !inlineText(v, heap)) out.push(v.id);
+      for (const [, v] of fieldsOf(obj)) if (isRef(v) && !inlineText(v, heap)) out.push(v.id);
       return out;
     }
 
@@ -734,21 +889,22 @@ window.QNBStructViz = (() => {
       ctx.font = "12px ui-monospace, Menlo, monospace";
       const items = itemsOf(obj);
       if (items) {
-        const cellW = items.map((v) => (isRef(v) ? 24 : Math.min(110, Math.max(24, ctx.measureText(clip(primText(v), 14)).width + 12))));
-        const head = ctx.measureText(`${obj.type} #${obj.id.replace("obj_", "")}`).width + 16;
+        const text = (v) => inlineText(v, heap) ?? primText(v);
+        const cellW = items.map((v) => (isRef(v) && !inlineText(v, heap) ? 24 : Math.min(130, Math.max(24, ctx.measureText(clip(text(v), 16)).width + 12))));
+        const head = ctx.measureText(`${displayType(obj.type)} #${obj.id.replace("obj_", "")}`).width + 16;
         return { w: Math.max(head, cellW.reduce((s, x) => s + x, 0) + (obj.truncated ? 22 : 0)), h: 46, cellW };
       }
       const fields = fieldsOf(obj);
       const keyW = Math.max(24, ...fields.map(([k]) => ctx.measureText(clip(k, 14)).width + 12));
-      const valW = Math.max(24, ...fields.map(([, v]) => (isRef(v) ? 24 : Math.min(120, ctx.measureText(clip(primText(v), 14)).width + 12))));
-      const head = ctx.measureText(`${obj.type} #${obj.id.replace("obj_", "")}`).width + 16;
+      const valW = Math.max(24, ...fields.map(([, v]) => (isRef(v) && !inlineText(v, heap) ? 24 : Math.min(130, ctx.measureText(clip(inlineText(v, heap) ?? primText(v), 16)).width + 12))));
+      const head = ctx.measureText(`${displayType(obj.type)} #${obj.id.replace("obj_", "")}`).width + 16;
       return { w: Math.max(head, keyW + valW), h: 20 + Math.max(1, fields.length) * 20 + (obj.truncated ? 14 : 0), keyW, valW };
     }
 
     drawObject(ctx, pal, b, heap, prevHeap, pointers, id) {
       const obj = b.obj;
       const prev = prevHeap[id];
-      const isNew = !prev;
+      const isNew = Boolean(this.prev) && !prev; // only flag objects created since the previous step
       const hoverKey = "obj:" + id;
       this.hit.push({ type: "obj", key: hoverKey, x: b.x, y: b.y, w: b.w, h: b.h, id });
       ctx.font = "12px ui-monospace, Menlo, monospace";
@@ -784,7 +940,7 @@ window.QNBStructViz = (() => {
       ctx.fillStyle = pal.soft;
       ctx.font = "600 10.5px ui-monospace, Menlo, monospace";
       ctx.textAlign = "left";
-      ctx.fillText(`${obj.type} #${id.replace("obj_", "")}`, b.x + 7, b.y + 9.5);
+      ctx.fillText(`${displayType(obj.type)} #${id.replace("obj_", "")}`, b.x + 7, b.y + 9.5);
       ctx.font = "12px ui-monospace, Menlo, monospace";
       const items = itemsOf(obj);
       if (items) {
@@ -810,15 +966,17 @@ window.QNBStructViz = (() => {
           ctx.textAlign = "center";
           if (!/set/i.test(obj.type)) ctx.fillText(String(i), x + cw / 2, b.y + b.h - 7);
           ctx.font = "12px ui-monospace, Menlo, monospace";
-          if (isRef(v)) {
+          const inline = inlineText(v, heap);
+          if (isRef(v) && !inline) {
             ctx.fillStyle = pal.pointer;
             ctx.beginPath();
             ctx.arc(x + cw / 2, b.y + 28, 3.5, 0, Math.PI * 2);
             ctx.fill();
             pointers.push({ x: x + cw / 2, y: b.y + 28, id: v.id, changed });
           } else {
-            ctx.fillStyle = changed ? pal.changed : pal.text;
-            ctx.fillText(clip(primText(v), 14), x + cw / 2, b.y + 29);
+            const changedInline = inline && prevItems[i] && inlineText(prevItems[i], this.prev?.heap || {}) !== inline;
+            ctx.fillStyle = changed && (!inline || changedInline) ? pal.changed : pal.text;
+            ctx.fillText(clip(inline ?? primText(v), 16), x + cw / 2, b.y + 29);
           }
           x += cw;
         });
@@ -840,15 +998,16 @@ window.QNBStructViz = (() => {
         ctx.moveTo(b.x + b.keyW, ry + 2);
         ctx.lineTo(b.x + b.keyW, ry + 18);
         ctx.stroke();
-        if (isRef(v)) {
+        const inline = inlineText(v, heap);
+        if (isRef(v) && !inline) {
           ctx.fillStyle = pal.pointer;
           ctx.beginPath();
           ctx.arc(b.x + b.keyW + 12, ry + 10, 3.5, 0, Math.PI * 2);
           ctx.fill();
           pointers.push({ x: b.x + b.keyW + 12, y: ry + 10, id: v.id, changed });
         } else {
-          ctx.fillStyle = changed ? pal.changed : isNullish(v) ? pal.soft : pal.text;
-          ctx.fillText(clip(primText(v), 14), b.x + b.keyW + 6, ry + 10);
+          ctx.fillStyle = changed && !inline ? pal.changed : isNullish(v) ? pal.soft : pal.text;
+          ctx.fillText(clip(inline ?? primText(v), 16), b.x + b.keyW + 6, ry + 10);
         }
       });
       if (obj.truncated) { ctx.fillStyle = pal.soft; ctx.fillText("…", b.x + 7, b.y + b.h - 8); }

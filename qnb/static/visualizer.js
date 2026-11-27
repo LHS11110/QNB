@@ -1596,53 +1596,82 @@ window.QNBVisualizer = (() => {
     }
   }
 
+  /* Examples are grouped by what they teach, not by language. */
+  const EXAMPLE_CATEGORIES = [
+    { key: "proof", icon: "⊢", label: "증명 · 논리", hint: "Lean 4 전술이 가정과 목표를 한 줄씩 바꾸는 과정", ids: ["lean-induction", "lean-logic"] },
+    { key: "category", icon: "𝒞", label: "범주론", hint: "가환 도식과 함자·자연변환·수반으로 보는 등식 증명", ids: ["category-naturality", "category-adjunction-product"] },
+    { key: "algorithm", icon: "↻", label: "알고리즘 · 재귀", hint: "호출 스택이 쌓이고 풀리며 값이 돌아오는 흐름", ids: ["python-mergesort", "java-recursion-bst"] },
+    { key: "structure", icon: "▤", label: "자료구조 · 포인터", hint: "노드와 포인터가 이어지는 모습을 상자와 화살표로", ids: ["cpp-pointers-list", "py-linked-tree"] },
+    { key: "graph", icon: "◉", label: "그래프 · 네트워크", hint: "탐색 상태(방문·큐·거리)와 가중치 네트워크", ids: ["py-bfs-graph", "py-dijkstra-network", "cpp-stl-project"] },
+    { key: "project", icon: "⇄", label: "멀티파일 프로젝트", hint: "여러 파일이 import·호출로 협력하는 구조", ids: ["python-orbit-project", "java-oop-project"] },
+    { key: "plot", icon: "📐", label: "좌표계", hint: "식·부등식·배열·반복문을 2D · 3D 그래프로", ids: ["plot-2d", "plot-3d"] },
+  ];
+  const LANG_LABEL = { lean4: "Lean 4", category: ".cat", python: "Python", cpp: "C++", java: "Java", plot: ".plot" };
+
+  function exampleCategories() {
+    const placed = new Set(EXAMPLE_CATEGORIES.flatMap((c) => c.ids));
+    const groups = EXAMPLE_CATEGORIES.map((c) => ({ ...c, examples: c.ids.map((id) => EXAMPLES.find((ex) => ex.id === id)).filter(Boolean) }));
+    // anything added later without a category still shows up
+    const rest = EXAMPLES.filter((ex) => !placed.has(ex.id));
+    if (rest.length) groups.push({ key: "etc", icon: "✦", label: "기타", hint: "", examples: rest });
+    return groups.filter((g) => g.examples.length);
+  }
+
   function renderExamplesGallery() {
-    const filters = [
-      ["all", "전체"],
-      ["lean4", "Lean 4"],
-      ["category", "범주론"],
-      ["python", "Python"],
-      ["cpp", "C++"],
-      ["java", "Java"],
-      ["plot", "좌표계"],
-    ];
+    const groups = exampleCategories();
+    if (activeExampleFilter !== "all" && !groups.some((g) => g.key === activeExampleFilter)) activeExampleFilter = "all";
     const renderFilters = (bar) => {
       if (!bar) return;
-      bar.replaceChildren(...filters.map(([key, label]) => {
-        const btn = el("button", label, "examples-filter-btn" + (activeExampleFilter === key ? " active" : ""));
+      bar.setAttribute("aria-label", "예제 카테고리");
+      const options = [{ key: "all", label: "전체", icon: "", count: EXAMPLES.length }, ...groups.map((g) => ({ ...g, count: g.examples.length }))];
+      bar.replaceChildren(...options.map((opt) => {
+        const btn = el("button", undefined, "examples-filter-btn" + (activeExampleFilter === opt.key ? " active" : ""));
         btn.type = "button";
+        btn.setAttribute("aria-pressed", String(activeExampleFilter === opt.key));
+        btn.append((opt.icon ? opt.icon + " " : "") + opt.label, el("span", String(opt.count), "examples-filter-count"));
         btn.onclick = () => {
-          activeExampleFilter = key;
+          activeExampleFilter = opt.key;
           renderExamplesGallery();
         };
         return btn;
       }));
     };
-    const visibleExamples = activeExampleFilter === "all"
-      ? EXAMPLES
-      : EXAMPLES.filter((ex) => ex.langGroup === activeExampleFilter);
-    const makeCards = (target) => {
+    const card = (ex) => {
+      const node = el("article", undefined, "example-card");
+      const top = el("div", undefined, "example-card-top");
+      top.append(el("span", ex.badge, "example-badge"), el("span", LANG_LABEL[ex.langGroup] || ex.langGroup, "example-lang lang-" + ex.langGroup));
+      node.append(
+        top,
+        el("h3", ex.title),
+        el("p", ex.description),
+        (() => {
+          const btn = el("button", "열고 시각화 실행 →", "primary");
+          btn.type = "button";
+          btn.onclick = () => launchExample(ex);
+          return btn;
+        })(),
+      );
+      return node;
+    };
+    const render = (target) => {
       if (!target) return;
-      target.replaceChildren(...visibleExamples.map((ex) => {
-        const card = el("article", undefined, "example-card");
-        card.append(
-          el("span", ex.badge, "example-badge"),
-          el("h3", ex.title),
-          el("p", ex.description),
-          (() => {
-            const btn = el("button", "열고 시각화 실행 →", "primary");
-            btn.type = "button";
-            btn.onclick = () => launchExample(ex);
-            return btn;
-          })(),
-        );
-        return card;
+      const shown = activeExampleFilter === "all" ? groups : groups.filter((g) => g.key === activeExampleFilter);
+      target.replaceChildren(...shown.map((g) => {
+        const section = el("section", undefined, "example-group");
+        section.dataset.category = g.key;
+        const head = el("header", undefined, "example-group-head");
+        head.append(el("span", g.icon, "example-group-icon"), el("h4", g.label), el("span", `${g.examples.length}개`, "example-group-count"));
+        if (g.hint) head.append(el("small", g.hint, "example-group-hint"));
+        const grid = el("div", undefined, "example-group-grid");
+        grid.append(...g.examples.map(card));
+        section.append(head, grid);
+        return section;
       }));
     };
     renderFilters($("examples-filter-bar"));
     renderFilters($("welcome-examples-filter"));
-    makeCards($("examples-list"));
-    makeCards($("welcome-examples-grid"));
+    render($("examples-list"));
+    render($("welcome-examples-grid"));
   }
 
   function initResizer() {
