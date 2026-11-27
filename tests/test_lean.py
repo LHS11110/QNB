@@ -151,7 +151,7 @@ end
         }):
             store.initialize()
             with store.database() as db:
-                db.execute("INSERT INTO accounts VALUES (1, 'test@example.com', 'hash', 1)")
+                db.execute("INSERT INTO accounts (id, email, password, vm_id) VALUES (1, 'test@example.com', 'hash', 1)")
             initial = self.inspect(premise)
             proofs = proof_records(premise, initial["declarations"])
             definitions = proof_records(premise, initial["definitions"])
@@ -189,7 +189,7 @@ theorem other (n : Nat) : n = n ∧ True := ⟨alternate n, True.intro⟩
         }):
             store.initialize()
             with store.database() as db:
-                db.execute("INSERT INTO accounts VALUES (1, 'test@example.com', 'hash', 1)")
+                db.execute("INSERT INTO accounts (id, email, password, vm_id) VALUES (1, 'test@example.com', 'hash', 1)")
             original, other = store.save_declarations(1, "/one.ipynb", rows, [], source, [], {})
             self.assertEqual(original["name"], "original")
             self.assertEqual(other["name"], "other")

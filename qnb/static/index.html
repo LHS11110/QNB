@@ -46,12 +46,6 @@
     </nav>
 
     <div id="ide-header-controls" class="ide-header-controls" hidden>
-      <button id="sidebar-toggle" type="button" class="icon-btn" title="탐색기 접기/펴기" aria-label="탐색기 접기/펴기" aria-expanded="true">
-        <svg viewBox="0 0 16 16" width="15" height="15" fill="none" aria-hidden="true">
-          <rect x="2" y="2.5" width="12" height="11" rx="2" stroke="currentColor" stroke-width="1.35"/>
-          <path d="M6 2.5v11" stroke="currentColor" stroke-width="1.35"/>
-        </svg>
-      </button>
       <div class="view-switch" role="group" aria-label="작업 뷰 전환">
         <button id="view-editor" type="button" class="view-pill active">편집 · 시각화</button>
         <button id="view-graph" type="button" class="view-pill">증명 트리</button>
@@ -59,7 +53,6 @@
         <button id="view-planner" type="button" class="view-pill">일정 · 프로젝트</button>
       </div>
       <button id="examples-open" type="button" class="quiet icon-btn examples-btn" title="대화형 학습 예제 열기" aria-label="학습 예제">✦<span class="btn-text"> 학습 예제</span></button>
-      <button id="viz-toggle" type="button" class="quiet icon-btn" title="우측 시각화 패널 열기/닫기" aria-pressed="true" aria-label="시각화 패널">◫<span class="btn-text"> 시각화 패널</span></button>
       <div id="collab-presence" class="collab-presence" title="백엔드 Automerge 실시간 스테이징 연결 상태">
         <span id="collab-dot" class="collab-dot"></span>
         <span id="collab-label">동기화 대기</span>
@@ -84,11 +77,23 @@
     <div class="spacer"></div>
 
     <div class="top-actions">
-      <button id="theme-toggle" type="button" class="quiet icon-btn" title="IDE 테마 전환" aria-label="IDE 테마 전환" hidden>
-        <span class="theme-label-light">다크</span>
-        <span class="theme-label-dark">라이트</span>
-      </button>
-      <a id="proofs-link" class="quiet button-link" href="/proofs" target="_blank" rel="noopener" hidden>증명 트리 새 창 ↗</a>
+      <div id="layout-controls" class="layout-controls" role="group" aria-label="패널 레이아웃" hidden>
+        <button id="sidebar-toggle" type="button" class="layout-btn" title="왼쪽 탐색기 (Ctrl+B)" aria-label="왼쪽 탐색기 패널" aria-expanded="true"><svg class="layout-icon" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path class="panel-region" d="M3.95 2.25H6.2v11.5H3.95a2.2 2.2 0 0 1-2.2-2.2v-7.1a2.2 2.2 0 0 1 2.2-2.2Z"/><rect class="panel-frame" x="1.75" y="2.25" width="12.5" height="11.5" rx="2.2"/><path class="panel-divider" d="M6.2 2.25v11.5"/></svg></button>
+        <button id="terminal-open" type="button" class="layout-btn" title="아래 터미널 패널 (Ctrl+`)" aria-label="아래 터미널 패널" aria-expanded="false" aria-controls="terminal-panel"><svg class="layout-icon" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path class="panel-region" d="M1.75 9.4h12.5v2.15a2.2 2.2 0 0 1-2.2 2.2h-8.1a2.2 2.2 0 0 1-2.2-2.2Z"/><rect class="panel-frame" x="1.75" y="2.25" width="12.5" height="11.5" rx="2.2"/><path class="panel-divider" d="M1.75 9.4h12.5"/></svg><span id="terminal-count" class="layout-count" hidden></span></button>
+        <button id="viz-toggle" type="button" class="layout-btn" title="오른쪽 시각화 패널 (Ctrl+Alt+B)" aria-label="오른쪽 시각화 패널" aria-pressed="true"><svg class="layout-icon" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path class="panel-region" d="M9.8 2.25h2.25a2.2 2.2 0 0 1 2.2 2.2v7.1a2.2 2.2 0 0 1-2.2 2.2H9.8Z"/><rect class="panel-frame" x="1.75" y="2.25" width="12.5" height="11.5" rx="2.2"/><path class="panel-divider" d="M9.8 2.25v11.5"/></svg></button>
+      </div>
+      <div id="ide-tools" class="ide-tools" hidden>
+        <button id="theme-toggle" type="button" class="tool-btn" title="다크 테마로 전환" aria-label="다크 테마로 전환" hidden>
+          <svg class="theme-icon-moon" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M13.2 10.1A5.6 5.6 0 0 1 5.9 2.8a5.6 5.6 0 1 0 7.3 7.3Z"/></svg>
+          <svg class="theme-icon-sun" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><circle cx="8" cy="8" r="2.9"/><path d="M8 1.3v1.6M8 13.1v1.6M1.3 8h1.6M13.1 8h1.6M3.3 3.3l1.1 1.1M11.6 11.6l1.1 1.1M3.3 12.7l1.1-1.1M11.6 4.4l1.1-1.1"/></svg>
+          <span class="tool-text theme-label-light">다크</span><span class="tool-text theme-label-dark">라이트</span>
+        </button>
+        <a id="proofs-link" class="tool-btn" href="/proofs" target="_blank" rel="noopener" title="증명 트리를 새 창에서 열기" hidden>
+          <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" class="tool-icon-tree"><circle cx="8" cy="3.2" r="1.7"/><circle cx="4" cy="12.3" r="1.7"/><circle cx="12" cy="12.3" r="1.7"/><path d="M7.2 4.7 4.8 10.7M8.8 4.7l2.4 6"/></svg>
+          <span class="tool-text">증명 트리</span>
+          <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" class="tool-icon-external"><path d="M9.5 2.5h4v4M13.3 2.7 7.5 8.5M12 9.5v3a1 1 0 0 1-1 1H3.5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h3"/></svg>
+        </a>
+      </div>
       <a id="proofs-editor-link" class="quiet button-link" href="/ide" hidden>IDE로 돌아가기</a>
       <button id="account-open" type="button" class="quiet account-pill" title="프로필 · 보안 · MCP CLI 토큰 설정" hidden>
         <span id="account-label" class="account-label"></span>
@@ -968,6 +973,24 @@
     </div>
   </main>
 
+  <main id="verify-page" hidden>
+    <div class="qr-approve-card verify-card">
+      <span class="auth-aside-badge">이메일 인증</span>
+      <h1 id="verify-title">메일함을 확인해 주세요</h1>
+      <p id="verify-description">가입한 이메일로 보낸 6자리 인증 코드를 입력하면 워크스페이스를 사용할 수 있습니다.</p>
+      <form id="verify-form" class="verify-form">
+        <input id="verify-code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" placeholder="000000" aria-label="6자리 인증 코드" required>
+        <button id="verify-submit" type="submit" class="primary">인증하기</button>
+      </form>
+      <p id="verify-status" class="auth-notice" role="status" hidden></p>
+      <div class="verify-actions">
+        <button id="verify-resend" type="button" class="quiet">인증 메일 다시 보내기</button>
+        <button id="verify-logout" type="button" class="quiet">다른 계정으로 로그인</button>
+      </div>
+      <p id="verify-mail-hint" class="verify-hint" hidden>메일 서버(SMTP)가 아직 설정되지 않았습니다. 관리자는 서버 로그에서 인증 코드를 확인할 수 있습니다.</p>
+    </div>
+  </main>
+
   <main id="qr-approve-page" hidden>
     <div class="qr-approve-card">
       <span class="auth-aside-badge">QR 로그인 승인</span>
@@ -1037,9 +1060,6 @@
     <section class="workbench" aria-label="편집기">
       <div class="workspace-toolbar">
         <div class="tab-bar" id="tabs" aria-label="열린 파일"></div>
-        <div class="terminal-toolbar">
-          <button id="terminal-open" type="button" aria-expanded="false" aria-controls="terminal-panel">터미널</button>
-        </div>
       </div>
 
       <div id="workbench-split" class="workbench-split">
@@ -1494,7 +1514,8 @@
     </div>
     <p class="ws-note">
       초대받은 사용자는 <strong>각자의 개별 QNB 계정</strong>으로 로그인하며, 소유자 VM의 동일한 <code>/workspace</code>와
-      <strong>백엔드 Automerge 스테이징 룸</strong>을 실시간으로 공유합니다.
+      <strong>백엔드 Automerge 스테이징 룸</strong>을 실시간으로 공유합니다. 터미널에서는 사용자마다 자기 계정 이름 · 홈 폴더 · Git 작성자로 동작합니다.
+      닉네임이 같은 사용자는 <code>닉네임#태그</code>로 구분합니다.
     </p>
     <section id="incoming-invites-section" class="ws-section" hidden>
       <h3>받은 초대</h3>
@@ -1507,7 +1528,7 @@
     <section class="ws-section">
       <h3>내 워크스페이스에 사용자 초대</h3>
       <form id="invite-form" class="ws-invite-form">
-        <input id="invite-email" type="email" maxlength="254" placeholder="colleague@example.com" required aria-label="초대할 사용자 이메일">
+        <input id="invite-email" type="text" maxlength="254" placeholder="닉네임#1234 또는 colleague@example.com" required aria-label="초대할 사용자의 닉네임#태그 또는 이메일" autocomplete="off">
         <button id="invite-submit" class="primary" type="submit">초대 보내기</button>
       </form>
       <p id="invite-error" class="ws-error" role="alert" hidden></p>
@@ -1521,7 +1542,9 @@
       <button id="account-dialog-close" type="button" aria-label="닫기">×</button>
     </div>
     <section class="ws-section">
-      <h3>프로필 닉네임 (협업자 및 터미널 표시)</h3>
+      <h3>프로필 닉네임 (협업자 · 터미널 계정 이름)</h3>
+      <p class="ws-meta">내 사용자명 <strong id="profile-handle" class="profile-handle"></strong> <button id="profile-copy" type="button" class="quiet profile-copy" title="사용자명 복사">복사</button>
+        · 닉네임이 같은 사용자가 있어도 <code>#태그</code>로 구분됩니다.</p>
       <form id="profile-form" class="ws-invite-form">
         <input id="profile-nickname" type="text" maxlength="32" placeholder="닉네임 (1~32자)" required aria-label="프로필 닉네임">
         <button id="profile-save" class="primary" type="submit">저장</button>

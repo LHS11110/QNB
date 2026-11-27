@@ -238,6 +238,9 @@ def initialize():
                         VALUES ('{table}', json_array({new_key}));
                     END
                 """)
+    # Nickname tags and email-verification columns (kept in identity.py).
+    from . import identity
+    identity.initialize()
 
 
 def _own_workspace(account):
@@ -285,29 +288,39 @@ def pending_invite_count(db, email):
 def list_workspaces(account, active_workspace):
     with database() as db:
         shared_rows = db.execute("""
-            SELECT o.id AS owner_id, o.email AS owner_email
+            SELECT o.id AS owner_id, o.email AS owner_email, COALESCE(p.nickname, '') AS owner_nickname, COALESCE(p.tag, '') AS owner_tag
             FROM workspace_invites w
             JOIN accounts o ON o.id = w.owner_id
+            LEFT JOIN account_profiles p ON p.account_id = o.id
             WHERE w.invitee_email = ? AND w.status = 'accepted'
             ORDER BY o.email
         """, (account["email"],)).fetchall()
         incoming_rows = db.execute("""
-            SELECT w.owner_id, o.email AS owner_email, w.created_at
+            SELECT w.owner_id, o.email AS owner_email, w.created_at, COALESCE(p.nickname, '') AS owner_nickname, COALESCE(p.tag, '') AS owner_tag
             FROM workspace_invites w
             JOIN accounts o ON o.id = w.owner_id
+            LEFT JOIN account_profiles p ON p.account_id = o.id
             WHERE w.invitee_email = ? AND w.status = 'pending'
             ORDER BY w.created_at DESC
         """, (account["email"],)).fetchall()
         member_rows = db.execute("""
             SELECT w.invitee_email AS email, w.status, w.created_at,
-                   EXISTS(SELECT 1 FROM accounts a WHERE a.email = w.invitee_email) AS registered
+                   EXISTS(SELECT 1 FROM accounts a WHERE a.email = w.invitee_email) AS registered,
+                   (SELECT p.nickname FROM accounts a JOIN account_profiles p ON p.account_id = a.id
+                     WHERE a.email = w.invitee_email) AS nickname,
+                   (SELECT p.tag FROM accounts a JOIN account_profiles p ON p.account_id = a.id
+                     WHERE a.email = w.invitee_email) AS tag
             FROM workspace_invites w
             WHERE w.owner_id = ? AND w.status IN ('pending', 'accepted')
             ORDER BY CASE w.status WHEN 'accepted' THEN 0 ELSE 1 END, w.invitee_email
         """, (account["id"],)).fetchall()
+    def handle_of(nickname, tag):
+        return f"{nickname}#{tag}" if nickname and tag else nickname or ""
+
     workspaces = [{"ownerId": account["id"], "ownerEmail": account["email"], "shared": False}]
     workspaces.extend(
-        {"ownerId": row["owner_id"], "ownerEmail": row["owner_email"], "shared": True}
+        {"ownerId": row["owner_id"], "ownerEmail": row["owner_email"], "shared": True,
+         "ownerHandle": handle_of(row["owner_nickname"], row["owner_tag"])}
         for row in shared_rows
     )
     return {
@@ -318,7 +331,8 @@ def list_workspaces(account, active_workspace):
         },
         "workspaces": workspaces,
         "incoming": [
-            {"ownerId": row["owner_id"], "ownerEmail": row["owner_email"], "createdAt": row["created_at"]}
+            {"ownerId": row["owner_id"], "ownerEmail": row["owner_email"], "createdAt": row["created_at"],
+             "ownerHandle": handle_of(row["owner_nickname"], row["owner_tag"])}
             for row in incoming_rows
         ],
         "members": [
@@ -326,6 +340,7 @@ def list_workspaces(account, active_workspace):
                 "email": row["email"],
                 "status": row["status"],
                 "registered": bool(row["registered"]),
+                "handle": handle_of(row["nickname"], row["tag"]),
                 "createdAt": row["created_at"],
             }
             for row in member_rows

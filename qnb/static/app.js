@@ -41,6 +41,7 @@ function applyTheme(theme) {
   if (toggle) {
     toggle.setAttribute("aria-pressed", String(normalized === "dark"));
     toggle.title = normalized === "dark" ? "라이트 테마로 전환" : "다크 테마로 전환";
+    toggle.setAttribute("aria-label", toggle.title);
   }
   if (ideInitialized && !standaloneProofPage) {
     renderWorkbench();
@@ -244,7 +245,7 @@ function updatePresenceHeader() {
   }
   const uniqueNames = new Set();
   for (const c of workspaceClients) {
-    uniqueNames.add(c.nickname || c.email || c.sessionId);
+    uniqueNames.add(c.handle || c.nickname || c.email || c.sessionId);
   }
   const stagedCnt = stagedFilesState.size;
   const suffix = stagedCnt > 0 ? ` · 스테이징 ${stagedCnt}파일` : "";
@@ -261,7 +262,7 @@ function renderActiveCollabBanner(tab) {
   const collaborators = tab.collaborators || [];
   const names = collaborators.map((c) => {
     const tag = c.kind === "mcp" ? "[MCP] " : "";
-    return tag + (c.nickname || c.email?.split("@")[0] || "사용자");
+    return tag + (c.handle || c.nickname || c.email?.split("@")[0] || "사용자");
   });
   const hasMcp = collaborators.some((c) => c.kind === "mcp");
   meta.hidden = false;
@@ -314,7 +315,7 @@ function applyRemoteStagePatch(msg) {
         }
       }
     }
-    const who = msg.actor?.nickname || msg.actor?.email || "협업자";
+    const who = msg.actor?.handle || msg.actor?.nickname || msg.actor?.email || "협업자";
     const kindLabel = msg.actor?.kind === "mcp" ? "[MCP 에이전트] " : "";
     if (activeTab() === tab) status(`${kindLabel}${who}의 편집이 실시간 반영되었습니다.`);
   }
@@ -597,6 +598,8 @@ function showView(view) {
   const isHome = view === "home";
   const isAuth = view === "auth";
   const isQrApprove = view === "qr-approve";
+  const isVerify = view === "verify";
+  $("verify-page").hidden = !isVerify;
   const isIDE = view === "ide";
   $("home").hidden = !isHome;
   $("auth-page").hidden = !isAuth;
@@ -606,12 +609,18 @@ function showView(view) {
   $("ide-header-controls").hidden = !isIDE || standaloneProofPage;
   if (!isIDE || standaloneProofPage) $("channels-panel").hidden = true;
   $("theme-toggle").hidden = !isIDE;
+  $("layout-controls").hidden = !isIDE || standaloneProofPage;
+  $("ide-tools").hidden = !isIDE;
 
   const loggedIn = Boolean(currentSession.email);
-  const displayName = currentSession.nickname
-    ? currentSession.nickname + " (" + currentSession.email + ")"
-    : (currentSession.email || "");
-  $("account-label").textContent = displayName;
+  const label = $("account-label");
+  if (currentSession.nickname) {
+    const tag = currentSession.tag ? element("span", "#" + currentSession.tag, "handle-tag") : "";
+    label.replaceChildren(currentSession.nickname, tag);
+  } else {
+    label.textContent = currentSession.email || "";
+  }
+  $("account-open").title = currentSession.email ? `${currentSession.handle || currentSession.nickname || ""} · ${currentSession.email}\n프로필 · 보안 · MCP CLI 토큰 설정` : "";
   $("account-open").hidden = !loggedIn;
   renderWorkspaceBadge();
   $("logout").hidden = !loggedIn;
@@ -637,6 +646,77 @@ function showView(view) {
   if (!isAuth) stopQrPolling();
 }
 
+/* ---------------- email verification ---------------- */
+function showVerifyPage(message = "") {
+  $("verify-title").textContent = "메일함을 확인해 주세요";
+  $("verify-description").textContent = `${currentSession.email}(으)로 보낸 6자리 인증 코드를 입력하면 워크스페이스를 사용할 수 있습니다. 코드는 30분 동안 유효합니다.`;
+  $("verify-form").hidden = false;
+  $("verify-mail-hint").hidden = currentSession.mailConfigured !== false;
+  alertIn("verify-status", message);
+  showView("verify");
+  setTimeout(() => $("verify-code").focus(), 0);
+}
+
+async function handleVerifyLink() {
+  const token = new URLSearchParams(location.search).get("token") || "";
+  showView("verify");
+  $("verify-form").hidden = true;
+  $("verify-mail-hint").hidden = true;
+  $("verify-title").textContent = "이메일을 인증하는 중…";
+  $("verify-description").textContent = "";
+  try {
+    const result = await api("email/verify-link", { token });
+    $("verify-title").textContent = "이메일 인증이 완료되었습니다 ✓";
+    $("verify-description").textContent = `${result.email} 계정을 이제 사용할 수 있습니다.`;
+    history.replaceState(null, "", "/verify-email");
+    setTimeout(() => location.assign(currentSession.email ? "/ide" : "/login"), 1500);
+  } catch (error) {
+    $("verify-title").textContent = "인증 링크를 사용할 수 없습니다";
+    $("verify-description").textContent = error.message + (currentSession.email ? " 아래에서 코드를 다시 받을 수 있습니다." : " 로그인한 뒤 새 인증 메일을 받으세요.");
+    $("verify-form").hidden = !currentSession.email || currentSession.emailVerified !== false;
+  }
+}
+
+$("verify-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  $("verify-submit").disabled = true;
+  try {
+    await api("email/verify", { code: $("verify-code").value.trim() });
+    alertIn("verify-status", "인증되었습니다. 워크스페이스로 이동합니다…");
+    location.assign(authNextPath && authNextPath !== "/verify-email" ? authNextPath : "/ide");
+  } catch (error) {
+    alertIn("verify-status", error.message);
+    $("verify-code").select();
+  } finally {
+    $("verify-submit").disabled = false;
+  }
+});
+
+let verifyCooldown = null;
+$("verify-resend").onclick = async () => {
+  const buttonNode = $("verify-resend");
+  buttonNode.disabled = true;
+  try {
+    const result = await api("email/resend", {});
+    if (result.verified) { location.assign("/ide"); return; }
+    alertIn("verify-status", result.delivered ? "새 인증 코드를 보냈습니다. 메일함(스팸함 포함)을 확인하세요." : "새 인증 코드를 만들었습니다. 메일 서버가 설정되지 않아 서버 로그에 기록되었습니다.");
+    let left = 60;
+    clearInterval(verifyCooldown);
+    verifyCooldown = setInterval(() => {
+      buttonNode.textContent = `다시 보내기 (${--left}초)`;
+      if (left <= 0) { clearInterval(verifyCooldown); buttonNode.textContent = "인증 메일 다시 보내기"; buttonNode.disabled = false; }
+    }, 1000);
+  } catch (error) {
+    alertIn("verify-status", error.message);
+    buttonNode.disabled = false;
+  }
+};
+
+$("verify-logout").onclick = async () => {
+  try { await api("logout", {}); } catch { /* already logged out */ }
+  location.assign("/login");
+};
+
 function routePath() {
   return location.pathname.replace(/\/+$/, "") || "/";
 }
@@ -645,6 +725,15 @@ async function applyRoute() {
   const path = routePath();
   const loggedIn = Boolean(currentSession.email);
   const workspaceRoute = path === "/ide" || path === "/proofs";
+
+  if (path === "/verify-email") {
+    await handleVerifyLink();
+    return;
+  }
+  if (loggedIn && currentSession.emailVerified === false && (workspaceRoute || path === "/qr-approve")) {
+    showVerifyPage();
+    return;
+  }
 
   if ((path === "/login" || path === "/signup") && loggedIn) {
     location.assign("/ide");
@@ -916,6 +1005,12 @@ $("logout").onclick = async () => {
 
 $("theme-toggle").onclick = () => applyTheme(currentTheme() === "dark" ? "light" : "dark");
 
+document.addEventListener("keydown", (event) => {
+  if (document.body.dataset.view !== "ide" || !(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "b") return;
+  event.preventDefault();
+  (event.altKey ? $("viz-toggle") : $("sidebar-toggle")).click();
+});
+
 $("sidebar-toggle").onclick = () => {
   const collapsed = $("ide").classList.toggle("sidebar-collapsed");
   $("sidebar-toggle").setAttribute("aria-expanded", String(!collapsed));
@@ -994,7 +1089,7 @@ async function refreshWorkspaceDialog() {
   $("incoming-invites-list").replaceChildren(...data.incoming.map((invite) => {
     const row = element("div", undefined, "ws-row");
     const info = element("div", undefined, "ws-row-info");
-    info.append(element("strong", invite.ownerEmail), element("span", "워크스페이스 초대 대기 중", "ws-meta"));
+    info.append(element("strong", invite.ownerHandle || invite.ownerEmail), element("span", `${invite.ownerEmail} · 워크스페이스 초대 대기 중`, "ws-meta"));
     const actions = element("div", undefined, "ws-row-actions");
     actions.append(
       button("수락 후 열기", async () => {
@@ -1021,7 +1116,7 @@ async function refreshWorkspaceDialog() {
     const row = element("div", undefined, "ws-row" + (isCurrent ? " current" : ""));
     const info = element("div", undefined, "ws-row-info");
     info.append(
-      element("strong", ws.shared ? ws.ownerEmail : "내 워크스페이스 (" + ws.ownerEmail + ")"),
+      element("strong", ws.shared ? (ws.ownerHandle ? `${ws.ownerHandle} 님의 워크스페이스` : ws.ownerEmail) : "내 워크스페이스 (" + (currentSession.handle || ws.ownerEmail) + ")"),
       element("span", ws.shared ? "공유 VM · 실시간 스테이징 공동 사용" : "개인 전용 VM", "ws-meta"),
     );
     const actions = element("div", undefined, "ws-row-actions");
@@ -1048,7 +1143,7 @@ async function refreshWorkspaceDialog() {
       const row = element("div", undefined, "ws-row");
       const info = element("div", undefined, "ws-row-info");
       const stateText = member.status === "accepted" ? "참여 중" : member.registered ? "수락 대기 중" : "미가입";
-      info.append(element("strong", member.email), element("span", stateText, "ws-meta"));
+      info.append(element("strong", member.handle || member.email), element("span", member.handle ? `${member.email} · ${stateText}` : stateText, "ws-meta"));
       const actions = element("div", undefined, "ws-row-actions");
       actions.append(button(member.status === "accepted" ? "내보내기" : "초대 취소", async () => {
         try { await api("workspaces/remove", { email: member.email }); await refreshWorkspaceDialog(); }
@@ -1069,7 +1164,13 @@ $("invite-form").onsubmit = async (event) => {
   event.preventDefault();
   alertIn("invite-error");
   $("invite-submit").disabled = true;
-  try { await api("workspaces/invite", { email: $("invite-email").value }); $("invite-email").value = ""; await refreshWorkspaceDialog(); }
+  try {
+    const target = $("invite-email").value.trim();
+    await api("workspaces/invite", { target });
+    $("invite-email").value = "";
+    await refreshWorkspaceDialog();
+    alertIn("invite-error", `${target} 님에게 초대를 보냈습니다. 상대방이 접속 중이면 바로 알림이 표시됩니다.`);
+  }
   catch (error) { alertIn("invite-error", error.message); }
   finally { $("invite-submit").disabled = false; }
 };
@@ -1080,6 +1181,7 @@ async function refreshAccountDialog() {
   alertIn("mcp-token-error");
   $("profile-status").textContent = "";
   $("profile-nickname").value = currentSession.nickname || "";
+  $("profile-handle").textContent = currentSession.handle || currentSession.nickname || "";
   $("mfa-setup-box").hidden = true;
   $("mfa-recovery-box").hidden = true;
 
@@ -1188,13 +1290,19 @@ $("mcp-token-copy")?.addEventListener("click", () => {
   setTimeout(() => { $("mcp-token-copy").textContent = "복사"; }, 1400);
 });
 
+$("profile-copy").onclick = () => {
+  navigator.clipboard?.writeText($("profile-handle").textContent || "");
+  $("profile-status").textContent = "사용자명을 복사했습니다.";
+};
+
 $("profile-form").onsubmit = async (event) => {
   event.preventDefault();
   try {
     const res = await api("profile", { nickname: $("profile-nickname").value });
-    currentSession.nickname = res.nickname;
-    $("account-label").textContent = res.nickname + " (" + currentSession.email + ")";
-    $("profile-status").textContent = "닉네임이 저장되었습니다.";
+    Object.assign(currentSession, { nickname: res.nickname, tag: res.tag, handle: res.handle });
+    $("account-label").replaceChildren(res.nickname, element("span", "#" + res.tag, "handle-tag"));
+    $("profile-handle").textContent = res.handle;
+    $("profile-status").textContent = `저장되었습니다. 다른 사용자는 ${res.handle}(으)로 나를 초대할 수 있습니다. 터미널 계정 이름은 새로 여는 터미널부터 적용됩니다.`;
   } catch (error) { $("profile-status").textContent = error.message; }
 };
 

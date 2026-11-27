@@ -257,6 +257,8 @@ class CodeGraphEndpointTests(unittest.TestCase):
             self.assertEqual(client.post("/api/signup", json={
                 "email": "coder@example.test", "password": "password123",
             }).status_code, 200)
+            with store.database() as db:  # skip the email-verification step in these HTTP tests
+                db.execute("UPDATE accounts SET email_verified = 1")
             with patch("qnb.runtime.workspace", side_effect=workspace), \
                     patch("qnb.runtime.configure_disk", return_value=None):
                 response = client.get("/api/code-graph?path=/")

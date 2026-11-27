@@ -83,6 +83,8 @@ class WorkspaceCollaborationTests(unittest.TestCase):
             self.assertEqual(guest_client.post("/api/signup", json={
                 "email": "guest@example.test", "password": "password123",
             }).status_code, 200)
+            with store.database() as db:  # skip the email-verification step in these HTTP tests
+                db.execute("UPDATE accounts SET email_verified = 1")
 
             self.assertEqual(owner_client.post("/api/workspaces/invite", json={
                 "email": "guest@example.test",

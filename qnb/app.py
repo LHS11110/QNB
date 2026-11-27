@@ -16,7 +16,7 @@ from flask_sock import Sock
 from simple_websocket import ConnectionClosed
 from werkzeug.security import check_password_hash, generate_password_hash
 
-from . import auth, channels, codegraph, collab, gitstatus, mcp_server, planner, runtime, stepper, store, visualize
+from . import auth, channels, codegraph, collab, gitstatus, identity, mailer, mcp_server, planner, runtime, stepper, store, visualize
 from .runtime import RequestError
 
 app = Flask(__name__)
@@ -55,7 +55,7 @@ def too_large(_error):
 
 
 PUBLIC_ENDPOINTS = {
-    "session_status", "signup", "login", "login_mfa",
+    "session_status", "signup", "login", "login_mfa", "email_verify_link",
     "passkey_login_options", "passkey_login_verify",
     "qr_login_start", "qr_login_poll",
 }
@@ -73,6 +73,10 @@ WORKSPACE_SAFE_ENDPOINTS = PUBLIC_ENDPOINTS | {
 
 def _is_mcp_route(path):
     return path in ("/mcp", "/api/mcp") or path.startswith("/mcp/") or path.startswith("/api/mcp/")
+
+
+# Endpoints an account may use before confirming its email address.
+UNVERIFIED_ENDPOINTS = PUBLIC_ENDPOINTS | {"logout", "email_verify", "email_resend", "profile_update"}
 
 
 def _mcp_token_from_headers():
@@ -125,6 +129,8 @@ def authenticate():
         g.account, g.workspace = store.authenticate_mcp_token(mcp_token, ws_owner)
         if not g.account:
             raise RequestError("유효하지 않은 MCP 토큰입니다.", 401)
+        if not identity.is_verified(g.account):
+            raise RequestError("이메일 인증을 완료해야 사용할 수 있습니다.", 403)
         g.auth_kind = "mcp"
         return
     strict = request.endpoint not in WORKSPACE_SAFE_ENDPOINTS
@@ -132,6 +138,8 @@ def authenticate():
     g.auth_kind = "browser"
     if not g.account and request.endpoint not in PUBLIC_ENDPOINTS:
         raise RequestError("로그인이 필요합니다.", 401)
+    if g.account and not identity.is_verified(g.account) and request.endpoint not in UNVERIFIED_ENDPOINTS:
+        raise RequestError("이메일 인증을 완료해야 사용할 수 있습니다.", 403)
 
 
 def session_context(token, *, strict=False):
@@ -139,7 +147,7 @@ def session_context(token, *, strict=False):
         token_hash = runtime.digest(token)
         with store.database() as db:
             account = db.execute("""
-                SELECT a.*, COALESCE(ap.nickname, '') AS nickname, s.workspace_owner_id
+                SELECT a.*, COALESCE(ap.nickname, '') AS nickname, COALESCE(ap.tag, '') AS tag, s.workspace_owner_id
                 FROM accounts a
                 JOIN sessions s ON a.id = s.account_id
                 LEFT JOIN account_profiles ap ON ap.account_id = a.id
@@ -239,7 +247,9 @@ def start_session(account):
         if "nickname" in account.keys() and account["nickname"]
         else store.get_nickname(account["id"], account["email"])
     )
-    response = jsonify(email=account["email"], nickname=nickname)
+    _, tag = identity.profile(account["id"])
+    response = jsonify(email=account["email"], nickname=nickname, tag=tag,
+                       handle=identity.handle(nickname, tag), emailVerified=identity.is_verified(account))
     response.set_cookie(COOKIE, token, max_age=SESSION_AGE, httponly=True, samesite="Strict",
                         secure=os.environ.get("QNB_SECURE_COOKIE") == "1")
     return response
@@ -251,6 +261,7 @@ def start_session(account):
 @app.get("/qr-approve")
 @app.get("/ide")
 @app.get("/proofs")
+@app.get("/verify-email")
 def index():
     return send_from_directory(app.static_folder, "index.html")
 
@@ -263,9 +274,14 @@ def session_status():
         pending = store.pending_invite_count(db, g.account["email"])
     security = store.security_overview(g.account["id"])
     nickname = g.account["nickname"] or g.account["email"].split("@", 1)[0]
+    tag = g.account["tag"] if "tag" in g.account.keys() else ""
     return jsonify(
         email=g.account["email"],
         nickname=nickname,
+        tag=tag,
+        handle=identity.handle(nickname, tag),
+        emailVerified=identity.is_verified(g.account),
+        mailConfigured=mailer.configured(),
         mfaEnabled=security["mfaEnabled"],
         passkeyCount=len(security["passkeys"]),
         workspace={
@@ -291,8 +307,23 @@ def workspaces_overview():
 @app.post("/api/workspaces/invite")
 def workspaces_invite():
     data = payload()
-    email = valid_email_address(data.get("email"))
-    return jsonify(store.invite_member(g.account, email))
+    target = data.get("target", data.get("email"))
+    if isinstance(target, str) and "#" in target and "@" not in target:
+        found = identity.find_by_handle(target)
+        if not found:
+            raise RequestError("해당 닉네임#태그의 사용자를 찾을 수 없습니다.", 404)
+        email = found["email"]
+    else:
+        email = valid_email_address(target)
+    result = store.invite_member(g.account, email)
+    with store.database() as db:
+        invitee = db.execute("SELECT id FROM accounts WHERE email = ?", (email,)).fetchone()
+    if invitee:
+        nickname, tag = identity.profile(g.account["id"])
+        channels.manager.notify_account(invitee["id"], {
+            "type": "invite", "ownerId": g.account["id"], "from": identity.handle(nickname, tag),
+        })
+    return jsonify(result)
 
 
 @app.post("/api/workspaces/respond")
@@ -347,16 +378,42 @@ def signup():
             if not VM_BASE <= vm_id < VM_BASE + VM_LIMIT:
                 raise RequestError("현재 새 VM 워크스페이스를 배정할 수 없습니다.", 503)
             account_id = db.execute(
-                "INSERT INTO accounts (email, password, vm_id) VALUES (?, ?, ?)",
+                "INSERT INTO accounts (email, password, vm_id, email_verified) VALUES (?, ?, ?, 0)",
                 (email, encoded, vm_id),
             ).lastrowid
-            db.execute(
-                "INSERT INTO account_profiles (account_id, nickname) VALUES (?, ?)",
-                (account_id, nickname),
-            )
+            identity.create_profile(db, account_id, nickname)
     except sqlite3.IntegrityError as error:
         raise RequestError("계정을 만들 수 없습니다.", 409) from error
-    return start_session({"id": account_id, "email": email, "nickname": nickname})
+    send_verification(account_id, email, nickname, force=True)
+    with store.database() as db:
+        account = db.execute("SELECT a.*, ? AS nickname FROM accounts a WHERE a.id = ?", (nickname, account_id)).fetchone()
+    return start_session(account)
+
+
+def send_verification(account_id, email, nickname, *, force=False):
+    code, token = identity.issue_code(account_id, force=force)
+    link = external_origin() + "/verify-email?token=" + token
+    return mailer.verification_email(email, nickname, code, link)
+
+
+@app.post("/api/email/resend")
+def email_resend():
+    if identity.is_verified(g.account):
+        return jsonify(verified=True)
+    sent = send_verification(g.account["id"], g.account["email"], g.account["nickname"] or g.account["email"])
+    return jsonify(sent=True, delivered=sent)
+
+
+@app.post("/api/email/verify")
+def email_verify():
+    if identity.is_verified(g.account):
+        return jsonify(verified=True)
+    return jsonify(identity.verify_code(g.account["id"], payload().get("code")))
+
+
+@app.post("/api/email/verify-link")
+def email_verify_link():
+    return jsonify(identity.verify_token(payload().get("token")))
 
 
 @app.post("/api/login")
@@ -404,7 +461,7 @@ def login_mfa():
 @app.post("/api/profile")
 def profile_update():
     nickname = valid_nickname(payload().get("nickname"), g.account["email"])
-    return jsonify(store.update_nickname(g.account["id"], nickname))
+    return jsonify(identity.update_nickname(g.account["id"], nickname))
 
 
 @app.get("/api/security")
@@ -1069,15 +1126,19 @@ def serve_channels_connection(ws):
     hub = channels.manager
     client = hub.connect(owner_id, actor)
     check_at = time.monotonic() + 10.0
+
+    def drain():
+        while True:
+            try:
+                item = client.out.get_nowait()
+            except _queue.Empty:
+                return
+            ws.send(item if isinstance(item, bytes) else json.dumps(item, ensure_ascii=False))
+
     try:
         ws.send(json.dumps(hub.init_payload(owner_id, client), ensure_ascii=False))
         while True:
-            while True:
-                try:
-                    item = client.out.get_nowait()
-                except _queue.Empty:
-                    break
-                ws.send(item if isinstance(item, bytes) else json.dumps(item, ensure_ascii=False))
+            drain()
 
             now = time.monotonic()
             if now >= check_at:
@@ -1121,6 +1182,9 @@ def serve_channels_connection(ws):
                     res = hub.set_muted(owner_id, client, data.get("muted"))
                 else:
                     raise RequestError("지원하지 않는 채널 명령입니다.")
+                # Deliver broadcasts queued before this command first, so a reply is never
+                # followed by an older presence snapshot (which would undo e.g. a voice join).
+                drain()
                 if req_id is not None:
                     ws.send(json.dumps({"replyTo": req_id, "result": res}, ensure_ascii=False))
             except RequestError as err:
@@ -1173,24 +1237,31 @@ def terminal_message(frame, defaults=None):
     return runtime.terminal_fields((defaults or {}) | data)
 
 
-def terminal_init_command(actor_id, actor_nickname, actor_email, marker):
+def terminal_init_command(actor_id, account_name, actor_email, marker):
+    """Per-user shell account inside the shared VM: own HOME, USER, prompt, whoami and git identity."""
     from shlex import quote
 
     home = f"/var/tmp/qnb-home-u{int(actor_id)}"
-    raw_nick = (actor_nickname or actor_email.split("@", 1)[0] or f"user{actor_id}").strip()
-    safe_nick = re.sub(r"[\x00-\x1f\x7f$`\"'\\]", "", raw_nick)[:32] or f"user{actor_id}"
-    user = quote(re.sub(r"[^A-Za-z0-9_.-]", "_", safe_nick)[:32] or f"user{actor_id}")
-    ps1 = quote(f"{safe_nick}@qnb:\\w$ ")
+    name = re.sub(r"[\x00-\x1f\x7f$`\"'\\/]", "", account_name or "").strip()
+    name = re.sub(r"\s+", "_", name)[:40] or f"user{actor_id}"
+    user = quote(name)
+    ps1 = quote(name.replace("\\", "") + "@qnb:\\w$ ")
+    whoami_lines = " ".join(quote(line) for line in ("#!/bin/sh", 'printf "%s\\n" "${USER:-workspace}"'))
+    git_name = quote(name)
+    git_email = quote(actor_email or f"user{actor_id}@qnb.local")
     return (
         f" mkdir -p {home}/.config {home}/.cache {home}/.local/bin {home}/.local/share {home}/.local/state {home}/.npm-global"
         f" && chmod 700 {home}"
-        f" && export HOME={home} USER={user} LOGNAME={user}"
+        f" && export HOME={home} USER={user} LOGNAME={user} QNB_ACCOUNT_ID={int(actor_id)}"
         f" XDG_CONFIG_HOME={home}/.config XDG_CACHE_HOME={home}/.cache"
         f" XDG_DATA_HOME={home}/.local/share XDG_STATE_HOME={home}/.local/state"
-        f" NPM_CONFIG_PREFIX={home}/.npm-global"
-        f' PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"'
+        f" NPM_CONFIG_PREFIX={home}/.npm-global HISTFILE={home}/.bash_history"
+        f' PATH="{home}/.local/bin:{home}/.npm-global/bin:$PATH"'
         f" PS1={ps1}"
-        f" && cd /workspace && history -c && clear && printf '__QNB_%s_%s__\\n' 'READY' '{marker}'\n"
+        f" && printf '%s\\n' {whoami_lines} > {home}/.local/bin/whoami && chmod 755 {home}/.local/bin/whoami"
+        f" && {{ git config --global user.name >/dev/null 2>&1 || git config --global user.name {git_name}; }}"
+        f" && {{ git config --global user.email >/dev/null 2>&1 || git config --global user.email {git_email}; }}"
+        f" ; cd /workspace && history -c && history -r && clear && printf '__QNB_%s_%s__\\n' 'READY' '{marker}'\n"
     )
 
 
@@ -1198,7 +1269,6 @@ def serve_terminal(ws, token):
     vm_id = g.workspace["vm_id"]
     actor_id = g.account["id"]
     actor_email = g.account["email"]
-    actor_nickname = g.account["nickname"] if "nickname" in g.account.keys() else ""
     expected_owner_id = g.workspace["owner_id"]
     initial = None
     try:
@@ -1260,7 +1330,9 @@ def serve_terminal(ws, token):
                             init_deadline = time.monotonic() + 2.5
                             init_cmd = {
                                 "operation": "input",
-                                "data": terminal_init_command(actor_id, actor_nickname, actor_email, init_marker),
+                                "data": terminal_init_command(
+                                    actor_id, identity.workspace_account_name(expected_owner_id, actor_id),
+                                    actor_email, init_marker),
                                 "cols": initial["cols"],
                                 "rows": initial["rows"],
                             }

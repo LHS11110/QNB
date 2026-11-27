@@ -51,6 +51,8 @@ CREATE INDEX IF NOT EXISTS chat_messages_channel ON chat_messages (owner_id, cha
 def initialize():
     with store.database() as db:
         db.executescript(SCHEMA)
+        if "tag" not in {row["name"] for row in db.execute("PRAGMA table_info(chat_messages)")}:
+            db.execute("ALTER TABLE chat_messages ADD COLUMN tag TEXT NOT NULL DEFAULT ''")
 
 
 @dataclass
@@ -93,6 +95,7 @@ def _member(client):
         "sessionId": client.session_id,
         "accountId": client.actor.get("accountId"),
         "nickname": client.actor.get("nickname", ""),
+        "tag": client.actor.get("tag", ""),
         "voiceChannel": client.voice_channel,
         "slot": client.slot if client.voice_channel else 0,
         "muted": client.muted,
@@ -152,7 +155,7 @@ class ChannelManager:
             params.append(before)
         with store.database() as db:
             rows = db.execute(
-                "SELECT id, account_id, nickname, text, created_at FROM chat_messages"
+                "SELECT id, account_id, nickname, tag, text, created_at FROM chat_messages"
                 f" WHERE owner_id = ? AND channel_id = ?{clause} ORDER BY id DESC LIMIT {HISTORY_LIMIT}",
                 params,
             ).fetchall()
@@ -162,7 +165,7 @@ class ChannelManager:
     def _message_payload(channel_id, row):
         return {
             "id": row["id"], "channel": channel_id, "accountId": row["account_id"],
-            "nickname": row["nickname"], "text": row["text"], "createdAt": row["created_at"],
+            "nickname": row["nickname"], "tag": row["tag"], "text": row["text"], "createdAt": row["created_at"],
         }
 
     # ---------- connection lifecycle ----------
@@ -186,6 +189,16 @@ class ChannelManager:
                     self._hubs.pop(owner_id, None)
         else:
             self._broadcast_presence(owner_id)
+
+    def notify_account(self, account_id, event):
+        """Deliver an event to every open connection of one account, whatever workspace it is in."""
+        with self._lock:
+            hubs = list(self._hubs.values())
+        for hub in hubs:
+            with hub.lock:
+                targets = [c.out for c in hub.clients.values() if c.actor.get("accountId") == account_id]
+            for q in targets:
+                _put(q, event)
 
     def members(self, owner_id):
         hub = self._hub(owner_id)
@@ -224,11 +237,11 @@ class ChannelManager:
         nickname = client.actor.get("nickname", "")
         with store.database() as db:
             cur = db.execute(
-                "INSERT INTO chat_messages (owner_id, channel_id, account_id, nickname, text) VALUES (?, ?, ?, ?, ?)",
-                (owner_id, channel_id, client.actor["accountId"], nickname, text),
+                "INSERT INTO chat_messages (owner_id, channel_id, account_id, nickname, tag, text) VALUES (?, ?, ?, ?, ?, ?)",
+                (owner_id, channel_id, client.actor["accountId"], nickname, client.actor.get("tag", ""), text),
             )
             row = db.execute(
-                "SELECT id, account_id, nickname, text, created_at FROM chat_messages WHERE id = ?",
+                "SELECT id, account_id, nickname, tag, text, created_at FROM chat_messages WHERE id = ?",
                 (cur.lastrowid,),
             ).fetchone()
         message = self._message_payload(channel_id, row)

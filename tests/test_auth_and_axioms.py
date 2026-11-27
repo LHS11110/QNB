@@ -209,6 +209,8 @@ class AuthAndCustomAxiomsTests(unittest.TestCase):
             self.assertEqual(guest_client.post("/api/signup", json={
                 "email": "guest@example.test", "password": "password123", "nickname": "noether",
             }).status_code, 200)
+            with store.database() as db:  # skip the email-verification step in these HTTP tests
+                db.execute("UPDATE accounts SET email_verified = 1")
 
             self.assertEqual(owner_client.get("/api/session").get_json()["nickname"], "euler")
             self.assertEqual(owner_client.post("/api/profile", json={"nickname": "gauss"}).get_json()["nickname"], "gauss")

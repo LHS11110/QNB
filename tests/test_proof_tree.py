@@ -16,7 +16,7 @@ class ProofTreeTests(unittest.TestCase):
         }):
             store.initialize()
             with store.database() as db:
-                db.executemany("INSERT INTO accounts VALUES (?, ?, 'hash', ?)", [
+                db.executemany("INSERT INTO accounts (id, email, password, vm_id) VALUES (?, ?, 'hash', ?)", [
                     (1, "one@example.test", 10), (2, "two@example.test", 20),
                 ])
                 records = [

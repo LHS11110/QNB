@@ -133,7 +133,7 @@ window.QNBPlanner = (() => {
     if (!m) return null;
     const node = element("span", (m.nickname || "?").slice(0, 1).toUpperCase(), "chat-avatar small");
     node.style.setProperty("--hue", String((m.id * 67) % 360));
-    node.title = "담당: " + m.nickname;
+    node.title = "담당: " + (m.handle || m.nickname);
     return node;
   }
 
@@ -658,7 +658,7 @@ window.QNBPlanner = (() => {
         field("프로젝트", select("projectId", v.projectId, projectOptions())),
         field("상태", select("status", v.status || "todo", Object.entries(STATUS))),
         field("우선순위", select("priority", v.priority || "medium", Object.entries(PRIORITY))),
-        field("담당자", select("assigneeId", v.assigneeId ?? "", [["", "(미지정)"], ...data.members.map((m) => [String(m.id), m.nickname])])),
+        field("담당자", select("assigneeId", v.assigneeId ?? "", [["", "(미지정)"], ...data.members.map((m) => [String(m.id), m.handle || m.nickname])])),
         field("시작일", input("startDate", v.startDate, "date")),
         field("마감일", input("dueDate", v.dueDate, "date")),
         field("태그 (쉼표로 구분)", input("tags", (v.tags || []).join(", "), "text", { maxLength: 260 }), true),

@@ -140,6 +140,11 @@ window.QNBChannels = (() => {
       case "message":
         receiveMessage(msg.message);
         break;
+      case "invite":
+        currentSession.pendingInvites = Number(currentSession.pendingInvites || 0) + 1;
+        renderWorkspaceBadge();
+        status(`${msg.from} 님이 워크스페이스에 초대했습니다. 오른쪽 위 워크스페이스 버튼에서 수락할 수 있습니다.`);
+        break;
       case "planner":
         window.dispatchEvent(new CustomEvent("qnb:planner", { detail: msg }));
         break;
@@ -236,7 +241,9 @@ window.QNBChannels = (() => {
         const head = element("div", undefined, "chat-head");
         const avatar = element("span", (message.nickname || "?").slice(0, 1).toUpperCase(), "chat-avatar");
         avatar.style.setProperty("--hue", String((message.accountId * 67) % 360));
-        head.append(avatar, element("strong", message.nickname || "알 수 없음"), element("time", formatTime(message.createdAt)));
+        const who = element("strong", message.nickname || "알 수 없음");
+        if (message.tag) who.append(element("span", "#" + message.tag, "handle-tag"));
+        head.append(avatar, who, element("time", formatTime(message.createdAt)));
         item.append(head);
       }
       const body = element("div", undefined, "chat-text");
@@ -375,7 +382,10 @@ window.QNBChannels = (() => {
       node.dataset.self = String(person.sessionId === selfSessionId);
       const avatar = element("span", (person.nickname || "?").slice(0, 1).toUpperCase(), "chat-avatar small");
       avatar.style.setProperty("--hue", String((person.accountId * 67) % 360));
-      node.append(avatar, element("span", person.nickname + (person.sessionId === selfSessionId ? " (나)" : ""), "voice-name"));
+      const name = element("span", person.nickname, "voice-name");
+      if (person.tag) name.append(element("span", "#" + person.tag, "handle-tag"));
+      if (person.sessionId === selfSessionId) name.append(" (나)");
+      node.append(avatar, name);
       if (person.muted) node.append(element("span", "🔇", "voice-flag"));
       return node;
     });
@@ -431,7 +441,7 @@ window.QNBChannels = (() => {
     syncChildren($("channels-text-list"), channels.filter((c) => c.kind === "text").map(channelRow));
     syncChildren($("channels-voice-list"), channels.filter((c) => c.kind === "voice").map(channelRow));
     const online = new Map();
-    for (const m of members) online.set(m.accountId, m.nickname);
+    for (const m of members) online.set(m.accountId, m.tag ? `${m.nickname}#${m.tag}` : m.nickname);
     $("channels-online").textContent = `온라인 ${online.size}명`;
     $("channels-online").title = [...online.values()].join(", ");
     renderBadge();

@@ -123,6 +123,7 @@ class StagedFile:
                 "sessionId": sid,
                 "email": actor.get("email", ""),
                 "nickname": actor.get("nickname", ""),
+                "handle": actor.get("handle", actor.get("nickname", "")),
                 "kind": actor.get("kind", "browser"),
                 "cursorLine": self.cursors.get(sid),
             }
@@ -144,10 +145,14 @@ def _actor_payload(account, *, kind="browser"):
         nick = account["nickname"]
     if not nick and email:
         nick = email.split("@", 1)[0]
+    tag = account["tag"] if "tag" in account.keys() and account["tag"] else ""
+    nick = nick or f"user-{account['id']}"
     return {
         "accountId": account["id"],
         "email": email,
-        "nickname": nick or f"user-{account['id']}",
+        "nickname": nick,
+        "tag": tag,
+        "handle": f"{nick}#{tag}" if tag else nick,
         "kind": kind,
     }
 
@@ -294,6 +299,7 @@ class StagingManager:
                     "sessionId": sid,
                     "email": info["actor"].get("email", ""),
                     "nickname": info["actor"].get("nickname", ""),
+                    "handle": info["actor"].get("handle", info["actor"].get("nickname", "")),
                     "kind": info["actor"].get("kind", "browser"),
                 }
                 for sid, info in room.clients.items()
@@ -348,6 +354,7 @@ class StagingManager:
                     "sessionId": sid,
                     "email": info["actor"].get("email", ""),
                     "nickname": info["actor"].get("nickname", ""),
+                    "handle": info["actor"].get("handle", info["actor"].get("nickname", "")),
                     "kind": info["actor"].get("kind", "browser"),
                 }
                 for sid, info in room.clients.items()

@@ -10,6 +10,14 @@ services:
       QNB_VM_DISK_GIB: "${QNB_VM_DISK_GIB:-12}"
       QNB_VM_ID_COUNT: "${QNB_VM_ID_COUNT:-32}"
       QNB_SECURE_COOKIE: "${QNB_SECURE_COOKIE:-0}"
+      # Email verification (SMTP). Without QNB_SMTP_HOST codes are written to the web container log.
+      QNB_SMTP_HOST: "${QNB_SMTP_HOST:-}"
+      QNB_SMTP_PORT: "${QNB_SMTP_PORT:-587}"
+      QNB_SMTP_USER: "${QNB_SMTP_USER:-}"
+      QNB_SMTP_PASSWORD: "${QNB_SMTP_PASSWORD:-}"
+      QNB_SMTP_FROM: "${QNB_SMTP_FROM:-}"
+      QNB_SMTP_SECURITY: "${QNB_SMTP_SECURITY:-starttls}"
+      QNB_SECRET_KEY: "${QNB_SECRET_KEY:-}"
     volumes:
       - qnb-data:/data
       - type: bind

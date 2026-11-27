@@ -125,6 +125,8 @@ class VisualizeEndpointTests(unittest.TestCase):
             self.assertEqual(client.post("/api/signup", json={
                 "email": "viz@example.test", "password": "password123",
             }).status_code, 200)
+            with store.database() as db:  # skip the email-verification step in these HTTP tests
+                db.execute("UPDATE accounts SET email_verified = 1")
 
             py_payload = json.dumps({
                 "exitCode": 0,

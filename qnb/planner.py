@@ -109,13 +109,15 @@ def _choice(value, field, choices):
 def members(owner_id):
     with store.database() as db:
         rows = db.execute("""
-            SELECT a.id, a.email, COALESCE(NULLIF(p.nickname, ''), substr(a.email, 1, instr(a.email, '@') - 1)) AS nickname
+            SELECT a.id, a.email, COALESCE(NULLIF(p.nickname, ''), substr(a.email, 1, instr(a.email, '@') - 1)) AS nickname,
+                   COALESCE(p.tag, '') AS tag
             FROM accounts a LEFT JOIN account_profiles p ON p.account_id = a.id
             WHERE a.id = ?
                OR a.email IN (SELECT invitee_email FROM workspace_invites WHERE owner_id = ? AND status = 'accepted')
             ORDER BY a.id = ? DESC, nickname
         """, (owner_id, owner_id, owner_id)).fetchall()
-    return [{"id": row["id"], "nickname": row["nickname"]} for row in rows]
+    return [{"id": row["id"], "nickname": row["nickname"], "tag": row["tag"],
+             "handle": f"{row['nickname']}#{row['tag']}" if row["tag"] else row["nickname"]} for row in rows]
 
 
 def _project(row):

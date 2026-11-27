@@ -1,12 +1,17 @@
-"""Line-by-line tracing for C++ and Java learning sessions.
+"""Line-by-line C++ / Java execution for learning, driven by real debuggers in the VM.
 
-The VM has compilers but no debugger, so the source is instrumented instead: before
-every statement inside a function body we insert a call that records the line, the
-visible local variables and the call stack. Inserted code never contains newlines,
-so compiler diagnostics keep the learner's original line numbers.
+C++  : g++ -g -O0, then gdb (Python API) steps line by line, stepping out of library
+       code, reading locals from debug info and expanding containers via libstdc++
+       pretty printers.
+Java : javac -g, then a small JDI debugger (QnbJdi) launches the program, requests
+       line steps with JDK classes excluded, and reads frames, locals and objects.
+
+Both write one JSON line per step; build_result() turns them into the visualizer's
+step format (stack frames with locals, heap entries, cumulative stdout).
 """
 
 import base64
+import hashlib
 import json
 import re
 
@@ -14,845 +19,564 @@ from . import runtime
 from .runtime import RequestError
 
 MAX_STEPS = 300
-RUN_TIMEOUT = 10
+RUN_TIMEOUT = 30
 
-CPP_TYPE_WORDS = {
-    "int", "long", "short", "char", "bool", "float", "double", "unsigned", "signed", "void", "auto",
-    "size_t", "wchar_t", "char16_t", "char32_t", "int8_t", "int16_t", "int32_t", "int64_t",
-    "uint8_t", "uint16_t", "uint32_t", "uint64_t", "ptrdiff_t",
-}
-JAVA_TYPE_WORDS = {"int", "long", "short", "char", "boolean", "float", "double", "byte", "var", "void"}
-QUALIFIERS = {"const", "static", "constexpr", "volatile", "final", "register", "inline", "thread_local", "mutable", "typename", "struct", "class", "enum"}
-NOT_DECL_START = {
-    "return", "delete", "throw", "goto", "break", "continue", "new", "co_return", "co_yield", "co_await",
-    "using", "typedef", "assert", "yield", "this", "super", "sizeof", "static_assert", "operator", "template",
-}
-CONTROL = {"if", "for", "while", "switch", "do", "try", "else", "catch", "finally", "case", "default"}
-CONTAINER_KEYWORDS = {"class", "struct", "union", "namespace", "enum", "interface", "record"}
-SUFFIX_QUALIFIERS = {"const", "noexcept", "override", "final", "volatile", "mutable", "&", "&&"}
+GDB_DRIVER = r'''
+import json, os, re, itertools
+import gdb
 
-TOKEN_RE = re.compile(r"""
-    (?P<ws>\s+)
-  | (?P<lcomment>//[^\n]*)
-  | (?P<bcomment>/\*.*?\*/)
-  | (?P<textblock>\"\"\"(?:\\.|[^\\])*?\"\"\")
-  | (?P<rawstr>(?:u8|u|U|L)?R\"(?P<delim>[^()\\\s]{0,16})\((?:.|\n)*?\)(?P=delim)\")
-  | (?P<string>(?:u8|u|U|L)?\"(?:\\.|[^\"\\\n])*\")
-  | (?P<char>(?:u8|u|U|L)?'(?:\\.|[^'\\\n])+')
-  | (?P<number>\.?\d(?:[\w.']|[eEpP][+-])*)
-  | (?P<ident>[A-Za-z_$][\w$]*)
-  | (?P<punct>::|->|\+\+|--|<<=|>>=|<=>|<<|<=|>=|==|!=|&&|\|\||\+=|-=|\*=|/=|%=|&=|\|=|\^=|\.\.\.|[^\s\w])
-""", re.S | re.X)
+SOURCE = os.environ["QNB_SOURCE"]
+TRACE = open(os.environ["QNB_TRACE"], "w")
+OUT = os.environ["QNB_OUT"]
+MAX_STEPS = int(os.environ["QNB_MAX_STEPS"])
+state = {"exit": None, "seq": 0, "steps": 0}
 
+def on_exit(event):
+    state["exit"] = getattr(event, "exit_code", None)
+gdb.events.exited.connect(on_exit)
 
-class Token:
-    __slots__ = ("kind", "text", "start", "end", "line")
+def clip(text, n=120):
+    return text if len(text) <= n else text[:n - 1] + "…"
 
-    def __init__(self, kind, text, start, end, line):
-        self.kind, self.text, self.start, self.end, self.line = kind, text, start, end, line
-
-    def __repr__(self):
-        return f"{self.text!r}@{self.line}"
-
-
-def tokenize(source, language):
-    tokens = []
-    pos, line = 0, 1
-    at_line_start = True
-    while pos < len(source):
-        if language == "cpp" and at_line_start:
-            # Preprocessor directives (with backslash continuations) are not code we instrument.
-            match = re.match(r"[ \t]*#(?:[^\n\\]|\\.)*", source[pos:], re.S)
-            if match:
-                text = match.group(0)
-                line += text.count("\n")
-                pos += len(text)
-                continue
-        match = TOKEN_RE.match(source, pos)
-        if not match:
-            raise ValueError(f"tokenize error at {line}")
-        kind = match.lastgroup if match.lastgroup != "delim" else "rawstr"
-        if match.group("rawstr") is not None:
-            kind = "rawstr"
-        text = match.group(0)
-        if kind not in ("ws", "lcomment", "bcomment"):
-            tokens.append(Token("string" if kind in ("textblock", "rawstr", "string", "char") else kind,
-                                text, pos, match.end(), line))
-            at_line_start = False
-        line += text.count("\n")
-        if kind == "ws" and "\n" in text:
-            at_line_start = True
-        elif kind != "ws":
-            at_line_start = kind == "lcomment"  # a line comment always runs to the end of the line
-        pos = match.end()
-    return tokens
-
-
-class Instrumenter:
-    def __init__(self, source, language):
-        self.source = source
-        self.lang = language
-        self.toks = tokenize(source, language)
-        self.ins = []  # (offset, order, text)
-        self.functions = 0
-        self.class_names = []
-
-    # ---------------- token helpers ----------------
-
-    def t(self, i):
-        return self.toks[i].text if 0 <= i < len(self.toks) else ""
-
-    def match_close(self, i):
-        """Index of the bracket closing the one at i."""
-        pairs = {"(": ")", "[": "]", "{": "}"}
-        open_t, close_t = self.t(i), pairs[self.t(i)]
-        depth = 0
-        for j in range(i, len(self.toks)):
-            text = self.toks[j].text
-            if text == open_t:
-                depth += 1
-            elif text == close_t:
-                depth -= 1
-                if depth == 0:
-                    return j
-        raise ValueError("unbalanced brackets")
-
-    def skip_angles(self, i):
-        """i at '<' following a type name: return index after the matching '>'."""
-        depth = 0
-        j = i
-        while j < len(self.toks):
-            text = self.t(j)
-            if text == "<":
-                depth += 1
-            elif text == ">":
-                depth -= 1
-            elif text == ">>":
-                depth -= 2
-            elif text in ("(", "["):
-                j = self.match_close(j)
-            elif text in (";", "{", "}"):
-                return None
-            j += 1
-            if depth <= 0:
-                return j
+def user_sal(frame):
+    try:
+        sal = frame.find_sal()
+    except gdb.error:
         return None
-
-    def insert(self, offset, text, order=0):
-        self.ins.append((offset, order, text))
-
-    # ---------------- top level ----------------
-
-    def run(self):
-        self.scan_container(0, len(self.toks), class_name=None)
-        out = []
-        last = 0
-        for offset, _, text in sorted(self.ins, key=lambda item: (item[0], item[1])):
-            out.append(self.source[last:offset])
-            out.append(text)
-            last = offset
-        out.append(self.source[last:])
-        return "".join(out)
-
-    def scan_container(self, start, end, class_name):
-        i = start
-        statement_start = start
-        while i < end:
-            text = self.t(i)
-            if text == ";":
-                statement_start = i + 1
-                i += 1
-                continue
-            if text == "}":
-                i += 1
-                statement_start = i
-                continue
-            if text == "(":
-                close = self.match_close(i)
-                after = close + 1
-                # C++ constructor initializer list: ") : a(x), b{y} {"
-                if self.lang == "cpp" and self.t(after) == ":":
-                    body = self.skip_initializers(after + 1)
-                    if body is not None:
-                        self.instrument_function(statement_start, i, close, body, class_name)
-                        i = self.match_close(body) + 1
-                        statement_start = i
-                        continue
-                j = after
-                while j < end and (self.t(j) in SUFFIX_QUALIFIERS or self.t(j) == "throws" or self.toks[j].kind == "ident" and self.t(j - 1) in ("throws", ",") and self.lang == "java"):
-                    if self.t(j) == "noexcept" and self.t(j + 1) == "(":
-                        j = self.match_close(j + 1)
-                    j += 1
-                if self.t(j) == "->":  # trailing return type
-                    j += 1
-                    while j < end and self.t(j) not in ("{", ";", "="):
-                        j = self.skip_angles(j) if self.t(j) == "<" else j + 1
-                        if j is None:
-                            break
-                if j is not None and self.t(j) == "{":
-                    self.instrument_function(statement_start, i, close, j, class_name)
-                    i = self.match_close(j) + 1
-                    statement_start = i
-                    continue
-                i = close + 1
-                continue
-            if text == "{":
-                head = [tok.text for tok in self.toks[statement_start:i]]
-                keyword = next((w for w in head if w in CONTAINER_KEYWORDS), None)
-                close = self.match_close(i)
-                if keyword and keyword != "enum" and "=" not in head:
-                    name = None
-                    if keyword in ("class", "struct", "interface", "record", "union"):
-                        k = head.index(keyword)
-                        name = head[k + 1] if k + 1 < len(head) else None
-                        if name:
-                            self.class_names.append(name)
-                    self.scan_container(i + 1, close, name if keyword != "namespace" else class_name)
-                elif head[:1] == ["extern"]:
-                    self.scan_container(i + 1, close, class_name)
-                i = close + 1
-                # a class body is followed by ';' in C++; enum/initializer bodies are skipped entirely
-                statement_start = i
-                continue
-            i += 1
-
-    def skip_initializers(self, j):
-        while j < len(self.toks):
-            while j < len(self.toks) and self.t(j) not in ("(", "{"):
-                if self.t(j) == "<":
-                    j = self.skip_angles(j)
-                    if j is None:
-                        return None
-                    continue
-                if self.t(j) in (";", "}"):
-                    return None
-                j += 1
-            if j >= len(self.toks):
-                return None
-            j = self.match_close(j) + 1
-            if self.t(j) == ",":
-                j += 1
-                continue
-            return j if self.t(j) == "{" else None
+    if sal.symtab is None or os.path.basename(sal.symtab.filename) != os.path.basename(SOURCE):
         return None
+    return sal
 
-    # ---------------- functions ----------------
+def new_id():
+    state["seq"] += 1
+    return "obj_%d" % state["seq"]
 
-    def param_names(self, open_i, close_i):
-        names = []
-        for part in self.split_top(open_i + 1, close_i):
-            texts = [self.t(k) for k in part]
-            if not texts or texts in (["void"], ["..."]) or "(" in texts:
-                continue
-            if "=" in texts:
-                part = part[:texts.index("=")]
-                texts = texts[:texts.index("=")]
-            while texts and texts[-1] == "]":
-                k = len(texts) - 1
-                while k >= 0 and texts[k] != "[":
-                    k -= 1
-                texts = texts[:k]
-            idents = [w for w in texts if re.fullmatch(r"[A-Za-z_$][\w$]*", w) and w not in QUALIFIERS]
-            if len(texts) >= 2 and idents and re.fullmatch(r"[A-Za-z_$][\w$]*", texts[-1]):
-                names.append(texts[-1])
-        return names
-
-    def split_top(self, start, end):
-        parts, current, depth = [], [], 0
-        k = start
-        while k < end:
-            text = self.t(k)
-            if text in ("(", "[", "{"):
-                close = self.match_close(k)
-                current.extend(range(k, close + 1))
-                k = close + 1
-                continue
-            if text == "<":
-                depth += 1
-            elif text == ">":
-                depth = max(0, depth - 1)
-            elif text == ">>":
-                depth = max(0, depth - 2)
-            if text == "," and depth == 0:
-                parts.append(current)
-                current = []
+def fmt(val, heap, depth=0):
+    try:
+        t = val.type.strip_typedefs()
+        if t.code in (gdb.TYPE_CODE_REF, getattr(gdb, "TYPE_CODE_RVALUE_REF", -1)):
+            val = val.referenced_value()
+            t = val.type.strip_typedefs()
+        name = str(t)
+        viz = gdb.default_visualizer(val)
+        if viz is not None:
+            hint = viz.display_hint() if hasattr(viz, "display_hint") else None
+            if hint == "string" or not hasattr(viz, "children"):
+                text = str(val)
+                if hint == "string" and len(text) >= 2 and text[0] == text[-1] == '"':
+                    return {"kind": "prim", "type": "str", "value": clip(text[1:-1])}
+                return {"kind": "repr", "type": name, "text": clip(text)}
+            if depth >= 3:
+                return {"kind": "repr", "type": name, "text": "…"}
+            header = str(viz.to_string() or "")
+            length = re.search(r"(?:length|with) (\d+)", header)
+            children = list(itertools.islice(viz.children(), 26 if hint == "map" else 13))
+            oid = new_id()
+            entry = {"id": oid, "type": name, "truncated": False}
+            if hint == "map":
+                pairs = [(children[i][1], children[i + 1][1]) for i in range(0, len(children) - 1, 2)][:12]
+                entry["fields"] = [[clip(str(k).strip('"'), 40), fmt(v, heap, depth + 1)] for k, v in pairs]
+                count = int(length.group(1)) if length else len(pairs)
             else:
-                current.append(k)
-            k += 1
-        if current:
-            parts.append(current)
-        return parts
+                entry["items"] = [fmt(v if isinstance(v, gdb.Value) else gdb.Value(v), heap, depth + 1) for _, v in children[:12]]
+                count = int(length.group(1)) if length else len(children)
+            entry["length"] = count
+            entry["truncated"] = count > 12
+            heap[oid] = entry
+            return {"kind": "ref", "id": oid}
+        code = t.code
+        if code == gdb.TYPE_CODE_BOOL:
+            return {"kind": "prim", "type": "bool", "value": bool(val)}
+        if code == gdb.TYPE_CODE_INT and name in ("char", "signed char", "unsigned char") and t.sizeof == 1:
+            n = int(val)
+            return {"kind": "prim", "type": "char", "value": chr(n) if 32 <= n < 127 else "\\x%02x" % (n & 255)}
+        if code in (gdb.TYPE_CODE_INT, gdb.TYPE_CODE_CHAR):
+            return {"kind": "prim", "type": "int", "value": int(val)}
+        if code == gdb.TYPE_CODE_FLT:
+            f = float(val)
+            if f != f or f in (float("inf"), float("-inf")):
+                return {"kind": "repr", "type": "float", "text": str(f)}
+            return {"kind": "prim", "type": "float", "value": f}
+        if code == gdb.TYPE_CODE_ENUM:
+            return {"kind": "repr", "type": name, "text": str(val)}
+        if code == gdb.TYPE_CODE_PTR:
+            target = t.target().strip_typedefs()
+            if int(val) == 0:
+                return {"kind": "repr", "type": "pointer", "text": "nullptr"}
+            if target.code == gdb.TYPE_CODE_INT and target.sizeof == 1:
+                try:
+                    return {"kind": "prim", "type": "str", "value": clip(val.string(length=200))}
+                except gdb.error:
+                    pass
+            return {"kind": "repr", "type": "pointer", "text": hex(int(val))}
+        if depth >= 3:
+            return {"kind": "repr", "type": name, "text": "…"}
+        if code == gdb.TYPE_CODE_ARRAY:
+            low, high = t.range()
+            count = high - low + 1
+            target = t.target().strip_typedefs()
+            if target.code == gdb.TYPE_CODE_INT and target.sizeof == 1:
+                try:
+                    return {"kind": "prim", "type": "str", "value": clip(val.string())}
+                except gdb.error:
+                    pass
+            oid = new_id()
+            heap[oid] = {"id": oid, "type": name, "length": count,
+                         "items": [fmt(val[low + i], heap, depth + 1) for i in range(min(count, 12))], "truncated": count > 12}
+            return {"kind": "ref", "id": oid}
+        if code in (gdb.TYPE_CODE_STRUCT, gdb.TYPE_CODE_UNION):
+            oid = new_id()
+            fields = []
+            for field in t.fields():
+                if getattr(field, "is_base_class", False) or not field.name or (hasattr(field, "bitpos") is False):
+                    continue
+                if len(fields) >= 12:
+                    break
+                try:
+                    fields.append([field.name, fmt(val[field.name], heap, depth + 1)])
+                except gdb.error:
+                    continue
+            heap[oid] = {"id": oid, "type": name, "length": len(fields), "fields": fields, "truncated": False}
+            return {"kind": "ref", "id": oid}
+        return {"kind": "repr", "type": name, "text": clip(str(val))}
+    except (gdb.error, gdb.MemoryError, RuntimeError, ValueError, OverflowError) as error:
+        return {"kind": "repr", "type": "?", "text": clip("<%s>" % error, 60)}
 
-    def instrument_function(self, head_start, open_i, close_i, body_i, class_name):
-        name_tok = self.toks[open_i - 1] if open_i > 0 else None
-        if not name_tok or name_tok.kind != "ident" or name_tok.text in CONTROL or name_tok.text in ("sizeof", "decltype", "alignof"):
-            return
-        head = [self.t(k) for k in range(head_start, open_i)]
-        if self.lang == "java" and ("abstract" in head or "native" in head):
-            return
-        if self.lang == "cpp" and ("constexpr" in head or "consteval" in head):
-            return
-        name = name_tok.text
-        qualified = f"{class_name}.{name}" if class_name and self.lang == "java" else name
-        body_end = self.match_close(body_i)
-        scope = self.param_names(open_i, close_i)
-        self.functions += 1
-        line = name_tok.line
-        first = body_i + 1
-        if self.lang == "cpp":
-            self.insert(self.toks[body_i].end, f" __qnb::Frame __qnb_frame(\"{qualified}\", {line});")
-        else:
-            # A constructor's this(...)/super(...) call must remain the first statement.
-            if self.t(first) in ("this", "super") and self.t(first + 1) == "(":
-                end = self.match_close(first + 1)
-                while self.t(end) != ";":
-                    end += 1
-                first = end + 1
-                anchor = self.toks[end].end
-            else:
-                anchor = self.toks[body_i].end
-            self.insert(anchor, f" __QnbT.enter(\"{qualified}\", {line}); try {{")
-            self.insert(self.toks[body_end].start, "} finally { __QnbT.exit(); } ", order=-1)
-        self.parse_block_items(first, body_end, list(scope))
-
-    # ---------------- statements ----------------
-
-    def step_text(self, line, scope):
-        names = list(dict.fromkeys(reversed(scope)))[::-1][-24:]
-        if self.lang == "cpp":
-            args = "".join(f", __QNB_V({n})" for n in names)
-            return f"__QNB_STEP({line}{args}); "
-        args = "".join(f", \"{n}\", {n}" for n in names)
-        return f"__QnbT.step({line}{args}); "
-
-    def parse_block_items(self, i, end, scope):
-        scope = list(scope)
-        case_mark = len(scope)
-        while i < end:
-            text = self.t(i)
-            if text in ("case", "default"):
-                # switch label: skip to ':' (or '->' for Java arrow labels)
-                j = i
-                while j < end and self.t(j) not in (":", "->"):
-                    if self.t(j) in ("(", "[", "{"):
-                        j = self.match_close(j)
-                    j += 1
-                # declarations after an earlier label are not definitely assigned here
-                del scope[case_mark:]
-                i = j + 1
+def frame_locals(frame, line, heap):
+    out = {}
+    try:
+        block = frame.block()
+    except RuntimeError:
+        return out
+    scopes = []
+    while block is not None:
+        scopes.append(block)
+        if block.function is not None:
+            break
+        block = block.superblock
+    for scope in reversed(scopes):  # outer first; inner declarations shadow
+        for sym in scope:
+            if not (sym.is_variable or sym.is_argument) or sym.name.startswith("__"):
                 continue
-            if self.toks[i].kind == "ident" and self.t(i + 1) == ":" and text not in CONTROL and self.t(i + 2) != ":":
-                i += 2  # goto/break label
+            if sym.is_variable and sym.line and sym.line > line:
+                continue  # declared further down: not yet in scope
+            try:
+                out[sym.name] = fmt(sym.value(frame), heap)
+            except (gdb.error, RuntimeError):
                 continue
-            i, scope = self.parse_statement(i, scope, wrap=False)
-        return scope
+            if len(out) >= 24:
+                return out
+    return out
 
-    def parse_statement(self, i, scope, wrap):
-        """Instrument the statement starting at i; returns (index after it, scope after it)."""
-        tok = self.toks[i]
-        text = tok.text
-        if text == "{":
-            close = self.match_close(i)
-            self.parse_block_items(i + 1, close, scope)
-            return close + 1, scope
-        if text == ";":
-            return i + 1, scope
-        prefix = self.step_text(tok.line, scope)
-        if wrap:
-            self.insert(tok.start, "{ " + prefix)
-        else:
-            self.insert(tok.start, prefix)
+def snapshot():
+    frames = []
+    frame = gdb.newest_frame()
+    while frame is not None:
+        sal = user_sal(frame)
+        if sal is not None:
+            frames.append((frame, sal))
+        frame = frame.older()
+    frames.reverse()
+    heap = {}
+    stack = []
+    for frame, sal in frames:
+        fn = frame.function()
+        name = fn.name if fn is not None else (frame.name() or "?")
+        name = re.sub(r"\(.*\)$", "", name)
+        stack.append({"func": name, "line": sal.line, "locals": frame_locals(frame, sal.line, heap)})
+    return stack, heap
 
-        if text == "if" or (text == "constexpr" and self.t(i - 1) == "if"):
-            j = i + 1
-            if self.t(j) == "constexpr":
-                j += 1
-            close = self.match_close(j)
-            end, _ = self.parse_statement(close + 1, scope, wrap=self.t(close + 1) != "{")
-            if self.t(end) == "else":
-                nxt = end + 1
-                end, _ = self.parse_statement(nxt, scope, wrap=self.t(nxt) != "{")
-        elif text in ("while", "switch"):
-            close = self.match_close(i + 1)
-            body = close + 1
-            if text == "switch":
-                body_close = self.match_close(body)
-                self.parse_block_items(body + 1, body_close, scope)
-                end = body_close + 1
-            elif self.t(body) == ";":
-                end = body + 1
-            else:
-                end, _ = self.parse_statement(body, scope, wrap=self.t(body) != "{")
-        elif text == "for":
-            open_i = i + 1
-            close = self.match_close(open_i)
-            inner = list(scope) + self.for_header_names(open_i, close)
-            body = close + 1
-            end = body + 1 if self.t(body) == ";" else self.parse_statement(body, inner, wrap=self.t(body) != "{")[0]
-        elif text == "do":
-            body_end, _ = self.parse_statement(i + 1, scope, wrap=self.t(i + 1) != "{")
-            close = self.match_close(body_end + 1)  # while ( ... )
-            end = close + 2
-        elif text == "try":
-            j = i + 1
-            if self.t(j) == "(":  # Java try-with-resources
-                resources = self.decl_names_in(j + 1, self.match_close(j), require_init=True)
-                j = self.match_close(j) + 1
-            else:
-                resources = []
-            close = self.match_close(j)
-            self.parse_block_items(j + 1, close, list(scope) + resources)
-            end = close + 1
-            while self.t(end) in ("catch", "finally"):
-                if self.t(end) == "catch":
-                    p_close = self.match_close(end + 1)
-                    names = self.param_names(end + 1, p_close)
-                    b_close = self.match_close(p_close + 1)
-                    self.parse_block_items(p_close + 2, b_close, list(scope) + names)
-                    end = b_close + 1
-                else:
-                    b_close = self.match_close(end + 1)
-                    self.parse_block_items(end + 2, b_close, scope)
-                    end = b_close + 1
-        else:
-            end = self.simple_end(i)
-            if text not in NOT_DECL_START:
-                scope = list(scope) + self.decl_names(i, end - 1)
-        if wrap:
-            self.insert(self.toks[end - 1].end, " }", order=1)
-        return end, scope
+def out_bytes():
+    try:
+        return os.path.getsize(OUT)
+    except OSError:
+        return 0
 
-    def simple_end(self, i):
-        j = i
-        while j < len(self.toks):
-            text = self.t(j)
-            if text in ("(", "[", "{"):
-                j = self.match_close(j) + 1
-                continue
-            if text == ";":
-                return j + 1
-            if text == "}":
-                raise ValueError(f"missing ';' near line {self.toks[j].line}")
-            j += 1
-        raise ValueError("unterminated statement")
+def emit(event, stack, heap):
+    top = stack[-1]
+    TRACE.write(json.dumps({"event": event, "line": top["line"], "func": top["func"], "stack": stack,
+                            "heap": heap, "out": out_bytes()}, ensure_ascii=False) + "\n")
+    state["steps"] += 1
 
-    # ---------------- declarations ----------------
+def alive():
+    try:
+        return gdb.selected_inferior().pid != 0 and gdb.selected_thread() is not None
+    except gdb.error:
+        return False
 
-    def for_header_names(self, open_i, close_i):
-        # range-for / for-each: "for (T name : expr)"
-        depth = 0
-        for k in range(open_i + 1, close_i):
-            text = self.t(k)
-            if text in ("(", "[", "{"):
-                depth += 1
-            elif text in (")", "]", "}"):
-                depth -= 1
-            elif text == ":" and depth == 0:
-                names = self.declarator_names(open_i + 1, k, require_init=False, allow_no_init=True)
-                return names
-            elif text == ";" and depth == 0:
-                return self.decl_names_in(open_i + 1, k, require_init=self.lang == "java")
-        return []
+for command in ("set pagination off", "set confirm off", "set disable-randomization off",
+                "set print thread-events off", "set startup-with-shell on",
+                "skip -rfu ^std::", "skip -rfu ^__gnu_cxx::", "skip -gfi /usr/include/*"):
+    try:
+        gdb.execute(command, to_string=True)
+    except gdb.error:
+        pass
+if os.path.exists("/usr/libexec/coreutils/libstdbuf.so"):
+    # Unbuffered stdio so output written by a line shows up at that step, not at exit.
+    gdb.execute("set environment LD_PRELOAD /usr/libexec/coreutils/libstdbuf.so", to_string=True)
+    gdb.execute("set environment _STDBUF_O 0", to_string=True)
+gdb.execute("break main", to_string=True)
+gdb.execute("run < /dev/null > %s 2> %s" % (OUT, os.environ["QNB_ERR"]), to_string=True)
 
-    def decl_names_in(self, start, end, require_init):
-        return self.declarator_names(start, end, require_init=require_init, allow_no_init=False)
-
-    def decl_names(self, start, semicolon):
-        return self.declarator_names(start, semicolon, require_init=self.lang == "java", allow_no_init=False)
-
-    def declarator_names(self, start, end, require_init, allow_no_init):
-        """Names declared by tokens [start, end) or [] when it is not a declaration."""
-        k = start
-        type_words = CPP_TYPE_WORDS if self.lang == "cpp" else JAVA_TYPE_WORDS
-        while k < end and self.t(k) in QUALIFIERS:
-            k += 1
-        if k >= end or self.toks[k].kind != "ident" or self.t(k) in NOT_DECL_START or self.t(k) in CONTROL:
-            return []
-        if self.lang == "java" and self.t(k) == "@":
-            return []
-        base = self.t(k)
-        builtin = base in type_words
-        k += 1
-        while k < end:
-            text = self.t(k)
-            if text == "::" and k + 1 < end and self.toks[k + 1].kind == "ident":
-                k += 2
-            elif text == "." and k + 1 < end and self.toks[k + 1].kind == "ident":
-                k += 2
-            elif text == "<":
-                nxt = self.skip_angles(k)
-                if nxt is None:
-                    return []
-                k = nxt
-            elif self.toks[k].kind == "ident" and self.t(k) in type_words | {"const", "long", "unsigned", "signed", "short"} and builtin:
-                k += 1
-            else:
+previous = last_stack = last_heap = None
+while alive() and state["steps"] < MAX_STEPS:
+    frame = gdb.selected_frame()
+    if user_sal(frame) is None:
+        # Library / runtime code: run until we are back in the learner's file.
+        try:
+            if frame.older() is None:
                 break
-        # pointer/reference/array markers
-        while k < end and self.t(k) in ("*", "&", "&&", "const") or (self.t(k) == "[" and self.t(k + 1) == "]"):
-            k += 2 if self.t(k) == "[" else 1
-        if k >= end:
-            return []
-        names = []
-        # structured binding: auto [a, b] = ...
-        if self.lang == "cpp" and self.t(k) == "[" and base == "auto":
-            close = self.match_close(k)
-            return [self.t(m) for m in range(k + 1, close) if self.toks[m].kind == "ident"]
-        if self.toks[k].kind != "ident" or self.t(k) in NOT_DECL_START:
-            return []
-        follow = self.t(k + 1) if k + 1 < end else ";"
-        if k + 1 >= end:
-            follow = ";"
-        if follow not in ("=", ";", ",", "[", "(", "{", ":"):
-            return []
-        # remaining declarators separated by top-level commas
-        for part in self.split_top(k, end):
-            texts = [self.t(m) for m in part]
-            while texts and texts[0] in ("*", "&", "&&"):
-                texts = texts[1:]
-            if not texts or not re.fullmatch(r"[A-Za-z_$][\w$]*", texts[0]):
-                continue
-            initialised = "=" in texts or (len(texts) > 1 and texts[1] in ("(", "{"))
-            if require_init and not initialised and not allow_no_init:
-                continue
-            if self.lang == "cpp" and not initialised and builtin and not allow_no_init:
-                continue  # an uninitialised scalar would only show garbage
-            names.append(texts[0])
-        return names
+            gdb.execute("finish", to_string=True)
+        except gdb.error:
+            break
+        continue
+    stack, heap = snapshot()
+    key = [(f["func"], f["line"]) for f in stack]
+    if key != previous:
+        depth, prev_depth = len(stack), len(previous or [])
+        if previous is not None and depth < prev_depth and last_stack is not None:
+            emit("return", last_stack[:prev_depth], last_heap)
+        emit("call" if depth > prev_depth else "line", stack, heap)
+        previous, last_stack, last_heap = key, stack, heap
+    try:
+        gdb.execute("step", to_string=True)
+    except gdb.error:
+        break
 
-
-def instrument(source, language):
-    inst = Instrumenter(source, language)
-    out = inst.run()
-    if not inst.functions:
-        raise ValueError("no function bodies found")
-    return out, inst
-
-
-CPP_RUNTIME = r'''
-#include <cstdio>
-#include <cstdlib>
-#include <cstdint>
-#include <cstring>
-#include <string>
-#include <string_view>
-#include <sstream>
-#include <iostream>
-#include <iterator>
-#include <type_traits>
-#include <utility>
-#include <vector>
-#include <memory>
-#include <optional>
-#include <cxxabi.h>
-#include <unistd.h>
-namespace __qnb {
-static FILE* trace_file = nullptr;
-static long steps = 0;
-static const long MAX_STEPS = %(max_steps)d;
-static long heap_seq = 0;
-inline std::string esc(std::string_view s, size_t limit = 120) {
-  std::string out = "\"";
-  size_t n = 0;
-  for (unsigned char c : s) {
-    if (++n > limit) { out += "\xe2\x80\xa6"; break; }
-    switch (c) {
-      case '"': out += "\\\""; break; case '\\': out += "\\\\"; break;
-      case '\n': out += "\\n"; break; case '\t': out += "\\t"; break; case '\r': out += "\\r"; break;
-      default: if (c < 0x20) { char b[8]; std::snprintf(b, sizeof b, "\\u%%04x", c); out += b; } else out += (char)c;
-    }
-  }
-  return out + "\"";
-}
-template <class T> std::string type_name() {
-  int status = 0;
-  char* d = abi::__cxa_demangle(typeid(T).name(), nullptr, nullptr, &status);
-  std::string r = (status == 0 && d) ? d : typeid(T).name();
-  std::free(d);
-  if (r.rfind("std::__cxx11::basic_string<char", 0) == 0) return "string";
-  auto lt = r.find('<'); if (lt != std::string::npos && r.size() > 40) r = r.substr(0, lt) + "<…>";
-  if (r.rfind("std::", 0) == 0) r = r.substr(5);
-  return r;
-}
-struct Heap { std::string entries; };
-template <class T, class = void> struct is_iterable : std::false_type {};
-template <class T> struct is_iterable<T, std::void_t<decltype(std::begin(std::declval<const T&>())), decltype(std::end(std::declval<const T&>()))>> : std::true_type {};
-template <class T, class = void> struct is_streamable : std::false_type {};
-template <class T> struct is_streamable<T, std::void_t<decltype(std::declval<std::ostream&>() << std::declval<const T&>())>> : std::true_type {};
-template <class T, class = void> struct is_pair_like : std::false_type {};
-template <class T> struct is_pair_like<T, std::void_t<decltype(std::declval<const T&>().first), decltype(std::declval<const T&>().second)>> : std::true_type {};
-template <class T, class = void> struct has_mapped : std::false_type {};
-template <class T> struct has_mapped<T, std::void_t<typename T::mapped_type>> : std::true_type {};
-template <class T> std::string show(const T& v, Heap& h, int depth = 0);
-template <class T> std::string prim_number(const char* type, const T& v) {
-  std::ostringstream os; os.precision(10); os << +v;
-  std::string s = os.str();
-  if (s == "nan" || s == "inf" || s == "-inf") return std::string("{\"kind\":\"repr\",\"type\":\"") + type + "\",\"text\":\"" + s + "\"}";
-  return std::string("{\"kind\":\"prim\",\"type\":\"") + type + "\",\"value\":" + s + "}";
-}
-template <class T> std::string show(const T& v, Heap& h, int depth) {
-  using U = std::remove_cv_t<std::remove_reference_t<T>>;
-  if constexpr (std::is_same_v<U, bool>) return std::string("{\"kind\":\"prim\",\"type\":\"bool\",\"value\":") + (v ? "true" : "false") + "}";
-  else if constexpr (std::is_same_v<U, char>) return "{\"kind\":\"prim\",\"type\":\"char\",\"value\":" + esc(std::string(1, v)) + "}";
-  else if constexpr (std::is_integral_v<U>) return prim_number("int", v);
-  else if constexpr (std::is_floating_point_v<U>) return prim_number("float", v);
-  else if constexpr (std::is_enum_v<U>) return prim_number("enum", static_cast<std::underlying_type_t<U>>(v));
-  else if constexpr (std::is_same_v<U, std::string> || std::is_same_v<U, std::string_view>) return "{\"kind\":\"prim\",\"type\":\"str\",\"value\":" + esc(v) + "}";
-  else if constexpr (std::is_same_v<U, const char*> || std::is_same_v<U, char*>) return v ? "{\"kind\":\"prim\",\"type\":\"str\",\"value\":" + esc(v) + "}" : std::string("{\"kind\":\"repr\",\"type\":\"pointer\",\"text\":\"nullptr\"}");
-  else if constexpr (std::is_array_v<U> && std::is_same_v<std::remove_cv_t<std::remove_extent_t<U>>, char>) return "{\"kind\":\"prim\",\"type\":\"str\",\"value\":" + esc(v) + "}";
-  else if constexpr (std::is_pointer_v<U> || std::is_null_pointer_v<U>) {
-    if constexpr (std::is_null_pointer_v<U>) return "{\"kind\":\"repr\",\"type\":\"pointer\",\"text\":\"nullptr\"}";
-    else { char b[32]; std::snprintf(b, sizeof b, "%%p", (const void*)v); return std::string("{\"kind\":\"repr\",\"type\":\"pointer\",\"text\":\"") + (v ? b : "nullptr") + "\"}"; }
-  }
-  else if constexpr (is_pair_like<U>::value) {
-    if (depth >= 3) return "{\"kind\":\"repr\",\"type\":\"pair\",\"text\":\"(…)\"}";
-    std::string id = "obj_" + std::to_string(++heap_seq);
-    std::string a = show(v.first, h, depth + 1), b = show(v.second, h, depth + 1);
-    h.entries += (h.entries.empty() ? "" : ",") + esc(id) + ":{\"id\":" + esc(id) + ",\"type\":\"pair\",\"length\":2,\"fields\":[[\"first\"," + a + "],[\"second\"," + b + "]],\"truncated\":false}";
-    return "{\"kind\":\"ref\",\"id\":" + esc(id) + "}";
-  }
-  else if constexpr (is_iterable<U>::value) {
-    if (depth >= 3) return "{\"kind\":\"repr\",\"type\":" + esc(type_name<U>()) + ",\"text\":\"[…]\"}";
-    std::string id = "obj_" + std::to_string(++heap_seq);
-    std::string items; size_t n = 0; bool more = false;
-    for (const auto& item : v) {
-      if (n >= 12) { more = true; ++n; continue; }
-      if constexpr (has_mapped<U>::value) {
-        std::ostringstream key;
-        if constexpr (is_streamable<std::remove_cv_t<decltype(item.first)>>::value) key << item.first; else key << "?";
-        items += (n ? "," : "") + std::string("[") + esc(key.str(), 40) + "," + show(item.second, h, depth + 1) + "]";
-      } else {
-        items += (n ? "," : "") + show(item, h, depth + 1);
-      }
-      ++n;
-    }
-    h.entries += (h.entries.empty() ? "" : ",") + esc(id) + ":{\"id\":" + esc(id) + ",\"type\":" + esc(type_name<U>()) + ",\"length\":" + std::to_string(n) + (has_mapped<U>::value ? ",\"fields\":[" : ",\"items\":[") + items + "],\"truncated\":" + (more ? "true" : "false") + "}";
-    return "{\"kind\":\"ref\",\"id\":" + esc(id) + "}";
-  }
-  else if constexpr (is_streamable<U>::value) { std::ostringstream os; os << v; return "{\"kind\":\"repr\",\"type\":" + esc(type_name<U>()) + ",\"text\":" + esc(os.str()) + "}"; }
-  else return "{\"kind\":\"repr\",\"type\":" + esc(type_name<U>()) + ",\"text\":" + esc("<" + type_name<U>() + ">") + "}";
-}
-struct Var { const char* name; std::string value; std::string heap; };
-template <class T> Var var(const char* name, const T& v) { Heap h; std::string s = show(v, h); return Var{name, s, h.entries}; }
-struct Frame;
-static Frame* top = nullptr;
-static long output_offset() {
-  std::fflush(stdout); std::cout.flush();
-  off_t off = lseek(1, 0, SEEK_CUR);
-  return off < 0 ? 0 : (long)off;
-}
-static bool open_trace() {
-  if (!trace_file) { const char* p = std::getenv("QNB_TRACE"); if (!p) return false; trace_file = std::fopen(p, "w"); }
-  return trace_file != nullptr;
-}
-static void guard() {
-  if (steps == MAX_STEPS * 40) { std::fflush(stdout); std::fprintf(stderr, "\n[QNB] 실행 단계가 너무 많아 중단했습니다.\n"); std::_Exit(124); }
-}
-struct Frame {
-  const char* func; int line; Frame* parent; std::string locals = "{}"; std::string heap;
-  Frame(const char* f, int l) : func(f), line(l), parent(top) { top = this; emit("call", l, nullptr, 0); }
-  ~Frame() { emit("return", line, nullptr, 0); top = parent; }
-  static void emit(const char* event, int line, const Var* vars, size_t count) {
-    ++steps; guard();
-    if (steps > MAX_STEPS || !open_trace()) return;
-    if (vars && top) {
-      std::string locals = "{"; std::string heap;
-      for (size_t i = 0; i < count; ++i) {
-        locals += (i ? "," : "") + esc(vars[i].name) + ":" + vars[i].value;
-        if (!vars[i].heap.empty()) heap += (heap.empty() ? "" : ",") + vars[i].heap;
-      }
-      top->locals = locals + "}"; top->heap = heap; top->line = line;
-    }
-    std::string stack, heap;
-    std::vector<Frame*> chain; for (Frame* f = top; f; f = f->parent) chain.push_back(f);
-    for (size_t i = chain.size(); i-- > 0;) {
-      Frame* f = chain[i];
-      stack += std::string(stack.empty() ? "" : ",") + "{\"func\":" + esc(f->func) + ",\"line\":" + std::to_string(f->line) + ",\"locals\":" + f->locals + "}";
-      if (!f->heap.empty()) heap += (heap.empty() ? "" : ",") + f->heap;
-    }
-    std::fprintf(trace_file, "{\"event\":\"%%s\",\"line\":%%d,\"func\":%%s,\"stack\":[%%s],\"heap\":{%%s},\"out\":%%ld}\n",
-                 event, line, esc(top ? top->func : "?").c_str(), stack.c_str(), heap.c_str(), output_offset());
-    std::fflush(trace_file);
-  }
-};
-inline void step(int line, std::initializer_list<Var> vars) { Frame::emit("line", line, vars.begin(), vars.size()); }
-}
-#define __QNB_V(name) ::__qnb::var(#name, name)
-#define __QNB_STEP(line, ...) ::__qnb::step(line, {__VA_ARGS__})
-#line 1
+if alive():
+    try:
+        gdb.execute("delete", to_string=True)
+        gdb.execute("continue", to_string=True)
+    except gdb.error:
+        pass
+TRACE.write(json.dumps({"exit": state["exit"]}) + "\n")
+TRACE.close()
 '''
 
-JAVA_RUNTIME = r'''
-final class __QnbT {
-  static final int MAX_STEPS = %(max_steps)d;
-  static long steps = 0, outBytes = 0; static int seq = 0;
-  static java.io.PrintWriter trace;
-  static final java.util.ArrayDeque<Object[]> stack = new java.util.ArrayDeque<>();
-  static {
-    final java.io.OutputStream base = new java.io.FileOutputStream(java.io.FileDescriptor.out);
-    System.setOut(new java.io.PrintStream(new java.io.OutputStream() {
-      public void write(int b) throws java.io.IOException { base.write(b); outBytes++; }
-      public void write(byte[] b, int o, int n) throws java.io.IOException { base.write(b, o, n); outBytes += n; }
-      public void flush() throws java.io.IOException { base.flush(); }
-    }, true, java.nio.charset.StandardCharsets.UTF_8));
-    try { String p = System.getenv("QNB_TRACE"); if (p != null) trace = new java.io.PrintWriter(new java.io.OutputStreamWriter(new java.io.FileOutputStream(p), java.nio.charset.StandardCharsets.UTF_8)); } catch (Exception e) { trace = null; }
+JDI_DEBUGGER = r'''
+import com.sun.jdi.*;
+import com.sun.jdi.connect.*;
+import com.sun.jdi.event.*;
+import com.sun.jdi.request.*;
+import java.io.*;
+import java.nio.charset.StandardCharsets;
+import java.util.*;
+
+public class QnbJdi {
+  static PrintWriter trace; static int seq = 0; static long outBytes = 0; static int steps = 0;
+  static String sourceName; static int maxSteps;
+  static final String[] EXCLUDES = {"java.*", "javax.*", "jdk.*", "sun.*", "com.sun.*", "kotlin.*"};
+
+  public static void main(String[] a) throws Exception {
+    String mainClass = a[0], classPath = a[1]; sourceName = a[2];
+    trace = new PrintWriter(new OutputStreamWriter(new FileOutputStream(a[3]), StandardCharsets.UTF_8));
+    FileOutputStream out = new FileOutputStream(a[4]); FileOutputStream err = new FileOutputStream(a[5]);
+    maxSteps = Integer.parseInt(a[6]);
+    LaunchingConnector connector = Bootstrap.virtualMachineManager().defaultConnector();
+    Map<String, Connector.Argument> args = connector.defaultArguments();
+    args.get("main").setValue(mainClass);
+    args.get("options").setValue("-cp " + classPath + " -Xss16m -Dfile.encoding=UTF-8");
+    VirtualMachine vm = connector.launch(args);
+    Process process = vm.process();
+    process.getOutputStream().close();
+    Thread outPump = pump(process.getInputStream(), out, true), errPump = pump(process.getErrorStream(), err, false);
+    EventRequestManager erm = vm.eventRequestManager();
+    ClassPrepareRequest prepare = erm.createClassPrepareRequest();
+    prepare.addSourceNameFilter(sourceName);
+    prepare.enable();
+    ExceptionRequest uncaught = erm.createExceptionRequest(null, false, true);
+    for (String ex : EXCLUDES) uncaught.addClassExclusionFilter(ex);
+    uncaught.enable();
+    boolean stepping = false; List<String> previous = null; String lastStack = null, lastHeap = null; int lastDepth = 0;
+    EventQueue queue = vm.eventQueue();
+    outer:
+    while (true) {
+      EventSet set = queue.remove();
+      for (Event event : set) {
+        if (event instanceof VMDeathEvent || event instanceof VMDisconnectEvent) break outer;
+        if (event instanceof ClassPrepareEvent) {
+          ReferenceType type = ((ClassPrepareEvent) event).referenceType();
+          for (Method m : type.methodsByName("main")) {
+            if (m.isStatic() && m.location() != null) erm.createBreakpointRequest(m.location()).enable();
+          }
+        } else if (event instanceof BreakpointEvent && !stepping) {
+          stepping = true;
+          ThreadReference thread = ((BreakpointEvent) event).thread();
+          StepRequest step = erm.createStepRequest(thread, StepRequest.STEP_LINE, StepRequest.STEP_INTO);
+          for (String ex : EXCLUDES) step.addClassExclusionFilter(ex);
+          step.enable();
+          Object[] r = record(thread, previous, lastStack, lastHeap, lastDepth);
+          if (r != null) { previous = (List<String>) r[0]; lastStack = (String) r[1]; lastHeap = (String) r[2]; lastDepth = (Integer) r[3]; }
+        } else if (event instanceof StepEvent) {
+          ThreadReference thread = ((StepEvent) event).thread();
+          if (steps >= maxSteps) { event.request().disable(); continue; }
+          Object[] r = record(thread, previous, lastStack, lastHeap, lastDepth);
+          if (r != null) { previous = (List<String>) r[0]; lastStack = (String) r[1]; lastHeap = (String) r[2]; lastDepth = (Integer) r[3]; }
+        } else if (event instanceof ExceptionEvent) {
+          ExceptionEvent ex = (ExceptionEvent) event;
+          trace.println("{\"exception\":" + esc(ex.exception().referenceType().name(), 200) + "}");
+        }
+      }
+      set.resume();
+    }
+    outPump.join(2000); errPump.join(2000);
+    int code = process.waitFor();
+    trace.println("{\"exit\":" + code + "}");
+    trace.close();
   }
+
+  static volatile long lastOutputAt = 0;
+
+  /* The target is suspended at a step: give the pump thread a moment to copy what was already
+   * printed. (available() cannot be used: it blocks on the stream lock held by the pump's read.) */
+  static void settleOutput() {
+    try {
+      Thread.sleep(2);
+      long deadline = System.nanoTime() + 30_000_000L;
+      while (System.nanoTime() < deadline && System.nanoTime() - lastOutputAt < 5_000_000L) Thread.sleep(1);
+    } catch (InterruptedException ignored) { }
+  }
+
+  static String keyText(Value k, ThreadReference thread) {
+    if (k == null) return "null";
+    if (k instanceof StringReference) return ((StringReference) k).value();
+    if (k instanceof PrimitiveValue) return k.toString();
+    ObjectReference o = (ObjectReference) k;
+    Field value = o.referenceType().fieldByName("value");
+    if (o.referenceType().name().startsWith("java.lang.") && value != null) return String.valueOf(o.getValue(value));
+    Value text = invoke(o, thread, "toString", "()Ljava/lang/String;");
+    return text instanceof StringReference ? ((StringReference) text).value() : o.referenceType().name();
+  }
+
+  static Thread pump(InputStream in, OutputStream sink, boolean count) {
+    Thread t = new Thread(() -> {
+      byte[] buf = new byte[8192]; int n;
+      try { while ((n = in.read(buf)) > 0) { sink.write(buf, 0, n); sink.flush(); if (count) { synchronized (QnbJdi.class) { outBytes += n; } lastOutputAt = System.nanoTime(); } } }
+      catch (IOException ignored) { }
+    });
+    t.setDaemon(true); t.start(); return t;
+  }
+
+  static Object[] record(ThreadReference thread, List<String> previous, String lastStack, String lastHeap, int lastDepth) {
+    // 1) Capture everything from the frames first: formatting may invoke methods (toArray, ...),
+    //    which resumes the thread and invalidates StackFrame objects.
+    List<Object[]> snap = new ArrayList<>();  // {func, line, this, names, values}
+    try {
+      List<StackFrame> frames = thread.frames();
+      for (int i = frames.size() - 1; i >= 0; i--) {
+        StackFrame f = frames.get(i);
+        Location l = f.location();
+        try { if (!sourceName.equals(l.sourceName())) continue; } catch (AbsentInformationException e) { continue; }
+        List<String> names = new ArrayList<>(); List<Value> values = new ArrayList<>();
+        try {
+          List<LocalVariable> vars = f.visibleVariables();
+          if (vars.size() > 24) vars = vars.subList(0, 24);
+          Map<LocalVariable, Value> got = f.getValues(vars);
+          for (LocalVariable v : vars) { names.add(v.name()); values.add(got.get(v)); }
+        } catch (AbsentInformationException ignored) { }
+        String func = l.declaringType().name().replaceAll(".*[.$]", "") + "." + l.method().name();
+        snap.add(new Object[]{func, l.lineNumber(), f.thisObject(), names, values});
+      }
+    } catch (IncompatibleThreadStateException | InvalidStackFrameException e) {
+      return null;
+    }
+    if (snap.isEmpty()) return null;
+    List<String> key = new ArrayList<>();
+    for (Object[] f : snap) key.add(f[0] + ":" + f[1]);
+    if (key.equals(previous)) return null;
+    // 2) Format values.
+    Map<ObjectReference, String> seen = new HashMap<>();
+    StringBuilder heap = new StringBuilder(), stack = new StringBuilder();
+    for (Object[] f : snap) {
+      StringBuilder locals = new StringBuilder("{");
+      int n = 0;
+      if (f[2] != null) { locals.append("\"this\":").append(show((Value) f[2], heap, seen, 0, thread)); n++; }
+      List<String> names = (List<String>) f[3]; List<Value> values = (List<Value>) f[4];
+      for (int i = 0; i < names.size(); i++) {
+        locals.append(n++ > 0 ? "," : "").append(esc(names.get(i), 60)).append(":").append(show(values.get(i), heap, seen, 0, thread));
+      }
+      stack.append(stack.length() > 0 ? "," : "").append("{\"func\":").append(esc((String) f[0], 120)).append(",\"line\":").append(f[1]).append(",\"locals\":").append(locals).append("}}");
+    }
+    Object[] top = snap.get(snap.size() - 1);
+    int depth = snap.size();
+    if (previous != null && depth < lastDepth && lastStack != null) {
+      emitLine("return", lastLine(lastStack), lastFunc(lastStack), lastStack, lastHeap);
+    }
+    emitLine(depth > lastDepth ? "call" : "line", (Integer) top[1], (String) top[0], stack.toString(), heap.toString());
+    return new Object[]{key, stack.toString(), heap.toString(), depth};
+  }
+
+  static int lastLine(String stack) { java.util.regex.Matcher m = java.util.regex.Pattern.compile("\"line\":(\\d+)").matcher(stack); int v = 0; while (m.find()) v = Integer.parseInt(m.group(1)); return v; }
+  static String lastFunc(String stack) { java.util.regex.Matcher m = java.util.regex.Pattern.compile("\"func\":\"([^\"]*)\"").matcher(stack); String v = "?"; while (m.find()) v = m.group(1); return v; }
+
+  static void emitLine(String event, int line, String func, String stack, String heap) {
+    settleOutput();
+    long out; synchronized (QnbJdi.class) { out = outBytes; }
+    trace.println("{\"event\":\"" + event + "\",\"line\":" + line + ",\"func\":" + esc(func, 120) + ",\"stack\":[" + stack + "],\"heap\":{" + heap + "},\"out\":" + out + "}");
+    trace.flush();
+    steps++;
+  }
+
   static String esc(String s, int limit) {
     StringBuilder b = new StringBuilder("\""); int n = 0;
     for (int i = 0; i < s.length(); i++) { char c = s.charAt(i);
       if (++n > limit) { b.append('…'); break; }
       switch (c) { case '"': b.append("\\\""); break; case '\\': b.append("\\\\"); break; case '\n': b.append("\\n"); break; case '\r': b.append("\\r"); break; case '\t': b.append("\\t"); break;
-        default: if (c < 0x20) b.append(String.format("\\u%%04x", (int) c)); else b.append(c); } }
+        default: if (c < 0x20) b.append(String.format("\\u%04x", (int) c)); else b.append(c); } }
     return b.append('"').toString();
   }
-  static String esc(String s) { return esc(s, 120); }
-  static String show(Object v, StringBuilder heap, java.util.IdentityHashMap<Object, String> seen, int depth) {
-    if (v == null) return "{\"kind\":\"repr\",\"type\":\"null\",\"text\":\"null\"}";
-    if (v instanceof Boolean) return "{\"kind\":\"prim\",\"type\":\"bool\",\"value\":" + v + "}";
-    if (v instanceof Character) return "{\"kind\":\"prim\",\"type\":\"char\",\"value\":" + esc(v.toString()) + "}";
-    if (v instanceof Integer || v instanceof Long || v instanceof Short || v instanceof Byte) return "{\"kind\":\"prim\",\"type\":\"int\",\"value\":" + v + "}";
-    if (v instanceof Double || v instanceof Float) { double d = ((Number) v).doubleValue(); if (Double.isNaN(d) || Double.isInfinite(d)) return "{\"kind\":\"repr\",\"type\":\"float\",\"text\":\"" + d + "\"}"; return "{\"kind\":\"prim\",\"type\":\"float\",\"value\":" + v + "}"; }
-    if (v instanceof CharSequence) return "{\"kind\":\"prim\",\"type\":\"str\",\"value\":" + esc(v.toString()) + "}";
-    if (v instanceof Number || v instanceof Enum) return "{\"kind\":\"repr\",\"type\":" + esc(v.getClass().getSimpleName()) + ",\"text\":" + esc(String.valueOf(v)) + "}";
-    String known = seen.get(v);
-    if (known != null) return "{\"kind\":\"ref\",\"id\":" + esc(known) + "}";
-    if (depth >= 3) return "{\"kind\":\"repr\",\"type\":" + esc(v.getClass().getSimpleName()) + ",\"text\":\"…\"}";
-    String id = "obj_" + (++seq); seen.put(v, id);
-    StringBuilder items = new StringBuilder(); int n = 0; boolean more = false; boolean fields = false;
-    if (v.getClass().isArray()) {
-      int len = java.lang.reflect.Array.getLength(v);
-      for (int i = 0; i < len; i++) { if (n >= 12) { more = true; break; } items.append(n++ > 0 ? "," : "").append(show(java.lang.reflect.Array.get(v, i), heap, seen, depth + 1)); }
-      n = len;
-    } else if (v instanceof java.util.Map) {
-      fields = true; int len = 0;
-      for (Object e : ((java.util.Map<?, ?>) v).entrySet()) { java.util.Map.Entry<?, ?> en = (java.util.Map.Entry<?, ?>) e; if (len++ >= 12) { more = true; continue; } items.append(len > 1 ? "," : "").append("[").append(esc(String.valueOf(en.getKey()), 40)).append(",").append(show(en.getValue(), heap, seen, depth + 1)).append("]"); }
-      n = len;
-    } else if (v instanceof Iterable) {
-      int len = 0;
-      for (Object item : (Iterable<?>) v) { if (len++ >= 12) { more = true; continue; } items.append(len > 1 ? "," : "").append(show(item, heap, seen, depth + 1)); }
-      n = len;
-    } else {
+
+  static String prim(String type, String value) { return "{\"kind\":\"prim\",\"type\":\"" + type + "\",\"value\":" + value + "}"; }
+  static String repr(String type, String text) { return "{\"kind\":\"repr\",\"type\":" + esc(type, 80) + ",\"text\":" + esc(text, 120) + "}"; }
+
+  static Value invoke(ObjectReference obj, ThreadReference thread, String name, String signature) {
+    try {
+      Method m = obj.referenceType().methodsByName(name, signature).stream().findFirst().orElse(null);
+      if (m == null) { for (Method c : ((ClassType) obj.referenceType()).allMethods()) if (c.name().equals(name) && c.signature().equals(signature)) { m = c; break; } }
+      return m == null ? null : obj.invokeMethod(thread, m, Collections.emptyList(), ObjectReference.INVOKE_SINGLE_THREADED);
+    } catch (Exception e) { return null; }
+  }
+
+  static boolean isA(ReferenceType type, String iface) {
+    if (!(type instanceof ClassType)) return false;
+    for (InterfaceType i : ((ClassType) type).allInterfaces()) if (i.name().equals(iface)) return true;
+    return false;
+  }
+
+  static String show(Value v, StringBuilder heap, Map<ObjectReference, String> seen, int depth, ThreadReference thread) {
+    if (v == null) return repr("null", "null");
+    if (v instanceof BooleanValue) return prim("bool", String.valueOf(((BooleanValue) v).value()));
+    if (v instanceof CharValue) return prim("char", esc(String.valueOf(((CharValue) v).value()), 4));
+    if (v instanceof IntegerValue || v instanceof LongValue || v instanceof ShortValue || v instanceof ByteValue) return prim("int", v.toString());
+    if (v instanceof DoubleValue || v instanceof FloatValue) { double d = ((PrimitiveValue) v).doubleValue(); return Double.isNaN(d) || Double.isInfinite(d) ? repr("float", String.valueOf(d)) : prim("float", String.valueOf(d)); }
+    if (v instanceof StringReference) return prim("str", esc(((StringReference) v).value(), 120));
+    ObjectReference obj = (ObjectReference) v;
+    String type = obj.referenceType().name().replaceAll(".*[.$]", "");
+    if (obj.referenceType().name().startsWith("java.lang.") && obj.referenceType() instanceof ClassType) {
+      Field value = obj.referenceType().fieldByName("value");
+      if (value != null && obj.getValue(value) instanceof PrimitiveValue) return show(obj.getValue(value), heap, seen, depth, thread);
+    }
+    String known = seen.get(obj);
+    if (known != null) return "{\"kind\":\"ref\",\"id\":\"" + known + "\"}";
+    if (depth >= 3) return repr(type, "…");
+    String id = "obj_" + (++seq); seen.put(obj, id);
+    StringBuilder items = new StringBuilder(); int n = 0, len; boolean fields = false;
+    if (obj instanceof ArrayReference) {
+      ArrayReference arr = (ArrayReference) obj; len = arr.length();
+      type = arr.referenceType().name().replaceAll(".*[.$]", "");
+      for (Value item : arr.getValues(0, Math.min(len, 12))) items.append(n++ > 0 ? "," : "").append(show(item, heap, seen, depth + 1, thread));
+    } else if (isA(obj.referenceType(), "java.util.Map")) {
       fields = true;
-      for (Class<?> c = v.getClass(); c != null && c != Object.class && n < 12; c = c.getSuperclass()) {
-        for (java.lang.reflect.Field f : c.getDeclaredFields()) {
-          if (java.lang.reflect.Modifier.isStatic(f.getModifiers()) || f.isSynthetic()) continue;
-          Object fv; try { f.setAccessible(true); fv = f.get(v); } catch (Exception e) { continue; }
-          if (n >= 12) { more = true; break; }
-          items.append(n++ > 0 ? "," : "").append("[").append(esc(f.getName(), 40)).append(",").append(show(fv, heap, seen, depth + 1)).append("]");
-        }
+      Value entries = invoke(obj, thread, "entrySet", "()Ljava/util/Set;");
+      Value array = entries instanceof ObjectReference ? invoke((ObjectReference) entries, thread, "toArray", "()[Ljava/lang/Object;") : null;
+      len = array instanceof ArrayReference ? ((ArrayReference) array).length() : 0;
+      if (array instanceof ArrayReference) for (Value e : ((ArrayReference) array).getValues(0, Math.min(len, 12))) {
+        ObjectReference entry = (ObjectReference) e;
+        Value k = invoke(entry, thread, "getKey", "()Ljava/lang/Object;"), val = invoke(entry, thread, "getValue", "()Ljava/lang/Object;");
+        items.append(n++ > 0 ? "," : "").append("[").append(esc(keyText(k, thread), 40)).append(",").append(show(val, heap, seen, depth + 1, thread)).append("]");
+      }
+    } else if (isA(obj.referenceType(), "java.util.Collection")) {
+      Value array = invoke(obj, thread, "toArray", "()[Ljava/lang/Object;");
+      len = array instanceof ArrayReference ? ((ArrayReference) array).length() : 0;
+      if (array instanceof ArrayReference) for (Value item : ((ArrayReference) array).getValues(0, Math.min(len, 12))) items.append(n++ > 0 ? "," : "").append(show(item, heap, seen, depth + 1, thread));
+    } else {
+      fields = true; len = 0;
+      for (Field f : obj.referenceType().allFields()) {
+        if (f.isStatic() || f.isSynthetic()) continue;
+        if (len++ >= 12) continue;
+        items.append(n++ > 0 ? "," : "").append("[").append(esc(f.name(), 40)).append(",").append(show(obj.getValue(f), heap, seen, depth + 1, thread)).append("]");
       }
     }
-    String type = v.getClass().isArray() ? v.getClass().getComponentType().getSimpleName() + "[]" : v.getClass().getSimpleName();
-    heap.append(heap.length() > 0 ? "," : "").append(esc(id)).append(":{\"id\":").append(esc(id)).append(",\"type\":").append(esc(type)).append(",\"length\":").append(n)
-        .append(fields ? ",\"fields\":[" : ",\"items\":[").append(items).append("],\"truncated\":").append(more).append("}");
-    return "{\"kind\":\"ref\",\"id\":" + esc(id) + "}";
-  }
-  static void guard() { if (steps == (long) MAX_STEPS * 40) { System.out.flush(); System.err.println("\n[QNB] 실행 단계가 너무 많아 중단했습니다."); Runtime.getRuntime().halt(124); } }
-  static void emit(String event, int line) {
-    steps++; guard();
-    if (steps > MAX_STEPS || trace == null) return;
-    StringBuilder st = new StringBuilder(), heap = new StringBuilder();
-    java.util.Iterator<Object[]> it = stack.descendingIterator();
-    while (it.hasNext()) { Object[] f = it.next();
-      st.append(st.length() > 0 ? "," : "").append("{\"func\":").append(esc((String) f[0])).append(",\"line\":").append(f[1]).append(",\"locals\":").append(f[2]).append("}");
-      if (((String) f[3]).length() > 0) heap.append(heap.length() > 0 ? "," : "").append(f[3]); }
-    System.out.flush();
-    String func = stack.isEmpty() ? "?" : (String) stack.peek()[0];
-    trace.println("{\"event\":\"" + event + "\",\"line\":" + line + ",\"func\":" + esc(func) + ",\"stack\":[" + st + "],\"heap\":{" + heap + "},\"out\":" + outBytes + "}");
-    trace.flush();
-  }
-  static void enter(String func, int line) { stack.push(new Object[]{func, line, "{}", ""}); emit("call", line); }
-  static void exit() { Object[] f = stack.peek(); emit("return", f == null ? 0 : (Integer) f[1]); stack.poll(); }
-  static void step(int line, Object... kv) {
-    Object[] f = stack.peek();
-    if (f != null && steps < MAX_STEPS) {
-      StringBuilder locals = new StringBuilder("{"), heap = new StringBuilder();
-      java.util.IdentityHashMap<Object, String> seen = new java.util.IdentityHashMap<>();
-      for (int i = 0; i + 1 < kv.length; i += 2) locals.append(i > 0 ? "," : "").append(esc((String) kv[i])).append(":").append(show(kv[i + 1], heap, seen, 0));
-      f[1] = line; f[2] = locals.append("}").toString(); f[3] = heap.toString();
-    }
-    emit("line", line);
+    heap.append(heap.length() > 0 ? "," : "").append("\"").append(id).append("\":{\"id\":\"").append(id).append("\",\"type\":").append(esc(type, 80))
+        .append(",\"length\":").append(len).append(fields ? ",\"fields\":[" : ",\"items\":[").append(items).append("],\"truncated\":").append(len > 12).append("}");
+    return "{\"kind\":\"ref\",\"id\":\"" + id + "\"}";
   }
 }
 '''
 
 RUNNER = r'''
-import base64, json, os, re, shutil, subprocess, tempfile
+import base64, hashlib, json, os, shutil, subprocess, tempfile
 cfg = json.loads(base64.b64decode(%(cfg)r).decode())
 lang = cfg["language"]
 work = tempfile.mkdtemp(prefix="qnb-step-")
-result = {"exitCode": 1, "stdout": "", "stderr": "", "trace": [], "traced": False, "note": ""}
+result = {"exitCode": 1, "stdout": "", "stderr": "", "trace": [], "note": ""}
+paths = {k: os.path.join(work, k) for k in ("trace.jsonl", "stdout.txt", "stderr.txt")}
 def clip(text, n=20000):
     return text if len(text) <= n else text[:n] + "\n…(생략)"
-def compile_cpp(src, name):
-    path = os.path.join(work, name + ".cpp")
-    open(path, "w", encoding="utf-8").write(src)
-    if not shutil.which("g++"):
-        return None, "VM에 g++ 컴파일러가 없습니다."
-    p = subprocess.run(["g++", "-std=c++17", "-O0", "-w", "-o", os.path.join(work, name), path], capture_output=True, text=True, timeout=60)
-    return (os.path.join(work, name) if p.returncode == 0 else None), p.stderr.replace(path, cfg["display"])
-def compile_java(src, name, cls):
-    d = os.path.join(work, name); os.makedirs(d)
-    path = os.path.join(d, cls + ".java")
-    open(path, "w", encoding="utf-8").write(src)
-    if not shutil.which("javac"):
-        return None, "VM에 JDK(javac)가 설치되어 있지 않습니다. Java 단계 실행을 하려면 VM 이미지에 JDK를 추가하세요."
-    p = subprocess.run(["javac", "-encoding", "UTF-8", "-nowarn", "-d", d, path], capture_output=True, text=True, timeout=90)
-    return (d if p.returncode == 0 else None), p.stderr.replace(path, cfg["display"])
-def run(cmd, trace):
-    out_path = os.path.join(work, "stdout.txt")
-    env = dict(os.environ)
-    if trace:
-        env["QNB_TRACE"] = os.path.join(work, "trace.jsonl")
-    with open(out_path, "wb") as out:
-        try:
-            p = subprocess.run(["timeout", str(cfg["timeout"])] + cmd, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.PIPE, env=env, cwd=cfg["cwd"] if os.path.isdir(cfg["cwd"]) else work, timeout=cfg["timeout"] + 5)
-            code, err = p.returncode, p.stderr.decode("utf-8", "replace")
-        except subprocess.TimeoutExpired:
-            code, err = 124, ""
-    if code == 124 and "[QNB]" not in err:
-        err += "\n[QNB] 실행 시간 제한(%%d초)을 초과했습니다." %% cfg["timeout"]
-    raw = open(out_path, "rb").read()
-    return code, raw, err
+def need(tool, message):
+    if not shutil.which(tool):
+        result["stderr"] = message; result["note"] = "nodebugger"; raise SystemExit
+UPGRADE = "VM 이미지에 디버거가 없습니다. 관리자가 deploy/guest/Dockerfile로 VM 이미지를 갱신해야 합니다."
 try:
     if lang == "cpp":
-        exe, err = compile_cpp(cfg["instrumented"], "traced") if cfg.get("instrumented") else (None, "")
-        cmd_traced = [exe] if exe else None
-        if not exe:
-            exe2, err2 = compile_cpp(cfg["source"], "plain")
-            if not exe2:
-                result["stderr"] = clip(err2); result["note"] = "compile"
-                raise SystemExit
-            cmd_plain = [exe2]
+        need("g++", "VM에 g++ 컴파일러가 없습니다.")
+        need("gdb", UPGRADE + " (gdb)")
+        src = os.path.join(work, cfg["fileName"])
+        open(src, "w", encoding="utf-8").write(cfg["source"])
+        exe = os.path.join(work, "program")
+        p = subprocess.run(["g++", "-std=c++17", "-g", "-O0", "-fno-omit-frame-pointer", "-o", exe, src], capture_output=True, text=True, timeout=90)
+        if p.returncode:
+            result["stderr"] = clip(p.stderr.replace(work + "/", "")); result["note"] = "compile"; raise SystemExit
+        driver = os.path.join(work, "driver.py")
+        open(driver, "w").write(cfg["driver"])
+        env = dict(os.environ, QNB_SOURCE=src, QNB_TRACE=paths["trace.jsonl"], QNB_OUT=paths["stdout.txt"],
+                   QNB_ERR=paths["stderr.txt"], QNB_MAX_STEPS=str(cfg["maxSteps"]))
+        cmd = ["timeout", str(cfg["timeout"]), "gdb", "-q", "-batch", "-nx", "-x", driver, exe]
     else:
-        exe, err = compile_java(cfg["instrumented"], "traced", cfg["className"]) if cfg.get("instrumented") else (None, "")
-        cmd_traced = ["java", "-Xss16m", "-cp", exe, cfg["mainClass"]] if exe else None
-        if not exe:
-            if "javac" in err and "설치" in err:
-                result["stderr"] = err; result["note"] = "nojdk"; raise SystemExit
-            exe2, err2 = compile_java(cfg["source"], "plain", cfg["className"])
-            if not exe2:
-                result["stderr"] = clip(err2); result["note"] = "compile"
-                raise SystemExit
-            cmd_plain = ["java", "-cp", exe2, cfg["mainClass"]]
-    if cmd_traced:
-        code, raw, err = run(cmd_traced, True)
-        result["traced"] = True
-        tpath = os.path.join(work, "trace.jsonl")
-        if os.path.exists(tpath):
-            with open(tpath, encoding="utf-8", errors="replace") as fp:
-                for line in fp:
-                    try:
-                        result["trace"].append(json.loads(line))
-                    except ValueError:
-                        break
-    else:
-        code, raw, err = run(cmd_plain, False)
-        result["note"] = "untraced"
-    result["exitCode"] = code
+        need("javac", UPGRADE + " (JDK)")
+        classes = os.path.join(work, "classes"); os.makedirs(classes)
+        src = os.path.join(work, cfg["className"] + ".java")
+        open(src, "w", encoding="utf-8").write(cfg["source"])
+        p = subprocess.run(["javac", "-g", "-encoding", "UTF-8", "-nowarn", "-d", classes, src], capture_output=True, text=True, timeout=120)
+        if p.returncode:
+            result["stderr"] = clip(p.stderr.replace(work + "/", "")); result["note"] = "compile"; raise SystemExit
+        digest = hashlib.sha256(cfg["jdi"].encode()).hexdigest()[:16]
+        tool = os.path.join(tempfile.gettempdir(), "qnb-jdi-" + digest)
+        if not os.path.exists(os.path.join(tool, "QnbJdi.class")):
+            staging = tempfile.mkdtemp(prefix="qnb-jdi-build-")
+            open(os.path.join(staging, "QnbJdi.java"), "w").write(cfg["jdi"])
+            p = subprocess.run(["javac", "-nowarn", "-d", staging, os.path.join(staging, "QnbJdi.java")], capture_output=True, text=True, timeout=120)
+            if p.returncode:
+                result["stderr"] = "디버거를 준비하지 못했습니다.\n" + p.stderr; raise SystemExit
+            try:
+                os.rename(staging, tool)
+            except OSError:
+                shutil.rmtree(staging, ignore_errors=True)
+        cmd = ["timeout", str(cfg["timeout"]), "java", "-cp", tool, "QnbJdi", cfg["mainClass"], classes, cfg["className"] + ".java",
+               paths["trace.jsonl"], paths["stdout.txt"], paths["stderr.txt"], str(cfg["maxSteps"])]
+        env = dict(os.environ)
+    cwd = cfg["cwd"] if os.path.isdir(cfg["cwd"]) else work
+    try:
+        p = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True, env=env, cwd=cwd, timeout=cfg["timeout"] + 10)
+        debugger_err = p.stderr
+        timed_out = p.returncode == 124
+    except subprocess.TimeoutExpired:
+        debugger_err, timed_out = "", True
+    exit_code = None
+    if os.path.exists(paths["trace.jsonl"]):
+        with open(paths["trace.jsonl"], encoding="utf-8", errors="replace") as fp:
+            for line in fp:
+                try:
+                    item = json.loads(line)
+                except ValueError:
+                    continue
+                if "exit" in item:
+                    exit_code = item["exit"]
+                elif "exception" in item:
+                    result["exception"] = item["exception"]
+                else:
+                    result["trace"].append(item)
+    raw = open(paths["stdout.txt"], "rb").read() if os.path.exists(paths["stdout.txt"]) else b""
+    err = open(paths["stderr.txt"], encoding="utf-8", errors="replace").read() if os.path.exists(paths["stderr.txt"]) else ""
+    if timed_out:
+        err += "\n[QNB] 실행 시간 제한(%%d초)을 초과해 중단했습니다." %% cfg["timeout"]
+        exit_code = 124
+    if exit_code is None and not result["trace"]:
+        err += "\n" + debugger_err[-2000:]
+    result["exitCode"] = 0 if exit_code in (0, None) and not timed_out and not result.get("exception") else (exit_code or 1)
     result["stdout"] = clip(raw.decode("utf-8", "replace"))
     result["stdoutBytes"] = base64.b64encode(raw[:200000]).decode()
-    result["stderr"] = clip(err)
+    result["stderr"] = clip(err.strip())
 except SystemExit:
     pass
 finally:
@@ -860,20 +584,39 @@ finally:
 print(json.dumps(result, ensure_ascii=True))
 '''
 
+
 JAVA_CLASS = re.compile(r"\bpublic\s+(?:(?:final|abstract|sealed|strictfp)\s+)*(?:class|interface|enum|record)\s+([A-Za-z_$][\w$]*)")
-JAVA_MAIN_OWNER = re.compile(r"\b(?:class|record|enum|interface)\s+([A-Za-z_$][\w$]*)[^{]*\{")
+JAVA_DECL = re.compile(r"\b(?:class|interface|enum|record)\s+([A-Za-z_$][\w$]*)[^{;]*\{")
+JAVA_NOISE = re.compile(r'//[^\n]*|/\*.*?\*/|"""(?:\\.|[^\\])*?"""|"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])+\'', re.S)
 
 
 def _java_names(source, file_path):
+    """(public top-level class → file name, binary name of the class that declares main)."""
     match = JAVA_CLASS.search(source)
     class_name = match.group(1) if match else re.sub(r"\W", "_", file_path.rsplit("/", 1)[-1].rsplit(".", 1)[0]) or "Main"
-    main_class = class_name
-    main = re.search(r"static\s+(?:final\s+)?void\s+main\s*\(", source)
-    if main:
-        owners = [m for m in JAVA_MAIN_OWNER.finditer(source) if m.start() < main.start()]
-        if owners:
-            main_class = owners[-1].group(1)
-    return class_name, main_class
+    # Blank out comments and literals (same length) so braces can be matched safely.
+    code = JAVA_NOISE.sub(lambda m: " " * len(m.group(0)), source)
+    spans = []
+    for decl in JAVA_DECL.finditer(code):
+        open_at = decl.end() - 1
+        depth, close_at = 0, len(code)
+        for index in range(open_at, len(code)):
+            if code[index] == "{":
+                depth += 1
+            elif code[index] == "}":
+                depth -= 1
+                if depth == 0:
+                    close_at = index
+                    break
+        spans.append((open_at, close_at, decl.group(1)))
+    main = re.search(r"\bstatic\s+(?:final\s+)?(?:public\s+)?void\s+main\s*\(", code)
+    if not main:
+        return class_name, class_name
+    owners = [span for span in spans if span[0] < main.start() < span[1]]
+    if not owners:
+        return class_name, class_name
+    owners.sort(key=lambda span: span[0])  # outermost first
+    return class_name, "$".join(name for _, _, name in owners)
 
 
 def explain(event, func, line, code):
@@ -883,39 +626,6 @@ def explain(event, func, line, code):
         return f"{func}() 실행을 마치고 반환합니다"
     snippet = code.strip()
     return f"{line}행 실행: {snippet[:64]}" if snippet else f"{line}행 실행"
-
-
-def trace(vm_id, file_path, code, language):
-    if language not in ("cpp", "java"):
-        raise RequestError("C++ 또는 Java 파일만 단계 실행할 수 있습니다.")
-    display = file_path.rsplit("/", 1)[-1]
-    note = ""
-    try:
-        instrumented, _ = instrument(code, language)
-        runtime_src = (CPP_RUNTIME if language == "cpp" else JAVA_RUNTIME) % {"max_steps": MAX_STEPS}
-        if language == "cpp":
-            instrumented = runtime_src + instrumented
-        else:
-            instrumented = instrumented + "\n" + runtime_src.replace("\n", " ")
-    except (ValueError, IndexError) as error:
-        instrumented = None
-        note = f"코드 구조를 분석하지 못해 단계 추적 없이 실행합니다 ({error})."
-    class_name, main_class = _java_names(code, file_path) if language == "java" else ("", "")
-    cfg = {
-        "language": language, "source": code, "instrumented": instrumented, "display": display,
-        "className": class_name, "mainClass": main_class, "timeout": RUN_TIMEOUT,
-        "cwd": "/workspace" + (file_path.rsplit("/", 1)[0] or ""),
-    }
-    script = RUNNER % {"cfg": base64.b64encode(json.dumps(cfg).encode()).decode()}
-    res = runtime.vm(vm_id, {"language": "python", "code": script})
-    if "exitCode" not in res:
-        raise RequestError(f"실행 실패 ({res.get('error', 'VM 응답 오류')}).", 503)
-    raw = (res.get("output") or "").strip().splitlines()
-    try:
-        data = json.loads(raw[-1])
-    except (IndexError, ValueError) as error:
-        raise RequestError("VM 실행 결과를 해석하지 못했습니다.", 502) from error
-    return build_result(data, code, file_path, language, note)
 
 
 NOISE_ARG = re.compile(r",\s*(?:std::)?(?:allocator|less|hash|equal_to|char_traits)<")
@@ -939,7 +649,60 @@ def pretty_type(name):
     return name.replace("basic_string<char>", "string")
 
 
-def build_result(data, code, file_path, language, note=""):
+def _stable_ids(stack, heap):
+    """Debuggers create fresh object ids at every step; renumber them in frame/variable order so the
+    same variable keeps the same id and the visualizer only flags values that really changed."""
+    mapping = {}
+
+    def visit(value):
+        if not isinstance(value, dict) or value.get("kind") != "ref":
+            return
+        old = value.get("id")
+        if old in mapping:
+            value["id"] = mapping[old]
+            return
+        mapping[old] = value["id"] = f"obj_{len(mapping) + 1}"
+        entry = heap.get(old)
+        if entry:
+            for item in entry.get("items") or []:
+                visit(item)
+            for _, item in entry.get("fields") or []:
+                visit(item)
+
+    for frame in stack:
+        for value in frame.get("locals", {}).values():
+            visit(value)
+    renamed = {}
+    for old, new in mapping.items():
+        if old in heap:
+            entry = dict(heap[old], id=new)
+            renamed[new] = entry
+    return renamed
+
+
+def _drop_cleanup_bounces(steps):
+    """GCC attributes temporaries' cleanup to the closing brace, so stepping a declaration can visit
+    "}" and jump back. Hide those visits; a real end-of-function "}" is followed by a return."""
+    kept = []
+    for index, step in enumerate(steps):
+        following = steps[index + 1] if index + 1 < len(steps) else None
+        if (step["event"] == "line" and step["code"].strip() in ("}", "};") and following is not None
+                and following["event"] == "line" and following["func"] == step["func"]
+                and len(following["stack"]) == len(step["stack"]) and following["line"] < step["line"]):
+            continue
+        previous = kept[-1] if kept else None
+        if (previous is not None and step["event"] == "line" and previous["event"] == "line"
+                and previous["func"] == step["func"] and previous["line"] == step["line"]
+                and len(previous["stack"]) == len(step["stack"])):
+            kept[-1] = step  # same line revisited after a cleanup bounce: keep the latest state
+            continue
+        kept.append(step)
+    for index, step in enumerate(kept):
+        step["index"] = index
+    return kept
+
+
+def build_result(data, code, file_path, language):
     lines = code.splitlines()
     stdout_bytes = base64.b64decode(data.get("stdoutBytes") or "") if data.get("stdoutBytes") else data.get("stdout", "").encode()
     steps = []
@@ -953,7 +716,7 @@ def build_result(data, code, file_path, language, note=""):
             key = (stack[-2]["func"], stack[-1]["func"])
             edges[key] = edges.get(key, 0) + 1
         out = stdout_bytes[:item.get("out", 0)].decode("utf-8", "replace")[-8192:]
-        heap = item.get("heap", {})
+        heap = _stable_ids(stack, item.get("heap", {}))
         if language == "cpp":
             for entry in heap.values():
                 entry["type"] = pretty_type(entry.get("type", ""))
@@ -962,19 +725,18 @@ def build_result(data, code, file_path, language, note=""):
             "line": line, "code": text, "explain": explain(item.get("event"), item.get("func"), line, text),
             "stack": stack, "heap": heap, "stdout": out, "returnValue": None, "error": None,
         })
+    steps = _drop_cleanup_bounces(steps)
     exit_code = data.get("exitCode", 1)
     if steps and exit_code not in (0, None):
         steps[-1]["error"] = f"종료 코드 {exit_code}"
     outputs = []
     if data.get("stdout"):
         outputs.append({"output_type": "stream", "name": "stdout", "text": data["stdout"]})
-    messages = {
-        "untraced": "※ 단계 추적 계측을 적용하지 못해 일반 실행 결과만 표시합니다.",
-        "compile": "컴파일 오류",
-    }
     stderr = data.get("stderr", "")
-    if data.get("note") == "untraced":
-        stderr = (note or messages["untraced"]) + ("\n" + stderr if stderr else "")
+    if data.get("exception"):
+        stderr = (f"처리되지 않은 예외: {data['exception']}\n" + stderr).strip()
+        if steps:
+            steps[-1]["error"] = data["exception"]
     if stderr:
         outputs.append({"output_type": "stream", "name": "stderr", "text": stderr})
     total = len(data.get("trace", []))
@@ -994,3 +756,25 @@ def build_result(data, code, file_path, language, note=""):
             "note": data.get("note", ""),
         },
     }
+
+
+def trace(vm_id, file_path, code, language):
+    if language not in ("cpp", "java"):
+        raise RequestError("C++ 또는 Java 파일만 단계 실행할 수 있습니다.")
+    class_name, main_class = _java_names(code, file_path) if language == "java" else ("", "")
+    cfg = {
+        "language": language, "source": code, "fileName": file_path.rsplit("/", 1)[-1],
+        "className": class_name, "mainClass": main_class, "timeout": RUN_TIMEOUT, "maxSteps": MAX_STEPS,
+        "cwd": "/workspace" + (file_path.rsplit("/", 1)[0] or ""),
+        "driver": GDB_DRIVER if language == "cpp" else "", "jdi": JDI_DEBUGGER if language == "java" else "",
+    }
+    script = RUNNER % {"cfg": base64.b64encode(json.dumps(cfg).encode()).decode()}
+    res = runtime.vm(vm_id, {"language": "python", "code": script})
+    if "exitCode" not in res:
+        raise RequestError(f"실행 실패 ({res.get('error', 'VM 응답 오류')}).", 503)
+    raw = (res.get("output") or "").strip().splitlines()
+    try:
+        data = json.loads(raw[-1])
+    except (IndexError, ValueError) as error:
+        raise RequestError("VM 실행 결과를 해석하지 못했습니다.", 502) from error
+    return build_result(data, code, file_path, language)

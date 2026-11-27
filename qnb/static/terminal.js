@@ -66,7 +66,10 @@
     });
     tabStrip.replaceChildren(...items);
     $("terminal-new").disabled = sessions.length >= MAX_TERMINALS;
-    openButton.textContent = sessions.length > 1 ? `터미널 (${sessions.length})` : "터미널";
+    const count = $("terminal-count");
+    count.textContent = String(sessions.length);
+    count.hidden = sessions.length < 2;
+    openButton.title = `아래 터미널 패널 (Ctrl+\`)` + (sessions.length ? ` · 열린 터미널 ${sessions.length}개` : "");
   }
 
   function rename(session) {

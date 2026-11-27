@@ -69,102 +69,84 @@ class PlannerTests(unittest.TestCase):
 
 CPP_SAMPLE = r'''#include <iostream>
 #include <vector>
-#include <map>
-using namespace std;
-int fact(int n) {
-    if (n <= 1) return 1;
-    return n * fact(n - 1);
-}
+int sq(int x) { return x * x; }
 int main() {
-    vector<int> v = {3, 1};
-    map<string, int> m{{"a", 1}};
-    int total = 0;
+    std::vector<int> v = {1, 2};
+    int s = 0;
     for (int x : v)
-        total += x;
-    switch (total) { case 4: { int z = 1; cout << z; break; } default: break; }
-    if (total > 3) cout << "big\n"; else cout << "small\n";
-    cout << fact(3) << endl;
+        s += sq(x);
+    std::cout << s << std::endl;
     return 0;
 }
 '''
 
-JAVA_SAMPLE = r'''import java.util.*;
-public class Main {
-    Main(int a) { this(a, 0); }
-    Main(int a, int b) { int c = a + b; }
-    static int twice(int n) { return n * 2; }
-    public static void main(String[] args) throws Exception {
-        int[] arr = {1, 2};
-        int total;
-        total = 0;
-        for (int x : arr) total += twice(x);
-        List<Integer> xs = new ArrayList<>();
-        xs.forEach(v -> System.out.println(v));
-        switch (total) { case 6: String s = "six"; System.out.println(s); break; default: break; }
-        try { int q = arr[3]; } catch (Exception e) { System.out.println("e"); } finally { total++; }
-    }
-}
-'''
+HAS_GDB = shutil.which("gdb") is not None and HAS_GPP
+
+
+def run_locally(vm_id, payload):
+    done = subprocess.run(["python3", "-c", payload["code"]], capture_output=True, text=True, timeout=180)
+    return {"exitCode": done.returncode, "output": done.stdout + done.stderr}
+
+
+def step(line, func="main", event="line", depth=1, code="", out=0):
+    return {"event": event, "line": line, "func": func, "out": out,
+            "stack": [{"func": func, "line": line, "locals": {}}] * depth, "heap": {}}
 
 
 class StepperTests(unittest.TestCase):
-    def test_cpp_instrumentation_keeps_lines_and_scopes(self):
-        out, inst = stepper.instrument(CPP_SAMPLE, "cpp")
-        self.assertEqual(out.count("\n"), CPP_SAMPLE.count("\n"))
-        self.assertEqual(inst.functions, 2)
-        lines = out.splitlines()
-        # braceless loop body is wrapped and sees the range-for variable
-        self.assertIn("{ __QNB_STEP(14, __QNB_V(v), __QNB_V(m), __QNB_V(total), __QNB_V(x)); total += x; }", lines[13])
-        # declarations after a case label are not visible in the next label
-        self.assertIn("default: __QNB_STEP(15, __QNB_V(v), __QNB_V(m), __QNB_V(total)); break;", lines[14])
-        self.assertIn('__qnb::Frame __qnb_frame("fact", 5);', lines[4])
+    def test_java_main_class_detection(self):
+        nested_first = "public class Main {\n static class Node { int v; }\n public static void main(String[] a) { }\n}"
+        self.assertEqual(stepper._java_names(nested_first, "/Main.java"), ("Main", "Main"))
+        self.assertEqual(stepper._java_names("class A { static class B { public static void main(String[] a){} } }", "/A.java"), ("A", "A$B"))
+        tricky = 'public class P { String s = "class X {"; // class Y {\n public static void main(String[] a) {} }'
+        self.assertEqual(stepper._java_names(tricky, "/P.java"), ("P", "P"))
 
-    def test_java_instrumentation_respects_definite_assignment(self):
-        out, inst = stepper.instrument(JAVA_SAMPLE, "java")
-        self.assertEqual(out.count("\n"), JAVA_SAMPLE.count("\n"))
-        lines = out.splitlines()
-        self.assertIn("{ this(a, 0); __QnbT.enter(\"Main.Main\", 3); try {", lines[2])
-        self.assertNotIn('"total", total', lines[8])  # declared without initializer
-        self.assertIn('__QnbT.step(12, "args", args, "arr", arr, "xs", xs); xs.forEach(v -> System.out.println(v));', lines[11])
-        self.assertIn('"e", e', lines[13])
-        self.assertIn("} finally { __QnbT.exit(); } }", lines[14])
+    def test_cleanup_bounces_and_repeats_are_hidden(self):
+        code = "int main() {\n  std::vector<int> v = {1};\n  int a = 1;\n}\n"
+        trace = [step(1, event="call"), step(2), step(4), step(2), step(3), step(4), {"event": "return", "line": 4,
+                 "func": "main", "out": 0, "stack": [{"func": "main", "line": 4, "locals": {}}], "heap": {}}]
+        result = stepper.build_result({"exitCode": 0, "stdout": "", "trace": trace}, code, "/m.cpp", "cpp")
+        lines = [(s["event"], s["line"]) for s in result["visualization"]["steps"]]
+        # 2 → "}" → 2 bounce collapsed; the final "}" before the return is kept
+        self.assertEqual(lines, [("call", 1), ("line", 2), ("line", 3), ("line", 4), ("return", 4)])
+        self.assertEqual([s["index"] for s in result["visualization"]["steps"]], list(range(5)))
 
-    @unittest.skipUnless(HAS_GPP, "g++ is required")
-    def test_cpp_trace_end_to_end(self):
-        def fake_vm(vm_id, payload):
-            done = subprocess.run(["python3", "-c", payload["code"]], capture_output=True, text=True, timeout=120)
-            return {"exitCode": done.returncode, "output": done.stdout + done.stderr}
+    def test_build_result_maps_stdout_offsets_and_types(self):
+        trace = [step(1), step(2, out=3)]
+        trace[1]["heap"] = {"obj_9": {"id": "obj_9", "type": "std::vector<int, std::allocator<int> >", "length": 0, "items": []}}
+        trace[1]["stack"] = [{"func": "main", "line": 2, "locals": {"v": {"kind": "ref", "id": "obj_9"}}}]
+        result = stepper.build_result({"exitCode": 0, "stdout": "hi\nmore", "trace": trace}, "a\nb\n", "/x.cpp", "cpp")
+        steps = result["visualization"]["steps"]
+        self.assertEqual([s["stdout"] for s in steps], ["", "hi\n"])
+        self.assertEqual(steps[1]["heap"]["obj_1"]["type"], "vector<int>")  # ids renumbered per step
+        self.assertEqual(steps[1]["stack"][0]["locals"]["v"], {"kind": "ref", "id": "obj_1"})
+        self.assertEqual(json.loads(json.dumps(result))["visualization"]["steps"][1]["code"], "b")
+        self.assertEqual(stepper.pretty_type("unordered_map<int, int, std::hash<int>, std::equal_to<int>, "
+                                             "std::allocator<std::pair<int const, int> > >"), "unordered_map<int, int>")
 
-        with patch.object(runtime, "vm", fake_vm):
+    def test_missing_debugger_is_reported(self):
+        def no_tools(vm_id, payload):
+            env = dict(os.environ, PATH="/nonexistent")
+            done = subprocess.run([shutil.which("python3"), "-c", payload["code"]], capture_output=True, text=True, env=env)
+            return {"exitCode": done.returncode, "output": done.stdout}
+
+        with patch.object(runtime, "vm", no_tools):
+            result = stepper.trace(1, "/demo/main.cpp", CPP_SAMPLE, "cpp")
+        self.assertNotEqual(result["exitCode"], 0)
+        self.assertIn("g++", result["outputs"][-1]["text"])
+
+    @unittest.skipUnless(HAS_GDB, "g++ and gdb are required")
+    def test_gdb_trace_end_to_end(self):
+        with patch.object(runtime, "vm", run_locally):
             result = stepper.trace(1, "/demo/main.cpp", CPP_SAMPLE, "cpp")
         viz = result["visualization"]
         self.assertEqual(result["exitCode"], 0)
-        self.assertEqual(result["outputs"][0]["text"], "1big\n6\n")
-        self.assertEqual(viz["kind"], "cpp")
-        calls = [s["func"] for s in viz["steps"] if s["event"] == "call"]
-        self.assertEqual(calls, ["main", "fact", "fact", "fact"])
-        deepest = max(viz["steps"], key=lambda s: len(s["stack"]))
-        self.assertEqual([f["func"] for f in deepest["stack"]], ["main", "fact", "fact", "fact"])
-        line14 = next(s for s in viz["steps"] if s["line"] == 14)
-        vectors = [e for e in line14["heap"].values() if e.get("items") is not None and e["length"] == 2]
-        maps = [e for e in line14["heap"].values() if e.get("fields") == [["a", {"kind": "prim", "type": "int", "value": 1}]]]
-        self.assertTrue(vectors and maps, line14["heap"])
-        self.assertEqual(line14["stack"][-1]["locals"]["total"], {"kind": "prim", "type": "int", "value": 0})
-        last = viz["steps"][-1]
-        self.assertEqual(last["stdout"], "1big\n6\n")
-
-        with patch.object(runtime, "vm", fake_vm):
-            broken = stepper.trace(1, "/demo/main.cpp", "int main() { return x; }\n", "cpp")
-        self.assertNotEqual(broken["exitCode"], 0)
-        self.assertIn("main.cpp", broken["outputs"][-1]["text"])
-        self.assertRegex(broken["outputs"][-1]["text"], r"main\.cpp:1:\d+: error: .x. was not declared")
-
-    def test_build_result_maps_stdout_offsets(self):
-        trace = [{"event": "line", "line": 1, "func": "main", "stack": [{"func": "main", "line": 1, "locals": {}}], "heap": {}, "out": 0},
-                 {"event": "line", "line": 2, "func": "main", "stack": [{"func": "main", "line": 2, "locals": {}}], "heap": {}, "out": 3}]
-        result = stepper.build_result({"exitCode": 0, "stdout": "hi\nmore", "trace": trace}, "a\nb\n", "/x.cpp", "cpp")
-        self.assertEqual([s["stdout"] for s in result["visualization"]["steps"]], ["", "hi\n"])
-        self.assertEqual(json.loads(json.dumps(result))["visualization"]["steps"][1]["code"], "b")
+        self.assertEqual(result["outputs"][0]["text"], "5\n")
+        self.assertEqual([s["func"] for s in viz["steps"] if s["event"] == "call"], ["main", "sq", "sq"])
+        line8 = [s for s in viz["steps"] if s["line"] == 8][0]
+        vector = [e for e in line8["heap"].values() if e["type"] == "vector<int>"][0]
+        self.assertEqual([i["value"] for i in vector["items"]], [1, 2])
+        self.assertEqual(viz["steps"][-1]["stdout"], "5\n")
 
 
 if __name__ == "__main__":
